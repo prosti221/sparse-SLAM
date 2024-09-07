@@ -1,5 +1,6 @@
 import open3d as o3d
 import numpy as np
+from utils import pt_obj_to_array
 
 class Renderer:
     def __init__(self, K, width=1920, height=1080):
@@ -22,15 +23,16 @@ class Renderer:
 
     def update_points(self, pts):
         if len(pts) == 0: return
+        pts, colors = pt_obj_to_array(pts)
+
         if not self.cloud_initialized:
             self.point_cloud.points = o3d.utility.Vector3dVector(pts)
+            self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
             self.vis.add_geometry(self.point_cloud)
             self.cloud_initialized = True
         else:
             self.point_cloud.points.extend(o3d.utility.Vector3dVector(pts))
-
-        #colors = np.zeros((len(self.point_cloud.points), 3))
-        #self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
+            self.point_cloud.colors.extend(o3d.utility.Vector3dVector(colors))
 
         # Update view
         self.vis.get_render_option().point_size = 1.5
@@ -40,7 +42,7 @@ class Renderer:
 
     def start(self):
         self.vis.create_window(window_name="SLAM", width=self.width, height=self.height)
-        self.vis.get_render_option().background_color = [0.3, 0.3, 0.3]
+        self.vis.get_render_option().background_color = [0.0, 0.0, 0.0]
         self.ctrl = self.vis.get_view_control()
         self.ctrl.convert_from_pinhole_camera_parameters(self.camera_parameters, allow_arbitrary=True)
           
@@ -61,20 +63,16 @@ class Renderer:
         new_cam.colors = o3d.utility.Vector3dVector(colors)
 
         if not self.camera_initialized:
-            Rt[:3, 3] += 23.5 * np.array([0, 0, 1])
-            Rt[:3, 3] += 20 * np.array([0, 1, 0])
+            Rt[:3, 3] += 20 * R[:, 2]
             self.camera_parameters.extrinsic = Rt 
-            # Subtract from t to move the camera back
             self.ctrl.convert_from_pinhole_camera_parameters(self.camera_parameters, allow_arbitrary=True)
-            self.ctrl.set_constant_z_near(0.01)
-            self.ctrl.set_constant_z_far(1000)
+            self.ctrl.set_constant_z_near(10)
+            #self.ctrl.set_constant_z_far(1000)
             self.camera_initialized = True
             
-
         self.vis.add_geometry(new_cam, False)
         self.vis.poll_events()
         self.vis.update_renderer()
-
     
     def draw_camera_object(self, R, t, size=1.0):
         _w, _h, _cx, _cy, _f = self.width, self.height , self.K[0, 2], self.K[1, 2], self.K[0, 0]

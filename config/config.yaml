@@ -1,0 +1,16 @@
+videos:
+  greece:
+    path: ./videos/greece.mp4
+    focal_length: 620
+  road:
+    path: ./videos/road.mp4
+    focal_length: 620
+  road_reverse:
+    path: ./videos/road_reverse.mp4
+    focal_length: 620
+  drone:
+    path: ./videos/drone.mp4
+    focal_length: 630
+  drone_reverse:
+    path: ./videos/drone_reverse.mp4
+    focal_length: 630

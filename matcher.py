@@ -52,7 +52,7 @@ def match_features(prev_features, cur_features, K, matcher_type='bf', ratio_thre
         pts_cur_norm = normalize(pts_cur, Kinv)
         pts_prev_norm = normalize(pts_prev, Kinv)
 
-        E, mask = cv.findEssentialMat(pts_prev_norm, pts_cur_norm, K, method=cv.USAC_ACCURATE, prob=0.999, threshold=0.0005, maxIters=200)
+        E, mask = cv.findEssentialMat(pts_prev_norm, pts_cur_norm, K, method=cv.USAC_ACCURATE, prob=0.999, threshold=0.000009)
         filtered_matches = [m for i, m in enumerate(good_matches) if mask[i] == 1]
 
         print(f"Number of raw points: {len(good_matches)}")
