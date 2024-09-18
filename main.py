@@ -49,7 +49,7 @@ if __name__ == '__main__':
         stateEstimator.update(cur_features, frame)
 
         # If we have at least 2 frames, triangulate points and estimate camera pose
-        if count > 2:
+        if count >= 2:
             #  Triangulate points
             points = stateEstimator.triangulate()
             Rt = stateEstimator.get_camera_pose()
