@@ -5,7 +5,6 @@ import numpy as np
 import cv2 as cv
 from utils import *
 from matcher import *
-import warnings
 
 class Point:
     def __init__(self, pt_2d=None, color=None, pt_3d=None):
@@ -33,7 +32,6 @@ class StateEstimator:
         self.cur_filtered_pts = None
 
     def update(self, features, frame):
-        cur_kp, _ = features
         if not self.cur_features:
             self.cur_features = features
             return
@@ -43,12 +41,12 @@ class StateEstimator:
         self.cur_features = features
 
         # Find feature correspondence
-        self.filtered_matches, E = match_features(self.prev_features, self.cur_features, self.K)
+        self.filtered_matches, F = match_features(self.prev_features, self.cur_features, self.K)
                 
-        self.prev_filtered_pts = normalize(np.float64([self.prev_features[0][m.queryIdx].pt for m in self.filtered_matches]), self.Kinv)
-        self.cur_filtered_pts = normalize(np.float64([self.cur_features[0][m.trainIdx].pt for m in self.filtered_matches]), self.Kinv)
+        self.prev_filtered_pts = np.float64([self.prev_features[0][m.queryIdx].pt for m in self.filtered_matches])
+        self.cur_filtered_pts = np.float64([self.cur_features[0][m.trainIdx].pt for m in self.filtered_matches])
 
-        Rt = extractRt(E)
+        Rt = extractRt(F)
 
         self.prev_pose = self.cur_pose
         self.cur_pose = Rt
@@ -61,8 +59,8 @@ class StateEstimator:
         pose1 = np.linalg.inv(pose1)
         pose2 = np.linalg.inv(pose2)
 
-        pts1 = add_ones(np.squeeze(pts1))
-        pts2 = add_ones(np.squeeze(pts2))
+        pts1 = normalize(pts1, self.Kinv)
+        pts2 = normalize(pts2, self.Kinv)
 
         for i, p in enumerate(zip(pts1, pts2)):
             A = np.zeros((4, 4))
@@ -88,8 +86,28 @@ class StateEstimator:
         for i, m in enumerate(self.filtered_matches):
             point_2d = self.cur_features[0][m.trainIdx].pt
             point_4d = points_4d[i]
-            if np.abs(point_4d[3]) < 0.005 or point_4d[2] < 0:
+
+            pl1 = np.dot(self.cur_pose, points_4d[i])
+            pl2 = np.dot(self.prev_pose, points_4d[i])
+            if pl1[2] < 0 or pl2[2] < 0 or np.abs(point_4d[3]) < 0.005:
                 continue
+
+            """
+            # Reprojection error
+            pp1 = np.dot(self.K, pl1[:3])
+            pp2 = np.dot(self.K, pl2[:3])
+            # check reprojection error
+            pp1 = (pp1[0:2] / pp1[2]) - self.cur_features[0][m.trainIdx].pt
+            pp2 = (pp2[0:2] / pp2[2]) - self.prev_features[0][m.queryIdx].pt
+            pp1 = np.sum(pp1**2)
+            pp2 = np.sum(pp2**2)
+
+            if pp1 > 5 or pp2 > 5:
+                continue
+
+            #print(f"Reprojection error: {pp1}, {pp2}")
+            """
+
             color = self.frame[int(point_2d[1]), int(point_2d[0])][::-1]
             points.append(Point(point_2d, color, np.array(point_4d)[:3]))
             
@@ -105,4 +123,4 @@ class StateEstimator:
                 cv.line(img_cpy, pt1, pt2, (0, 255, 0), 1)
             cv.imshow('matches', img_cpy)
         else:
-            warnings.warn("No matches to visualize... skipping.")
+            print("No matches to visualize... skipping.")

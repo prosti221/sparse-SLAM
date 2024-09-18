@@ -67,14 +67,13 @@ class Renderer:
             self.camera_parameters.extrinsic = Rt 
             self.ctrl.convert_from_pinhole_camera_parameters(self.camera_parameters, allow_arbitrary=True)
             self.ctrl.set_constant_z_near(10)
-            #self.ctrl.set_constant_z_far(1000)
             self.camera_initialized = True
             
         self.vis.add_geometry(new_cam, False)
         self.vis.poll_events()
         self.vis.update_renderer()
     
-    def draw_camera_object(self, R, t, size=1.0):
+    def draw_camera_object(self, R, t, size=0.8):
         _w, _h, _cx, _cy, _f = self.width, self.height , self.K[0, 2], self.K[1, 2], self.K[0, 0]
         f = 1
         w = _w/_f

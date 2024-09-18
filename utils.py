@@ -8,10 +8,7 @@ def pt_obj_to_array(pts):
     color = color / 255.0
     return points_3d, color
 
-def get_median_pixel_color(frame, pt, k_size=3):
-    """
-    Given a pixel in the frame, return the median pixel value in a k_size x k_size window.
-    """
+def get_median_pixel_color(frame, pt, k_size=15):
     x, y = pt
     x, y = int(x), int(y)
     if x < k_size or y < k_size or x >= frame.shape[1] - k_size or y >= frame.shape[0] - k_size:
