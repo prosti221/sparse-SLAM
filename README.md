@@ -1,3 +1,3 @@
 ## Sparse SLAM
 ### Progress example
-![Example](exmaples/switzerland.gif)
+![Example](examples/switzerland.gif)
