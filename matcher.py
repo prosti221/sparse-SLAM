@@ -34,7 +34,6 @@ def match_features(prev_features, cur_features, K, matcher_type='bf', ratio_thre
     idx1s, idx2s = set(), set()
 
     good_matches = []
-    # Lowe's ratio test sucks
     for m,n in matches:
         if m.distance < ratio_thresh*n.distance:
             if m.distance < 32:
