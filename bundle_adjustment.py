@@ -4,6 +4,7 @@ from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
 import time
 from point import Point
+from constants import *
 
 
 class BundleAdjustment:
@@ -12,35 +13,35 @@ class BundleAdjustment:
         self.ftol = ftol
         self.xtol = xtol
 
-    def local_bundle_adjustment(self, map_obj, reference_keyframe_id, window_size=5):
+    def local_bundle_adjustment(self, map_obj, reference_frame_id, window_size=5):
         """
         Perform local bundle adjustment around a reference keyframe
 
         Args:
             map_obj: Map object containing keyframes and points
-            reference_keyframe_id: ID of the reference keyframe
+            reference_frame_id: ID of the reference keyframe
             window_size: Number of keyframes to include in optimization
 
         Returns:
             bool: True if optimization was successful
         """
-        print(f"Starting local BA around keyframe {reference_keyframe_id}")
+        print(f"Starting local BA around keyframe {reference_frame_id}")
 
         # Get local keyframes and points
         local_keyframes = map_obj.get_local_keyframes(
-            reference_keyframe_id, window_size)
+            reference_frame_id, window_size)
         local_points = map_obj.get_local_points(
             local_keyframes, min_observations=2)
 
-        if len(local_keyframes) < 2 or len(local_points) < 10:
+        if len(local_keyframes) < MINIMUM_LOCAL_KEYFRAMES or len(local_points) < MINIMUM_LOCAL_POINTS:
             print(
                 f"Insufficient data for BA: {len(local_keyframes)} keyframes, {len(local_points)} points")
             return False
 
-        # Get observations (point_idx, keyframe_idx, 2d_point)
+        # Get observations (point_idx, frame_idx, 2d_point)
         observations = map_obj.get_observations(local_keyframes, local_points)
 
-        if len(observations) < 20:
+        if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             print(f"Insufficient observations for BA: {len(observations)}")
             return False
 
@@ -59,7 +60,7 @@ class BundleAdjustment:
 
             # Remove outlier points after optimization
             map_obj.remove_outlier_points(
-                outlier_threshold=1.0, min_observations=2)
+                outlier_threshold=OUTLIER_THRESHOLD_FOR_POINTS, min_observations=2)
 
             return True
         else:
@@ -93,7 +94,7 @@ class BundleAdjustment:
                 xtol=self.xtol,
                 method='trf',
                 loss='huber',
-                f_scale=1.0
+                f_scale=LEAST_SQUARES_F_SCALE
             )
 
             optimization_time = time.time() - start_time
@@ -236,7 +237,7 @@ class BundleAdjustment:
 
         # Get all observations
         observations = []
-        kf_id_to_idx = {kf.keyframe_id: i for i, kf in enumerate(keyframes)}
+        kf_id_to_idx = {kf.frame_id: i for i, kf in enumerate(keyframes)}
         point_id_to_idx = {pt.point_id: i for i, pt in enumerate(points)}
 
         for point in points:
@@ -246,7 +247,7 @@ class BundleAdjustment:
                     kf_idx = kf_id_to_idx[kf_id]
                     observations.append((point_idx, kf_idx, pt_2d))
 
-        if len(observations) < 50:
+        if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
             print("Insufficient observations for global BA")
             return False
 

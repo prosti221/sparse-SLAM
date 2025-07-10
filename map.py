@@ -38,21 +38,21 @@ class Map:
 
     def add_keyframe(self, kf):
         self.keyframes.append(kf)
-        self.keyframes_by_id[kf.keyframe_id] = kf
+        self.keyframes_by_id[kf.frame_id] = kf
 
         # Update covisibility graph
         self._update_covisibility_graph()
 
-    def get_local_keyframes(self, reference_keyframe_id, window_size=5):
-        if reference_keyframe_id not in self.keyframes_by_id:
+    def get_local_keyframes(self, reference_frame_id, window_size=5):
+        if reference_frame_id not in self.keyframes_by_id:
             return []
 
         # Get covisible keyframes
-        covisible_kfs = self.covisibility_graph[reference_keyframe_id]
+        covisible_kfs = self.covisibility_graph[reference_frame_id]
 
         # Sort by covisibility strength (number of shared observations)
         keyframe_scores = []
-        ref_kf = self.keyframes_by_id[reference_keyframe_id]
+        ref_kf = self.keyframes_by_id[reference_frame_id]
 
         for kf_id in covisible_kfs:
             if kf_id in self.keyframes_by_id:
@@ -71,7 +71,7 @@ class Map:
         return local_keyframes
 
     def get_local_points(self, local_keyframes, min_observations=2):
-        local_kf_ids = {kf.keyframe_id for kf in local_keyframes}
+        local_kf_ids = {kf.frame_id for kf in local_keyframes}
         local_points = []
 
         for point in self.points:
@@ -88,7 +88,7 @@ class Map:
         observations = []
 
         # Create index mappings
-        kf_id_to_idx = {kf.keyframe_id: i for i,
+        kf_id_to_idx = {kf.frame_id: i for i,
                         kf in enumerate(local_keyframes)}
         point_id_to_idx = {pt.point_id: i for i, pt in enumerate(local_points)}
 
@@ -141,14 +141,14 @@ class Map:
         shared_points = 0
 
         for point in self.points:
-            if (point.is_observed_by(kf1.keyframe_id) and
-                    point.is_observed_by(kf2.keyframe_id)):
+            if (point.is_observed_by(kf1.frame_id) and
+                    point.is_observed_by(kf2.frame_id)):
                 shared_points += 1
 
         return shared_points
 
-    def get_keyframe_by_id(self, keyframe_id):
-        return self.keyframes_by_id.get(keyframe_id, None)
+    def get_keyframe_by_id(self, frame_id):
+        return self.keyframes_by_id.get(frame_id, None)
 
     def get_point_by_id(self, point_id):
         return self.points_by_id.get(point_id, None)

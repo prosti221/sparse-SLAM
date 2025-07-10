@@ -9,7 +9,7 @@ from map import Map
 
 
 if __name__ == '__main__':
-    VIDEO = 'calibrated1'
+    VIDEO = 'road'
     config = Parser('config/config.yaml')
 
     cap, K = load_video(VIDEO, config)
@@ -57,7 +57,5 @@ if __name__ == '__main__':
             print(f"Point cloud size: {len(global_map.points)}")
             print()
 
-        # stateEstimator.visualize_matches(frame)
-        # cv.imshow('raw_keypoints', keypoint_img)
         cv.imshow('frame', frame)
         prev_img = frame

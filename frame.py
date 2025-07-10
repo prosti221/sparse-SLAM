@@ -7,7 +7,6 @@ class Frame:
     # TODO: Create a seperate class for Keyframe that inherits from Frame
     def __init__(self, image, K):
         self.frame_id = uuid.uuid4()
-        self.keyframe_id = uuid.uuid4()  # Separate ID for when this becomes a keyframe
         self.image = image
 
         self.K = K
@@ -181,7 +180,6 @@ class Frame:
         """Get statistics about this keyframe"""
         stats = {
             'frame_id': self.frame_id,
-            'keyframe_id': self.keyframe_id,
             'num_keypoints': len(self.keypoints) if self.keypoints else 0,
             'num_matches': len(self.matches) if self.matches else 0,
             'num_observed_points': len(self.observed_points),

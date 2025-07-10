@@ -25,16 +25,6 @@ def pt_obj_to_array(pts):
     return points_3d, color
 
 
-def get_median_pixel_color(frame, pt, k_size=15):
-    x, y = pt
-    x, y = int(x), int(y)
-    if x < k_size or y < k_size or x >= frame.shape[1] - k_size or y >= frame.shape[0] - k_size:
-        return frame[y, x]
-
-    window = frame[y-k_size:y+k_size, x-k_size:x+k_size]
-    return np.median(window, axis=(0, 1))
-
-
 def add_ones(x):
     return np.concatenate([x, np.ones((x.shape[0], 1))], axis=1)
 
@@ -117,3 +107,34 @@ def compute_rotation_angle(Rcw1, Rcw2):
     R_rel = Rcw1 @ Rcw2.T
     angle_axis = Rotation.from_matrix(R_rel).as_rotvec()
     return np.linalg.norm(angle_axis)  # Angle in radians
+
+
+def compute_parallax_angle(pt1, pt2, pose1, pose2):
+    """
+    Compute parallax angle between two camera views of a point
+    Args:
+        pt1: 2D point in first camera's normalized coordinates
+        pt2: 2D point in second camera's normalized coordinates
+        pose1: First camera pose (world to camera)
+        pose2: Second camera pose (world to camera)
+    Returns:
+        Angle in radians between viewing rays
+    """
+    # Convert to bearing vectors
+    bearing1 = np.array([pt1[0], pt1[1], 1.0])
+    bearing1 /= np.linalg.norm(bearing1)
+
+    bearing2 = np.array([pt2[0], pt2[1], 1.0])
+    bearing2 /= np.linalg.norm(bearing2)
+
+    # Transform to world coordinates
+    R1 = pose1[:3, :3]
+    bearing1_world = R1.T @ bearing1  # Camera to world rotation
+
+    R2 = pose2[:3, :3]
+    bearing2_world = R2.T @ bearing2
+
+    # Compute angle between rays
+    cos_angle = np.dot(bearing1_world, bearing2_world)
+    cos_angle = np.clip(cos_angle, -1.0, 1.0)  # Avoid numerical issues
+    return np.arccos(cos_angle)
