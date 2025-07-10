@@ -10,20 +10,20 @@ class Point:
         self.descriptor = descriptor
 
         # Track which keyframes observe this point
-        self.observations = {}  # {keyframe_id: (keypoint_idx, 2d_point)}
+        self.observations = {}  # {frame_id: (keypoint_idx, 2d_point)}
 
         # Track quality metrics
         self.num_observations = 0
         self.average_reprojection_error = 0.0
         self.is_outlier = False
 
-    def add_observation(self, keyframe_id, keypoint_idx, pt_2d):
-        self.observations[keyframe_id] = (keypoint_idx, pt_2d)
+    def add_observation(self, frame_id, keypoint_idx, pt_2d):
+        self.observations[frame_id] = (keypoint_idx, pt_2d)
         self.num_observations = len(self.observations)
 
-    def remove_observation(self, keyframe_id):
-        if keyframe_id in self.observations:
-            del self.observations[keyframe_id]
+    def remove_observation(self, frame_id):
+        if frame_id in self.observations:
+            del self.observations[frame_id]
             self.num_observations = len(self.observations)
 
     def get_observing_keyframes(self):
@@ -32,11 +32,11 @@ class Point:
     def get_3d_position(self):
         return self.pt_3d.copy()
 
-    def is_observed_by(self, keyframe_id):
-        return keyframe_id in self.observations
+    def is_observed_by(self, frame_id):
+        return frame_id in self.observations
 
-    def get_observation_in_keyframe(self, keyframe_id):
-        return self.observations.get(keyframe_id, None)
+    def get_observation_in_keyframe(self, frame_id):
+        return self.observations.get(frame_id, None)
 
     def update_reprojection_error(self, error):
         if self.num_observations > 0:

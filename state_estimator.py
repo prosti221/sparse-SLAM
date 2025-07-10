@@ -8,6 +8,7 @@ from matcher import *
 from point import Point
 from scipy.spatial import cKDTree
 from bundle_adjustment import BundleAdjustment
+from constants import *
 
 
 class StateEstimator:
@@ -19,17 +20,6 @@ class StateEstimator:
         self.prev_keyframe = None
 
         self.velocity = np.zeros((4, 4))
-
-        self.min_depth = 0.1
-        self.max_depth = 400.0
-        self.min_baseline_threshold = 0.01  # Minimum baseline for triangulation
-
-        # Keyframe insertion criteria thresholds
-        self.max_number_of_frames_before_keyframe = 10
-        self.new_points_threshold = 0.16  # Ratio of new points to total keypoints
-        self.translation_threshold = 1.5
-        self.rotation_threshold = 0.1
-        self.minimum_number_of_inliers_for_keyframe = 20
 
         self.bundle_adjustment = BundleAdjustment()
 
@@ -43,21 +33,13 @@ class StateEstimator:
         self.prev_frame = self.cur_frame
         self.cur_frame = new_frame
 
-        E = self.match_features_between_frames(
+        E = match_features_between_frames(
             self.prev_frame, self.cur_frame)
 
         if should_initialization:
-            Rt = extractRt(E)
-            self.cur_frame.pose = Rt @ self.prev_frame.pose
-            self.prev_keyframe = self.prev_frame
-            self.cur_keyframe = self.cur_frame
-            map.add_keyframe(self.prev_keyframe)
-            map.add_keyframe(self.cur_keyframe)
-            triangulated_points = self.triangulate()
-            map.add_points(triangulated_points)
-            self.run_local_bundle_adjustment(map)
+            self.initialize(map, E)
         else:
-            # Get initial predicted pose based on previous frame's pose and velocity
+            # Get initial predicted pose
             predicted_pose = self.velocity @ self.prev_frame.pose
             self.cur_frame.pose = predicted_pose
 
@@ -70,97 +52,68 @@ class StateEstimator:
 
             # Estimate the refined pose using matched 3D and 2D points
             inliers = 0
-            if len(matched_3d) >= 6:
+            if len(matched_3d) >= MINIMUM_NUMBER_OF_INLIERS_FOR_NEW_KEYFRAME:
                 inliers = self.estimate_refined_pose(matched_3d, matched_2d)
 
             if (self.should_insert_keyframe(inliers)):
                 self.prev_keyframe = self.cur_keyframe
                 self.cur_keyframe = self.cur_frame
-                self.match_features_between_frames(
+                match_features_between_frames(
                     self.prev_keyframe, self.cur_keyframe)
                 map.add_keyframe(self.cur_keyframe)
-
-                triangulated_points = self.triangulate()
-                map.add_points(triangulated_points)
-                self.run_local_bundle_adjustment(map)
+                self.on_keyframe_inserted(map)
 
         # Update the velocity based on the current and previous frame poses
         self.velocity = self.cur_frame.pose @ np.linalg.inv(
             self.prev_frame.pose)
 
-    def run_local_bundle_adjustment(self, map):
-        # Perform local bundle adjustment
-        success = self.bundle_adjustment.local_bundle_adjustment(
+    def initialize(self, map, E):
+        Rt = extractRt(E)
+        self.cur_frame.pose = Rt @ self.prev_frame.pose
+        self.prev_keyframe = self.prev_frame
+        self.cur_keyframe = self.cur_frame
+        map.add_keyframe(self.prev_keyframe)
+        map.add_keyframe(self.cur_keyframe)
+        self.on_keyframe_inserted(map)
+
+    def on_keyframe_inserted(self, map):
+        triangulated_points = self.triangulate()
+        map.add_points(triangulated_points)
+        self.bundle_adjustment.local_bundle_adjustment(
             map,
-            self.cur_keyframe.keyframe_id
+            self.cur_keyframe.frame_id
         )
 
-        return success
-
-    def match_features_between_frames(self, frame1, frame2):
-        matches, E = match_features(frame1, frame2, matcher_type='bf')
-
-        if len(matches) == 0:
-            print("[Matcher] No matches found.")
-            return None, None
-
-        matched_pts = np.float64(
-            [frame2.keypoints[m.trainIdx].pt for m in matches])
-        prev_frame_matched_pts = np.float64(
-            [frame1.keypoints[m.queryIdx].pt for m in matches])
-
-        frame2.set_match_data(
-            matches, matched_pts, prev_frame_matched_pts)
-
-        return E
-
     def should_insert_keyframe(self, number_of_matched_points):
-        # time_elapsed_is_significant = self.cur_frame.frame_id - \
-        #    self.cur_keyframe.frame_id >= self.max_number_of_frames_before_keyframe
-        # TODO: Cannot use the id anymore since its not incremental
-        time_elapsed_is_significant = False
-
         number_of_new_points_ratio = number_of_matched_points / \
             len(self.cur_frame.keypoints)
-        number_of_new_points_is_significant = number_of_new_points_ratio < self.new_points_threshold and len(
-            self.cur_frame.keypoints) >= self.minimum_number_of_inliers_for_keyframe
+        number_of_new_points_is_significant = number_of_new_points_ratio < NEW_POINTS_THRESHOLD and len(
+            self.cur_frame.keypoints) >= MINIMUM_NUMBER_OF_INLIERS_FOR_NEW_KEYFRAME
 
         translation_distance = compute_translation_distance(
             self.cur_frame.pose, self.cur_keyframe.pose)
-        camera_moved_significantly = translation_distance > self.translation_threshold
+        camera_moved_significantly = translation_distance > MINIMUM_TRANSLATION_THRESHOLD
 
         R1 = self.cur_frame.pose[:3, :3]
         R2 = self.cur_keyframe.pose[:3, :3]
         rotation_angle = compute_rotation_angle(R1, R2)
-        camera_rotated_significantly = rotation_angle > self.rotation_threshold
+        camera_rotated_significantly = rotation_angle > MINIMUM_ROTATION_THRESHOLD
 
-        return time_elapsed_is_significant or number_of_new_points_is_significant or camera_moved_significantly or camera_rotated_significantly
+        return number_of_new_points_is_significant or camera_moved_significantly or camera_rotated_significantly
 
     def get_camera_pose(self):
         return self.cur_frame.pose if self.cur_frame else None
 
     def project_visible_map_points(self, map):
         projected_points = []
-        H, W = self.cur_frame.image.shape[:2]
-
-        # Convert camera-to-world pose to world-to-camera for projection
-        world_to_cam = np.linalg.inv(self.cur_frame.pose)
-        R, t = world_to_cam[:3, :3], world_to_cam[:3, 3]
 
         for mp in map.points:
             pt_3d = mp.pt_3d
-            # Transform world point to camera coordinates
-            pt_cam = R @ pt_3d + t
-
-            if pt_cam[2] <= 0:
-                continue  # Behind camera
-
-            # Project to image
-            pt_img = self.cur_frame.K @ pt_cam
-            u, v = pt_img[0] / pt_img[2], pt_img[1] / pt_img[2]
-
-            if 0 <= u < W and 0 <= v < H:
-                projected_points.append((mp, (u, v)))
+            projected_point = self.cur_frame.project_point(pt_3d)
+            if projected_point is None:
+                continue
+            projected_points.append(
+                (mp, self.cur_frame.project_point(pt_3d)))
 
         return projected_points
 
@@ -199,7 +152,7 @@ class StateEstimator:
 
                 # Update observation relationships
                 pt_2d = kp_coords[best_idx]
-                mp.add_observation(self.cur_frame.keyframe_id, best_idx, pt_2d)
+                mp.add_observation(self.cur_frame.frame_id, best_idx, pt_2d)
                 self.cur_frame.add_point_observation(
                     mp.point_id, best_idx, pt_2d)
 
@@ -213,11 +166,11 @@ class StateEstimator:
                 self.cur_frame.K.astype(np.float32),
                 None,  # No distortion
                 flags=cv.SOLVEPNP_ITERATIVE,
-                iterationsCount=100,
-                reprojectionError=8.0
+                iterationsCount=PNP_ITERATIONS_COUNT,
+                reprojectionError=PNP_REPROJECTION_ERROR
             )
 
-            if success and len(inliers) >= 6:
+            if success and len(inliers) >= PNP_MINIMUM_INLIERS:
                 R, _ = cv.Rodrigues(R)
                 # Convert world-to-camera back to camera-to-world
                 world_to_cam = np.eye(4)
@@ -268,10 +221,22 @@ class StateEstimator:
         baseline = np.linalg.norm(
             self.cur_keyframe.pose[:3, 3] - self.prev_keyframe.pose[:3, 3])
 
-        if baseline < self.min_baseline_threshold:  # Minimum baseline threshold
+        '''
+        if baseline < MIN_BASELINE_THRESHOLD:  # Minimum baseline threshold
             print(
                 f"Baseline too small: {baseline:.3f}, skipping triangulation")
             return []
+        '''
+
+        # Get poses in world-to-camera format
+        pose1 = np.linalg.inv(self.prev_keyframe.pose)
+        pose2 = np.linalg.inv(self.cur_keyframe.pose)
+
+        # Normalize points
+        pts1 = normalize(self.cur_keyframe.matched_pts_prev_frame,
+                         self.prev_keyframe.Kinv)
+        pts2 = normalize(self.cur_keyframe.matched_pts,
+                         self.cur_keyframe.Kinv)
 
         # Triangulate points
         points_4d = self.compute()
@@ -292,19 +257,21 @@ class StateEstimator:
             m = self.cur_keyframe.matches[idx]
             point_4d = points_4d[idx]
 
-            # Check if point is at reasonable depth
-            if np.abs(point_4d[3]) < 0.01:  # Avoid points at infinity
+            # Compute parallax angle
+            parallax = compute_parallax_angle(
+                pts1[i], pts2[i], pose1, pose2)
+            min_parallax = np.radians(MINIMUM_PARALLAX_THRESHOLD)
+
+            if parallax < min_parallax:
                 continue
 
             # Transform world point to camera coordinates
             pl1 = world_to_cam_cur @ point_4d
             pl2 = world_to_cam_prev @ point_4d
 
-            if pl1[2] < self.min_depth or pl1[2] > self.max_depth:
+            if pl1[2] < MIN_DEPTH or pl1[2] > MAX_DEPTH:
                 continue
-            if pl2[2] < self.min_depth or pl2[2] > self.max_depth:
-                continue
-            if np.abs(point_4d[3]) < 0.005:
+            if pl2[2] < MIN_DEPTH or pl2[2] > MAX_DEPTH:
                 continue
 
             # Reprojection error check
@@ -319,7 +286,7 @@ class StateEstimator:
             pp1 = np.sum(pp1**2)
             pp2 = np.sum(pp2**2)
 
-            if pp1 > 2 or pp2 > 2:
+            if pp1 > MAX_SQUARED_REPROJECTION_ERROR or pp2 > MAX_SQUARED_REPROJECTION_ERROR:
                 continue
 
             point = Point(
@@ -335,31 +302,17 @@ class StateEstimator:
             # For current keyframe
             pt_2d_cur = self.cur_keyframe.keypoints[kp_idx_cur].pt
             point.add_observation(
-                self.cur_keyframe.keyframe_id, kp_idx_cur, pt_2d_cur)
+                self.cur_keyframe.frame_id, kp_idx_cur, pt_2d_cur)
             self.cur_keyframe.add_point_observation(
                 point.point_id, kp_idx_cur, pt_2d_cur)
 
             # For previous keyframe
             pt_2d_prev = self.prev_keyframe.keypoints[kp_idx_prev].pt
             point.add_observation(
-                self.prev_keyframe.keyframe_id, kp_idx_prev, pt_2d_prev)
+                self.prev_keyframe.frame_id, kp_idx_prev, pt_2d_prev)
             self.prev_keyframe.add_point_observation(
                 point.point_id, kp_idx_prev, pt_2d_prev)
 
             points.append(point)
 
         return points
-
-    def visualize_matches(self):
-        # Draws a line between the matching points on the same image
-        if self.cur_frame:
-            img_cpy = self.cur_frame.get_gray_image().copy()
-            for m in self.cur_frame.matches:
-                pt1 = tuple(
-                    map(int, self.prev_frame.keypoints_descriptors()[0][m.queryIdx].pt))
-                pt2 = tuple(
-                    map(int, self.cur_frame.keypoints_descriptors()[0][m.trainIdx].pt))
-                cv.line(img_cpy, pt1, pt2, (0, 255, 0), 1)
-            cv.imshow('matches', img_cpy)
-        else:
-            print("No matches to visualize... skipping.")
