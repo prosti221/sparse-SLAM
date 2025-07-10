@@ -51,17 +51,10 @@ def match_features(prev_frame, cur_frame, matcher_type='bf', ratio_thresh=0.7):
         pts_cur_norm = normalize(pts_cur, cur_frame.Kinv)
         pts_prev_norm = normalize(pts_prev, prev_frame.Kinv)
 
-        # F, mask = cv.findFundamentalMat(
-        #     pts_prev_norm, pts_cur_norm, cv.FM_RANSAC, 0.005, 0.999)
-
         E, mask = cv.findEssentialMat(
             pts_prev_norm, pts_cur_norm, cur_frame.K, method=cv.RANSAC, prob=0.999, threshold=0.005)
         filtered_matches = [m for i, m in enumerate(
             good_matches) if mask[i] == 1]
-
-        # print(f"Number of raw points: {len(good_matches)}")
-        # print(f"Number of filtered points: {len(filtered_matches)}")
-        # print()
 
         return filtered_matches, E
 

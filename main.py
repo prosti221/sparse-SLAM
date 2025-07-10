@@ -22,13 +22,11 @@ if __name__ == '__main__':
     renderer.start()
 
     prev_img = None
-    frame_count = 0
     keyframe_count = 0
     while True:
         if cv.waitKey(1) == ord('q'):
             renderer.stop()
             break
-        frame_count += 1
         ret, frame = cap.read()
 
         if not ret:
@@ -41,27 +39,23 @@ if __name__ == '__main__':
         cur_kps, cur_descs = feature_extractor.extract(gray_img)
         keypoint_img = draw_keypoints(gray_img, cur_kps)
 
-        cur_frame = Frame(frame, K, frame_id=frame_count)
+        cur_frame = Frame(frame, K)
         cur_frame.set_features(cur_kps, cur_descs)
 
         # Update state estimator with new features
         state_estimator.update(cur_frame, global_map)
 
-        # If we have at least 2 frames, triangulate points and estimate camera pose
-        # TODO: This should only run if we have inserted a new keyframe
+        # Render the point cloud and camera poses if a new keyframe is detected
         if keyframe_count != len(global_map.keyframes):
-            #  Triangulate points
-            points = state_estimator.triangulate()
-            Rt = state_estimator.get_camera_pose()
-
-            # Update global map with new points
-            global_map.add_points(points)
-
             # Render point cloud and camera poses
+            Rt = state_estimator.get_camera_pose()
             renderer.update_points(global_map.points)
             renderer.update_camera(Rt)
 
             keyframe_count = len(global_map.keyframes)
+
+            print(f"Point cloud size: {len(global_map.points)}")
+            print()
 
         # stateEstimator.visualize_matches(frame)
         # cv.imshow('raw_keypoints', keypoint_img)
