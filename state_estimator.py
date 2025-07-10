@@ -7,6 +7,7 @@ from utils import *
 from matcher import *
 from point import Point
 from scipy.spatial import cKDTree
+from bundle_adjustment import BundleAdjustment
 
 
 class StateEstimator:
@@ -30,6 +31,8 @@ class StateEstimator:
         self.rotation_threshold = 0.1
         self.minimum_number_of_inliers_for_keyframe = 20
 
+        self.bundle_adjustment = BundleAdjustment()
+
     def update(self, new_frame, map):
         if not self.cur_frame:
             self.cur_frame = new_frame
@@ -50,6 +53,9 @@ class StateEstimator:
             self.cur_keyframe = self.cur_frame
             map.add_keyframe(self.prev_keyframe)
             map.add_keyframe(self.cur_keyframe)
+            triangulated_points = self.triangulate()
+            map.add_points(triangulated_points)
+            self.run_local_bundle_adjustment(map)
         else:
             # Get initial predicted pose based on previous frame's pose and velocity
             predicted_pose = self.velocity @ self.prev_frame.pose
@@ -73,12 +79,23 @@ class StateEstimator:
                 self.match_features_between_frames(
                     self.prev_keyframe, self.cur_keyframe)
                 map.add_keyframe(self.cur_keyframe)
-                print(
-                    f"[Keyframe] Inserted keyframe at frame {self.cur_frame.frame_id}")
+
+                triangulated_points = self.triangulate()
+                map.add_points(triangulated_points)
+                self.run_local_bundle_adjustment(map)
 
         # Update the velocity based on the current and previous frame poses
         self.velocity = self.cur_frame.pose @ np.linalg.inv(
             self.prev_frame.pose)
+
+    def run_local_bundle_adjustment(self, map):
+        # Perform local bundle adjustment
+        success = self.bundle_adjustment.local_bundle_adjustment(
+            map,
+            self.cur_keyframe.keyframe_id
+        )
+
+        return success
 
     def match_features_between_frames(self, frame1, frame2):
         matches, E = match_features(frame1, frame2, matcher_type='bf')
@@ -98,8 +115,10 @@ class StateEstimator:
         return E
 
     def should_insert_keyframe(self, number_of_matched_points):
-        time_elapsed_is_significant = self.cur_frame.frame_id - \
-            self.cur_keyframe.frame_id >= self.max_number_of_frames_before_keyframe
+        # time_elapsed_is_significant = self.cur_frame.frame_id - \
+        #    self.cur_keyframe.frame_id >= self.max_number_of_frames_before_keyframe
+        # TODO: Cannot use the id anymore since its not incremental
+        time_elapsed_is_significant = False
 
         number_of_new_points_ratio = number_of_matched_points / \
             len(self.cur_frame.keypoints)
@@ -177,6 +196,12 @@ class StateEstimator:
             if best_idx != -1 and best_dist < 50:
                 matched_3d.append(mp.pt_3d)
                 matched_2d.append(kp_coords[best_idx])
+
+                # Update observation relationships
+                pt_2d = kp_coords[best_idx]
+                mp.add_observation(self.cur_frame.keyframe_id, best_idx, pt_2d)
+                self.cur_frame.add_point_observation(
+                    mp.point_id, best_idx, pt_2d)
 
         return np.array(matched_3d), np.array(matched_2d)
 
@@ -297,15 +322,32 @@ class StateEstimator:
             if pp1 > 2 or pp2 > 2:
                 continue
 
-            points.append(
-                Point(
-                    np.array(point_4d)[:3],
-                    self.cur_keyframe.matched_pts_colors[idx],
-                    self.cur_keyframe.keypoints_descriptors()[1][m.trainIdx]
-                )
+            point = Point(
+                np.array(point_4d)[:3],
+                self.cur_keyframe.matched_pts_colors[idx],
+                self.cur_keyframe.keypoints_descriptors()[1][m.trainIdx]
             )
 
-        print(f"Triangulated {len(points)} points.")
+            # Register observations in both keyframes
+            kp_idx_cur = m.trainIdx
+            kp_idx_prev = m.queryIdx
+
+            # For current keyframe
+            pt_2d_cur = self.cur_keyframe.keypoints[kp_idx_cur].pt
+            point.add_observation(
+                self.cur_keyframe.keyframe_id, kp_idx_cur, pt_2d_cur)
+            self.cur_keyframe.add_point_observation(
+                point.point_id, kp_idx_cur, pt_2d_cur)
+
+            # For previous keyframe
+            pt_2d_prev = self.prev_keyframe.keypoints[kp_idx_prev].pt
+            point.add_observation(
+                self.prev_keyframe.keyframe_id, kp_idx_prev, pt_2d_prev)
+            self.prev_keyframe.add_point_observation(
+                point.point_id, kp_idx_prev, pt_2d_prev)
+
+            points.append(point)
+
         return points
 
     def visualize_matches(self):
