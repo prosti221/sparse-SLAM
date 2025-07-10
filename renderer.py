@@ -26,15 +26,15 @@ class Renderer:
     def update_points(self, pts):
         if len(pts) == 0:
             return
-        pts, colors = pt_obj_to_array(pts)
+
+        pts_array, colors = pt_obj_to_array(pts)
+
+        self.point_cloud.points = o3d.utility.Vector3dVector(pts_array)
+        self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
+
         if not self.cloud_initialized:
-            self.point_cloud.points = o3d.utility.Vector3dVector(pts)
-            self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
             self.vis.add_geometry(self.point_cloud)
             self.cloud_initialized = True
-        else:
-            self.point_cloud.points.extend(o3d.utility.Vector3dVector(pts))
-            self.point_cloud.colors.extend(o3d.utility.Vector3dVector(colors))
 
         # Update view
         self.vis.get_render_option().point_size = 1.5
@@ -61,7 +61,8 @@ class Renderer:
         new_cam = o3d.geometry.LineSet()
         new_cam.points = points
         new_cam.lines = lines
-        # Set color to red
+
+        # Set color to green
         colors = np.zeros((len(lines), 3))
         colors[:, 1] = 1
         new_cam.colors = o3d.utility.Vector3dVector(colors)

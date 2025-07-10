@@ -1,5 +1,6 @@
 import numpy as np
 import cv2 as cv
+from scipy.spatial.transform import Rotation
 
 
 def load_video(video_name, config):
@@ -7,8 +8,11 @@ def load_video(video_name, config):
     cap = get_video_cap(VIDEO_PATH)
     W = cap.get(cv.CAP_PROP_FRAME_WIDTH)
     H = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
-    F = config.get_video_property(video_name, 'focal_length')
-    K = construct_K(F, F, W//2, H//2)
+    Fx = config.get_video_property(video_name, 'fx', default=0)
+    Fy = config.get_video_property(video_name, 'fy', default=Fx)
+    Cx = config.get_video_property(video_name, 'cx', default=W//2)
+    Cy = config.get_video_property(video_name, 'cy', default=H//2)
+    K = construct_K(Fx, Fy, Cx, Cy)
 
     return cap, K
 
@@ -101,3 +105,15 @@ def draw_matches(prev_img, prev_keypoints, cur_img, cur_keypoints, matches):
     )
 
     return match_img
+
+
+def compute_translation_distance(Tcw1, Tcw2):
+    t1 = Tcw1[:3, 3]
+    t2 = Tcw2[:3, 3]
+    return np.linalg.norm(t1 - t2)
+
+
+def compute_rotation_angle(Rcw1, Rcw2):
+    R_rel = Rcw1 @ Rcw2.T
+    angle_axis = Rotation.from_matrix(R_rel).as_rotvec()
+    return np.linalg.norm(angle_axis)  # Angle in radians

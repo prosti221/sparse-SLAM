@@ -8,7 +8,7 @@ class FeatureExtractor:
         self.detector = cv.ORB_create()
 
         # TODO: Make these parameters configurable
-        self.n_pts = 4000
+        self.n_pts = 2000
         self.quality_level = 0.01
         self.min_distance = 7
 
