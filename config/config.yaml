@@ -16,4 +16,7 @@ videos:
     focal_length: 520
   swiz:
     path: ./videos/swiz.mp4
+    focal_length: 210
+  random:
+    path: ./videos/random.mp4
     focal_length: 270

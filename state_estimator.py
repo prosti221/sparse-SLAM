@@ -5,62 +5,50 @@ import numpy as np
 import cv2 as cv
 from utils import *
 from matcher import *
+from point import Point
 
-class Point:
-    def __init__(self, pt_2d=None, color=None, pt_3d=None):
-        """
-        A point in 3D space. It will have its own 3D coordinates, and a color.
-        """
-        self.pt_2d = pt_2d
-        self.pt_3d = pt_3d 
-        self.color = color
 
 class StateEstimator:
-    def __init__(self, K):
-        self.frame = None
-        self.K = K
-        self.Kinv = np.linalg.inv(self.K)
+    def __init__(self):
+        self.cur_frame = None
+        self.prev_frame = None
 
-        self.cur_pose = None
-        self.prev_pose = None
-
-        self.prev_features = None
-        self.cur_features = None
-
-        self.filtered_matches = None
-        self.prev_filtered_pts = None
-        self.cur_filtered_pts = None
-
-    def update(self, features, frame):
-        if not self.cur_features:
-            self.cur_features = features
+    def update(self, new_frame):
+        if not self.cur_frame:
+            self.cur_frame = new_frame
             return
 
-        self.frame = frame
-        self.prev_features = self.cur_features
-        self.cur_features = features
+        self.prev_frame = self.cur_frame
+        self.cur_frame = new_frame
 
         # Find feature correspondence
-        self.filtered_matches, F = match_features(self.prev_features, self.cur_features, self.K)
-                
-        self.prev_filtered_pts = np.float64([self.prev_features[0][m.queryIdx].pt for m in self.filtered_matches])
-        self.cur_filtered_pts = np.float64([self.cur_features[0][m.trainIdx].pt for m in self.filtered_matches])
+        matches, F = match_features(
+            self.prev_frame, self.cur_frame)
+
+        # Store matches in current frame
+        matched_pts = np.float64(
+            [self.cur_frame.keypoints[m.trainIdx].pt for m in matches])
+        prev_frame_matched_pts = np.float64(
+            [self.prev_frame.keypoints[m.queryIdx].pt for m in matches])
+
+        self.cur_frame.set_match_data(
+            matches, matched_pts, prev_frame_matched_pts)
 
         Rt = extractRt(F)
+        self.cur_frame.pose = Rt @ self.prev_frame.pose
 
-        self.prev_pose = self.cur_pose
-        self.cur_pose = Rt
-    
     def get_camera_pose(self):
-        return self.cur_pose
-    
-    def compute(self, pose1, pose2, pts1, pts2):
-        ret = np.zeros((pts1.shape[0], 4))
-        pose1 = np.linalg.inv(pose1)
-        pose2 = np.linalg.inv(pose2)
+        return self.cur_frame.pose if self.cur_frame else None
 
-        pts1 = normalize(pts1, self.Kinv)
-        pts2 = normalize(pts2, self.Kinv)
+    def compute(self):
+        ret = np.zeros((self.cur_frame.matched_pts.shape[0], 4))
+
+        pose1 = np.linalg.inv(self.cur_frame.pose)
+        pose2 = np.linalg.inv(self.prev_frame.pose)
+
+        pts1 = normalize(self.cur_frame.matched_pts, self.cur_frame.Kinv)
+        pts2 = normalize(self.cur_frame.matched_pts_prev_frame,
+                         self.prev_frame.Kinv)
 
         for i, p in enumerate(zip(pts1, pts2)):
             A = np.zeros((4, 4))
@@ -73,53 +61,57 @@ class StateEstimator:
             ret[i] = vt[3]
 
         return ret
-    
+
     def triangulate(self):
-        # Update current pose
-        self.cur_pose = self.cur_pose @ self.prev_pose
+        if not (self.cur_frame and self.prev_frame):
+            print("Not enough frames to triangulate points.")
+            return []
 
         # Triangulate points
-        points_4d = self.compute(self.cur_pose, self.prev_pose, self.cur_filtered_pts, self.prev_filtered_pts)
+        points_4d = self.compute()
         points_4d = points_4d / points_4d[:, 3:]
 
         points = []
-        for i, m in enumerate(self.filtered_matches):
-            point_2d = self.cur_features[0][m.trainIdx].pt
+        for i, m in enumerate(self.cur_frame.matches):
             point_4d = points_4d[i]
 
-            pl1 = np.dot(self.cur_pose, points_4d[i])
-            pl2 = np.dot(self.prev_pose, points_4d[i])
+            pl1 = np.dot(self.cur_frame.pose, points_4d[i])
+            pl2 = np.dot(self.prev_frame.pose, points_4d[i])
             if pl1[2] < 0 or pl2[2] < 0 or np.abs(point_4d[3]) < 0.005:
                 continue
 
-            """
             # Reprojection error
-            pp1 = np.dot(self.K, pl1[:3])
-            pp2 = np.dot(self.K, pl2[:3])
+            pp1 = np.dot(self.cur_frame.K, pl1[:3])
+            pp2 = np.dot(self.cur_frame.K, pl2[:3])
+
             # check reprojection error
-            pp1 = (pp1[0:2] / pp1[2]) - self.cur_features[0][m.trainIdx].pt
-            pp2 = (pp2[0:2] / pp2[2]) - self.prev_features[0][m.queryIdx].pt
+            pp1 = (pp1[0:2] / pp1[2]) - \
+                self.cur_frame.keypoints_descriptors()[0][m.trainIdx].pt
+            pp2 = (pp2[0:2] / pp2[2]) - \
+                self.prev_frame.keypoints_descriptors()[0][m.queryIdx].pt
+
             pp1 = np.sum(pp1**2)
             pp2 = np.sum(pp2**2)
 
-            if pp1 > 5 or pp2 > 5:
+            if pp1 > 25 or pp2 > 25:
                 continue
 
-            #print(f"Reprojection error: {pp1}, {pp2}")
-            """
+            points.append(
+                Point(np.array(point_4d)[:3], self.cur_frame.matched_pts_colors[i]))
 
-            color = self.frame[int(point_2d[1]), int(point_2d[0])][::-1]
-            points.append(Point(point_2d, color, np.array(point_4d)[:3]))
-            
+        print(f"Triangulated {len(points)} points.")
+
         return points
 
-    def visualize_matches(self, cur_img):
+    def visualize_matches(self):
         # Draws a line between the matching points on the same image
-        if self.filtered_matches:
-            img_cpy = cur_img.copy()
-            for m in self.filtered_matches:
-                pt1 = tuple(map(int, self.prev_features[0][m.queryIdx].pt))
-                pt2 = tuple(map(int, self.cur_features[0][m.trainIdx].pt))
+        if self.cur_frame:
+            img_cpy = self.cur_frame.get_gray_image().copy()
+            for m in self.cur_frame.matches:
+                pt1 = tuple(
+                    map(int, self.prev_frame.keypoints_descriptors()[0][m.queryIdx].pt))
+                pt2 = tuple(
+                    map(int, self.cur_frame.keypoints_descriptors()[0][m.trainIdx].pt))
                 cv.line(img_cpy, pt1, pt2, (0, 255, 0), 1)
             cv.imshow('matches', img_cpy)
         else:
