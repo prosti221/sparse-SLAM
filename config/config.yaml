@@ -1,22 +1,25 @@
 videos:
   greece:
     path: ./videos/greece.mp4
-    focal_length: 270
+    fx: 270
   road:
     path: ./videos/road.mp4
-    focal_length: 270
+    fx: 300
   road_reverse:
     path: ./videos/road_reverse.mp4
-    focal_length: 340
+    fx: 300
   drone:
     path: ./videos/drone.mp4
-    focal_length: 660
+    fx: 660
   drone_reverse:
     path: ./videos/drone_reverse.mp4
-    focal_length: 520
+    fx: 520
   swiz:
     path: ./videos/swiz.mp4
-    focal_length: 210
-  random:
-    path: ./videos/random.mp4
-    focal_length: 270
+    fx: 210
+  calibrated1:
+    path: ./videos/calibrated/video1.mp4
+    fx: 525.0
+    fy: 525.0
+    cx: 319.5
+    cy: 239.5

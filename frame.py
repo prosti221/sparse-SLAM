@@ -3,7 +3,8 @@ import cv2 as cv
 
 
 class Frame:
-    def __init__(self, image, K, timestamp=None):
+    def __init__(self, image, K, frame_id=None):
+        self.frame_id = frame_id
         self.image = image
 
         self.K = K
@@ -18,8 +19,6 @@ class Frame:
         self.matched_pts = None      # Points matched in this frame
         self.matched_pts_prev_frame = None  # Corresponding points in previous frame
         self.matched_pts_colors = None  # Colors of matched points in this frame
-
-        self.timestamp = timestamp
 
     def set_features(self, keypoints, descriptors):
         self.keypoints = keypoints

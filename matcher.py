@@ -7,7 +7,7 @@ import numpy as np
 from utils import *
 
 
-def match_features(prev_frame, cur_frame, matcher_type='bf', ratio_thresh=0.75):
+def match_features(prev_frame, cur_frame, matcher_type='bf', ratio_thresh=0.7):
     if matcher_type == 'bf':
         # initialize a Brute-Force Matcher
         matcher = cv.BFMatcher(cv.NORM_HAMMING)
