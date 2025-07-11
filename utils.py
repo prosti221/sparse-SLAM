@@ -1,6 +1,9 @@
 import numpy as np
 import cv2 as cv
 from scipy.spatial.transform import Rotation
+from logger import info_log
+
+LOG_TAG = 'Utils'
 
 
 def load_video(video_name, config):
@@ -13,6 +16,11 @@ def load_video(video_name, config):
     Cx = config.get_video_property(video_name, 'cx', default=W//2)
     Cy = config.get_video_property(video_name, 'cy', default=H//2)
     K = construct_K(Fx, Fy, Cx, Cy)
+
+    info_log(LOG_TAG, f"Loaded video: {VIDEO_PATH} with properties:\n"
+             f"  Width: {W}, Height: {H}\n"
+             f"  Focal Lengths: Fx={Fx}, Fy={Fy}\n"
+             f"  Principal Point: Cx={Cx}, Cy={Cy}")
 
     return cap, K
 

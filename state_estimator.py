@@ -9,6 +9,9 @@ from point import Point
 from scipy.spatial import cKDTree
 from bundle_adjustment import BundleAdjustment
 from constants import *
+from logger import debug_log, info_log, error_log, warning_log
+
+LOG_TAG = 'StateEstimator'
 
 
 class StateEstimator:
@@ -105,9 +108,6 @@ class StateEstimator:
 
         return number_of_new_points_is_significant or camera_moved_significantly or camera_rotated_significantly
 
-    def get_camera_pose(self):
-        return self.cur_frame.pose if self.cur_frame else None
-
     def project_visible_map_points(self, map):
         projected_points = []
 
@@ -183,7 +183,7 @@ class StateEstimator:
             self.cur_frame.pose = np.linalg.inv(world_to_cam)
             return len(inliers)
         else:
-            print("[PnP] Failed, keeping predicted pose.")
+            warning_log(LOG_TAG, "PnP failed, keeping predicted pose.")
             return 0
 
     def compute(self):
@@ -211,19 +211,19 @@ class StateEstimator:
 
     def triangulate(self):
         if not (self.cur_keyframe and self.prev_keyframe):
-            print("Not enough frames to triangulate points.")
+            warning_log(LOG_TAG, "Not enough keyframes to triangulate points.")
             return []
 
-        '''
         # Check baseline - cameras should be far enough apart
+        """
         baseline = np.linalg.norm(
             self.cur_keyframe.pose[:3, 3] - self.prev_keyframe.pose[:3, 3])
 
         if baseline < MIN_BASELINE_THRESHOLD:  # Minimum baseline threshold
-            print(
-                f"Baseline too small: {baseline:.3f}, skipping triangulation")
+            warning_log(LOG_TAG,
+                        f"Baseline too small: {baseline:.3f}, skipping triangulation")
             return []
-        '''
+        """
 
         # Get poses in world-to-camera coordinates
         pose1 = np.linalg.inv(self.prev_keyframe.pose)

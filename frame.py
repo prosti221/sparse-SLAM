@@ -1,6 +1,9 @@
 import uuid
 import numpy as np
 import cv2 as cv
+from logger import debug_log
+
+LOG_TAG = 'Frame'
 
 
 class Frame:
@@ -110,6 +113,8 @@ class Frame:
         """
         projected = self.project_point(point_3d)
         if projected is None:
+            debug_log(
+                LOG_TAG, f"Point {point_3d} is not visible in frame {self.frame_id}")
             return False
 
         H, W = self.image.shape[:2]
@@ -131,6 +136,8 @@ class Frame:
         """
         projected = self.project_point(point_3d)
         if projected is None:
+            debug_log(
+                LOG_TAG, f"Point {point_3d} cannot be projected in frame {self.frame_id}")
             return float('inf')
 
         return np.linalg.norm(projected - observed_2d)
@@ -157,10 +164,15 @@ class Frame:
         self.pose[:3, :3] = R
         self.pose[:3, 3] = t
 
+    def get_pose(self):
+        return self.pose.copy()
+
     def compute_tracking_quality(self):
         """Compute tracking quality metrics"""
         if not self.matches:
             self.tracking_quality = 0.0
+            debug_log(
+                LOG_TAG, f"No matches found for frame {self.frame_id}, setting tracking quality to 0.0")
             return
 
         # Simple quality metric based on number of matches
@@ -193,4 +205,6 @@ class Frame:
             self.matched_pts_colors = np.array(
                 [self.image[int(pt[1]), int(pt[0])][::-1] for pt in self.matched_pts])
         else:
+            debug_log(
+                LOG_TAG, "Matched points are None, cannot set colors")
             self.matched_pts_colors = None
