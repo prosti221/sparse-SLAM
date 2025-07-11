@@ -147,6 +147,9 @@ class Map:
 
         return shared_points
 
+    def should_perform_global_bundle_adjustment(self, interval):
+        return len(self.keyframes) % interval == 0
+
     def get_keyframe_by_id(self, frame_id):
         return self.keyframes_by_id.get(frame_id, None)
 

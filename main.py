@@ -24,11 +24,13 @@ if __name__ == '__main__':
     prev_img = None
     keyframe_count = 0
     while True:
-        if cv.waitKey(1) == ord('q'):
-            renderer.stop()
-            break
-        ret, frame = cap.read()
+        renderer.vis.poll_events()
+        renderer.vis.update_renderer()
 
+        if renderer.is_paused():
+            continue  # Skip SLAM updates
+
+        ret, frame = cap.read()
         if not ret:
             print("Can't receive frame (stream end?). Exiting ...")
             break
@@ -54,7 +56,6 @@ if __name__ == '__main__':
 
             keyframe_count = len(global_map.keyframes)
 
-            print(f"Point cloud size: {len(global_map.points)}")
             print()
 
         cv.imshow('frame', frame)

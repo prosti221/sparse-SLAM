@@ -18,7 +18,19 @@ videos:
     path: ./videos/swiz.mp4
     fx: 210
   calibrated1:
-    path: ./videos/calibrated/video1.mp4
+    path: ./videos/calibrated/calibrated1.mp4
+    fx: 525.0
+    fy: 525.0
+    cx: 319.5
+    cy: 239.5
+  calibrated2:
+    path: ./videos/calibrated/calibrated2.mp4
+    fx: 525.0
+    fy: 525.0
+    cx: 319.5
+    cy: 239.5
+  calibrated3:
+    path: ./videos/calibrated/calibrated3.mp4
     fx: 525.0
     fy: 525.0
     cx: 319.5

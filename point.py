@@ -29,9 +29,6 @@ class Point:
     def get_observing_keyframes(self):
         return list(self.observations.keys())
 
-    def get_3d_position(self):
-        return self.pt_3d.copy()
-
     def is_observed_by(self, frame_id):
         return frame_id in self.observations
 
@@ -45,7 +42,7 @@ class Point:
                 (self.num_observations - 1) + error
             ) / self.num_observations
 
-    def is_good_point(self, min_observations=3, max_reproj_error=2.0):
+    def is_good_point(self, min_observations=2, max_reproj_error=2.0):
         return (self.num_observations >= min_observations and
                 self.average_reprojection_error < max_reproj_error and
                 not self.is_outlier)

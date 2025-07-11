@@ -5,7 +5,7 @@ from utils import pt_obj_to_array
 
 class Renderer:
     def __init__(self, K, width=1920, height=1080):
-        self.vis = o3d.visualization.Visualizer()
+        self.vis = o3d.visualization.VisualizerWithKeyCallback()
 
         self.width = width
         self.height = height
@@ -22,6 +22,8 @@ class Renderer:
             width, height, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
         self.camera_parameters = o3d.camera.PinholeCameraParameters()
         self.camera_parameters.intrinsic = self.pinhole
+
+        self.paused = False
 
     def update_points(self, pts):
         if len(pts) == 0:
@@ -50,8 +52,19 @@ class Renderer:
         self.ctrl.convert_from_pinhole_camera_parameters(
             self.camera_parameters, allow_arbitrary=True)
 
+        # Register spacebar (ASCII 32) to toggle pause
+        self.vis.register_key_callback(32, self.toggle_pause)
+
     def stop(self):
         self.vis.destroy_window()
+
+    def toggle_pause(self, vis):
+        self.paused = not self.paused
+        print("[Renderer] Paused" if self.paused else "[Renderer] Resumed")
+        return False
+
+    def is_paused(self):
+        return self.paused
 
     def update_camera(self, Rt):
         # Update cumulative position
