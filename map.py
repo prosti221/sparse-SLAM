@@ -1,5 +1,8 @@
 from collections import defaultdict
 import numpy as np
+from logger import debug_log, error_log
+
+LOG_TAG = 'Map'
 
 
 class Map:
@@ -45,6 +48,8 @@ class Map:
 
     def get_local_keyframes(self, reference_frame_id, window_size=5):
         if reference_frame_id not in self.keyframes_by_id:
+            error_log(
+                LOG_TAG, f"Reference keyframe {reference_frame_id} not found")
             return []
 
         # Get covisible keyframes
@@ -116,13 +121,14 @@ class Map:
                     del self.points_by_id[point.point_id]
 
         self.points = good_points
-        print(f"Removed {removed_count} outlier points")
 
         # Update coordinate set
         self.point_coords = set()
         for pt in self.points:
             coord_key = tuple(np.round(pt.pt_3d, 3))
             self.point_coords.add(coord_key)
+
+        debug_log(LOG_TAG, f"Removed {removed_count} outlier points")
 
     def _update_covisibility_graph(self):
         self.covisibility_graph.clear()

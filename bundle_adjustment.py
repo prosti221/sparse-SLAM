@@ -5,6 +5,9 @@ from scipy.sparse import lil_matrix
 import time
 from point import Point
 from constants import *
+from logger import debug_log, info_log, error_log, warning_log
+
+LOG_TAG = 'BundleAdjustment'
 
 
 class BundleAdjustment:
@@ -25,7 +28,8 @@ class BundleAdjustment:
         Returns:
             bool: True if optimization was successful
         """
-        print(f"Starting local BA around keyframe {reference_frame_id}")
+        debug_log(
+            LOG_TAG, f"Starting local BA around keyframe {reference_frame_id}")
 
         # Get local keyframes and points
         local_keyframes = map_obj.get_local_keyframes(
@@ -34,19 +38,20 @@ class BundleAdjustment:
             local_keyframes, min_observations=2)
 
         if len(local_keyframes) < MINIMUM_LOCAL_KEYFRAMES or len(local_points) < MINIMUM_LOCAL_POINTS:
-            print(
-                f"Insufficient data for BA: {len(local_keyframes)} keyframes, {len(local_points)} points")
+            warning_log(
+                LOG_TAG, f"Insufficient data for BA: {len(local_keyframes)} keyframes, {len(local_points)} points")
             return False
 
         # Get observations (point_idx, frame_idx, 2d_point)
         observations = map_obj.get_observations(local_keyframes, local_points)
 
         if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
-            print(f"Insufficient observations for BA: {len(observations)}")
+            warning_log(
+                LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
             return False
 
-        print(
-            f"BA with {len(local_keyframes)} keyframes, {len(local_points)} points, {len(observations)} observations")
+        debug_log(
+            LOG_TAG, f"Local BA with {len(local_keyframes)} keyframes, {len(local_points)} points, {len(observations)} observations")
 
         # Setup optimization problem
         success = self._optimize_bundle(
@@ -66,7 +71,7 @@ class BundleAdjustment:
 
             return True
         else:
-            print("Local BA failed")
+            warning_log(LOG_TAG, "Local BA failed")
             return False
 
     def global_bundle_adjustment(self, map_obj, max_keyframes=None):
@@ -97,11 +102,12 @@ class BundleAdjustment:
                     observations.append((point_idx, kf_idx, pt_2d))
 
         if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
-            print("Insufficient observations for global BA")
+            warning_log(
+                LOG_TAG, f"Insufficient observations for global BA: {len(observations)}")
             return False
 
-        print(
-            f"Global BA with {len(keyframes)} keyframes, {len(points)} points, {len(observations)} observations")
+        debug_log(
+            LOG_TAG, f"Global BA with {len(keyframes)} keyframes, {len(points)} points, {len(observations)} observations")
 
         success = self._optimize_bundle(keyframes, points, observations)
 
@@ -154,17 +160,18 @@ class BundleAdjustment:
             if result.success:
                 # Unpack optimized parameters
                 self._unpack_parameters(result.x, keyframes, points)
-                print(
-                    f"BA converged in {result.nfev} iterations, {optimization_time:.3f}s")
+                debug_log(
+                    LOG_TAG, f"BA converged in {result.nfev} iterations, {optimization_time:.3f}s")
                 avg_reproj_error = np.sqrt(result.cost / len(observations))
-                print(f"Final cost: {avg_reproj_error:.6f}")
+                debug_log(LOG_TAG, f"Final cost: {avg_reproj_error:.6f}")
                 return True
             else:
-                print(f"BA failed to converge: {result.message}")
+                warning_log(
+                    LOG_TAG, f"BA failed to converge: {result.message}")
                 return False
 
         except Exception as e:
-            print(f"BA optimization error: {e}")
+            error_log(LOG_TAG, f"BA optimization error: {e}")
             return False
 
     def _pack_parameters(self, keyframes, points):

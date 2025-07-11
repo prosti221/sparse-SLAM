@@ -6,9 +6,12 @@ import cv2 as cv
 import numpy as np
 from utils import *
 from constants import *
+from logger import debug_log, error_log, warning_log
+
+LOG_TAG = 'Matcher'
 
 
-def match_features(prev_frame, cur_frame, ratio_thresh):
+def match_features(prev_frame, cur_frame):
     matcher = cv.BFMatcher(cv.NORM_HAMMING)
     prev_kp, prev_desc = prev_frame.get_keypoints_descriptors()
     cur_kp, cur_desc = cur_frame.get_keypoints_descriptors()
@@ -30,21 +33,27 @@ def match_features(prev_frame, cur_frame, ratio_thresh):
             matches) if mask[i] == 1]
 
         return filtered_matches, E
+    else:
+        warning_log(LOG_TAG, "Not enough matches found for RANSAC")
 
     return matches
 
 
 def match_features_between_frames(frame1, frame2):
-    matches, E = match_features(frame1, frame2, LOWE_RATIO)
+    matches, E = match_features(frame1, frame2)
 
     if len(matches) == 0:
-        print("[Matcher] No matches found.")
+        warning_log(
+            LOG_TAG, f"No matches found between frames: {frame1.frame_id} and {frame2.frame_id}")
         return None, None
 
     matched_pts = np.float64(
         [frame2.keypoints[m.trainIdx].pt for m in matches])
     prev_frame_matched_pts = np.float64(
         [frame1.keypoints[m.queryIdx].pt for m in matches])
+
+    debug_log(
+        LOG_TAG, f"Found {len(matches)} matches between frames: {frame1.frame_id} and {frame2.frame_id}")
 
     frame2.set_match_data(
         matches, matched_pts, prev_frame_matched_pts)

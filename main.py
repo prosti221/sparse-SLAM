@@ -6,7 +6,9 @@ from feature_extractor import FeatureExtractor
 from config.parser import Parser
 from frame import Frame
 from map import Map
+from logger import debug_log, info_log, error_log
 
+LOG_TAG = 'Main'
 
 if __name__ == '__main__':
     VIDEO = 'road'
@@ -32,7 +34,7 @@ if __name__ == '__main__':
 
         ret, frame = cap.read()
         if not ret:
-            print("Can't receive frame (stream end?). Exiting ...")
+            error_log(LOG_TAG, "Can't receive frame (stream end?). Exiting ...")
             break
 
         # Extract features
@@ -49,14 +51,13 @@ if __name__ == '__main__':
 
         # Render the point cloud and camera poses if a new keyframe is detected
         if keyframe_count != len(global_map.keyframes):
+            debug_log(
+                LOG_TAG, f"New keyframe detected: {len(global_map.keyframes)} keyframes")
             # Render point cloud and camera poses
-            Rt = state_estimator.get_camera_pose()
             renderer.update_points(global_map.points)
-            renderer.update_camera(Rt)
+            renderer.update_poses(global_map.keyframes)
 
             keyframe_count = len(global_map.keyframes)
-
-            print()
 
         cv.imshow('frame', frame)
         prev_img = frame
