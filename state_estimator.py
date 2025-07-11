@@ -79,10 +79,14 @@ class StateEstimator:
     def on_keyframe_inserted(self, map):
         triangulated_points = self.triangulate()
         map.add_points(triangulated_points)
-        self.bundle_adjustment.local_bundle_adjustment(
-            map,
-            self.cur_keyframe.frame_id
-        )
+        if (map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
+            self.bundle_adjustment.global_bundle_adjustment(map)
+        else:
+            self.bundle_adjustment.local_bundle_adjustment(
+                map,
+                self.cur_keyframe.frame_id,
+                window_size=LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE
+            )
 
     def should_insert_keyframe(self, number_of_matched_points):
         number_of_new_points_ratio = number_of_matched_points / \
@@ -120,7 +124,7 @@ class StateEstimator:
     def match_projected_points(self, projected_points, dist_thresh=5):
         matched_3d = []
         matched_2d = []
-        keypoints, descriptors = self.cur_frame.keypoints_descriptors()
+        keypoints, descriptors = self.cur_frame.get_keypoints_descriptors()
 
         if len(keypoints) == 0:
             return np.array([]), np.array([])
@@ -159,37 +163,30 @@ class StateEstimator:
         return np.array(matched_3d), np.array(matched_2d)
 
     def estimate_refined_pose(self, matched_3d, matched_2d):
-        try:
-            success, R, t, inliers = cv.solvePnPRansac(
-                matched_3d.astype(np.float32),
-                matched_2d.astype(np.float32),
-                self.cur_frame.K.astype(np.float32),
-                None,  # No distortion
-                flags=cv.SOLVEPNP_ITERATIVE,
-                iterationsCount=PNP_ITERATIONS_COUNT,
-                reprojectionError=PNP_REPROJECTION_ERROR
-            )
+        success, R, t, inliers = cv.solvePnPRansac(
+            matched_3d.astype(np.float32),
+            matched_2d.astype(np.float32),
+            self.cur_frame.K.astype(np.float32),
+            None,  # No distortion
+            flags=cv.SOLVEPNP_ITERATIVE,
+            iterationsCount=PNP_ITERATIONS_COUNT,
+            reprojectionError=PNP_REPROJECTION_ERROR
+        )
 
-            if success and len(inliers) >= PNP_MINIMUM_INLIERS:
-                R, _ = cv.Rodrigues(R)
-                # Convert world-to-camera back to camera-to-world
-                world_to_cam = np.eye(4)
-                world_to_cam[:3, :3] = R
-                world_to_cam[:3, 3] = t.flatten()
+        if success and len(inliers) >= PNP_MINIMUM_INLIERS:
+            R, _ = cv.Rodrigues(R)
+            # Convert world-to-camera back to camera-to-world
+            world_to_cam = np.eye(4)
+            world_to_cam[:3, :3] = R
+            world_to_cam[:3, 3] = t.flatten()
 
-                self.cur_frame.pose = np.linalg.inv(world_to_cam)
-                return len(inliers)
-            else:
-                print("[PnP] Failed, keeping predicted pose.")
-                return 0
-
-        except Exception as e:
-            print(f"[PnP] Error during pose estimation: {e}")
-            print("[PnP] Keeping predicted pose.")
+            self.cur_frame.pose = np.linalg.inv(world_to_cam)
+            return len(inliers)
+        else:
+            print("[PnP] Failed, keeping predicted pose.")
             return 0
 
     def compute(self):
-        """Triangulate points using consistent pose convention"""
         ret = np.zeros((self.cur_keyframe.matched_pts.shape[0], 4))
 
         # Convert camera-to-world poses to world-to-camera for triangulation
@@ -217,18 +214,18 @@ class StateEstimator:
             print("Not enough frames to triangulate points.")
             return []
 
+        '''
         # Check baseline - cameras should be far enough apart
         baseline = np.linalg.norm(
             self.cur_keyframe.pose[:3, 3] - self.prev_keyframe.pose[:3, 3])
 
-        '''
         if baseline < MIN_BASELINE_THRESHOLD:  # Minimum baseline threshold
             print(
                 f"Baseline too small: {baseline:.3f}, skipping triangulation")
             return []
         '''
 
-        # Get poses in world-to-camera format
+        # Get poses in world-to-camera coordinates
         pose1 = np.linalg.inv(self.prev_keyframe.pose)
         pose2 = np.linalg.inv(self.cur_keyframe.pose)
 
@@ -260,9 +257,7 @@ class StateEstimator:
             # Compute parallax angle
             parallax = compute_parallax_angle(
                 pts1[i], pts2[i], pose1, pose2)
-            min_parallax = np.radians(MINIMUM_PARALLAX_THRESHOLD)
-
-            if parallax < min_parallax:
+            if parallax < np.radians(MINIMUM_PARALLAX_THRESHOLD):
                 continue
 
             # Transform world point to camera coordinates
@@ -279,9 +274,10 @@ class StateEstimator:
             pp2 = self.prev_keyframe.K @ pl2[:3]
 
             pp1 = (pp1[0:2] / pp1[2]) - \
-                self.cur_keyframe.keypoints_descriptors()[0][m.trainIdx].pt
+                self.cur_keyframe.get_keypoints_descriptors()[0][m.trainIdx].pt
             pp2 = (pp2[0:2] / pp2[2]) - \
-                self.prev_keyframe.keypoints_descriptors()[0][m.queryIdx].pt
+                self.prev_keyframe.get_keypoints_descriptors()[
+                0][m.queryIdx].pt
 
             pp1 = np.sum(pp1**2)
             pp2 = np.sum(pp2**2)
@@ -292,7 +288,7 @@ class StateEstimator:
             point = Point(
                 np.array(point_4d)[:3],
                 self.cur_keyframe.matched_pts_colors[idx],
-                self.cur_keyframe.keypoints_descriptors()[1][m.trainIdx]
+                self.cur_keyframe.get_keypoints_descriptors()[1][m.trainIdx]
             )
 
             # Register observations in both keyframes

@@ -60,12 +60,64 @@ class BundleAdjustment:
 
             # Remove outlier points after optimization
             map_obj.remove_outlier_points(
-                outlier_threshold=OUTLIER_THRESHOLD_FOR_POINTS, min_observations=2)
+                outlier_threshold=OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS,
+                min_observations=OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS
+            )
 
             return True
         else:
             print("Local BA failed")
             return False
+
+    def global_bundle_adjustment(self, map_obj, max_keyframes=None):
+        """
+        Perform global bundle adjustment on all keyframes and points
+
+        Args:
+            map_obj: Map object
+            max_keyframes: Maximum number of keyframes to include (None for all)
+        """
+        keyframes = map_obj.keyframes
+        if max_keyframes and len(keyframes) > max_keyframes:
+            # Take most recent keyframes
+            keyframes = keyframes[-max_keyframes:]
+
+        points = map_obj.points
+
+        # Get all observations
+        observations = []
+        kf_id_to_idx = {kf.frame_id: i for i, kf in enumerate(keyframes)}
+        point_id_to_idx = {pt.point_id: i for i, pt in enumerate(points)}
+
+        for point in points:
+            point_idx = point_id_to_idx[point.point_id]
+            for kf_id, (keypoint_idx, pt_2d) in point.observations.items():
+                if kf_id in kf_id_to_idx:
+                    kf_idx = kf_id_to_idx[kf_id]
+                    observations.append((point_idx, kf_idx, pt_2d))
+
+        if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
+            print("Insufficient observations for global BA")
+            return False
+
+        print(
+            f"Global BA with {len(keyframes)} keyframes, {len(points)} points, {len(observations)} observations")
+
+        success = self._optimize_bundle(keyframes, points, observations)
+
+        if success:
+            # Update optimization status
+            for kf in keyframes:
+                kf.is_pose_optimized = True
+                kf.optimization_iterations += 1
+
+            # Remove outlier points after global optimization
+            map_obj.remove_outlier_points(
+                outlier_threshold=OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS,
+                min_observations=OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS
+            )
+
+            return True
 
     def _optimize_bundle(self, keyframes, points, observations):
         """
@@ -165,8 +217,6 @@ class BundleAdjustment:
         self._unpack_parameters(x, keyframes_copy, points_copy)
 
         residuals = []
-        point_errors = defaultdict(list)  # {point_idx: [errors]}
-
         for point_idx, kf_idx, observed_2d in observations:
             kf = keyframes_copy[kf_idx]
             point_3d = points_copy[point_idx].pt_3d
@@ -176,18 +226,14 @@ class BundleAdjustment:
 
             if projected_2d is None:  # Point behind camera
                 residuals.extend([10.0, 10.0])  # Large error
-                point_errors[point_idx].append(100.0)
+                points[point_idx].update_reprojection_error(10.0)
             else:
                 # Compute reprojection error
                 error = projected_2d - observed_2d
-                error_norm = np.linalg.norm(error)
+                points[point_idx].update_reprojection_error(
+                    np.linalg.norm(error)
+                )
                 residuals.extend(error)
-                point_errors[point_idx].append(error_norm)
-
-            # Update points with their average reprojection error
-        for point_idx, errors in point_errors.items():
-            avg_error = np.mean(errors)
-            points[point_idx].average_reprojection_error = avg_error
 
         return np.array(residuals)
 
@@ -219,39 +265,3 @@ class BundleAdjustment:
                      point_param_start:point_param_start+3] = True
 
         return sparsity
-
-    def global_bundle_adjustment(self, map_obj, max_keyframes=None):
-        """
-        Perform global bundle adjustment on all keyframes and points
-
-        Args:
-            map_obj: Map object
-            max_keyframes: Maximum number of keyframes to include (None for all)
-        """
-        keyframes = map_obj.keyframes
-        if max_keyframes and len(keyframes) > max_keyframes:
-            # Take most recent keyframes
-            keyframes = keyframes[-max_keyframes:]
-
-        points = map_obj.points
-
-        # Get all observations
-        observations = []
-        kf_id_to_idx = {kf.frame_id: i for i, kf in enumerate(keyframes)}
-        point_id_to_idx = {pt.point_id: i for i, pt in enumerate(points)}
-
-        for point in points:
-            point_idx = point_id_to_idx[point.point_id]
-            for kf_id, (keypoint_idx, pt_2d) in point.observations.items():
-                if kf_id in kf_id_to_idx:
-                    kf_idx = kf_id_to_idx[kf_id]
-                    observations.append((point_idx, kf_idx, pt_2d))
-
-        if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
-            print("Insufficient observations for global BA")
-            return False
-
-        print(
-            f"Global BA with {len(keyframes)} keyframes, {len(points)} points, {len(observations)} observations")
-
-        return self._optimize_bundle(keyframes, points, observations)

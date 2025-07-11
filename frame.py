@@ -4,7 +4,6 @@ import cv2 as cv
 
 
 class Frame:
-    # TODO: Create a seperate class for Keyframe that inherits from Frame
     def __init__(self, image, K):
         self.frame_id = uuid.uuid4()
         self.image = image
@@ -28,7 +27,6 @@ class Frame:
         self.keypoint_to_point_map = {}  # {keypoint_idx: point_id}
 
         # Track pose uncertainty and optimization status
-        self.pose_covariance = None
         self.is_pose_optimized = False
         self.optimization_iterations = 0
 
@@ -137,12 +135,6 @@ class Frame:
 
         return np.linalg.norm(projected - observed_2d)
 
-    def update_pose_with_covariance(self, new_pose, covariance=None):
-        """Update pose with uncertainty information"""
-        self.pose = new_pose
-        self.pose_covariance = covariance
-        self.is_pose_optimized = True
-
     def get_pose_6dof(self):
         """Get pose as 6DOF vector [rx, ry, rz, tx, ty, tz]"""
         R = self.pose[:3, :3]
@@ -189,7 +181,7 @@ class Frame:
         }
         return stats
 
-    def keypoints_descriptors(self):
+    def get_keypoints_descriptors(self):
         return self.keypoints, self.descriptors
 
     def get_gray_image(self):
