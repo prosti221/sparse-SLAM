@@ -3,8 +3,8 @@ import os
 
 # TODO: Set DEBUG flag and filters based on environment variable or config
 DEBUG = True
-# Filter out specific debug tags
-DEBUG_TAG_FILTER = ["Renderer"]
+# Filter specific debug tags
+DEBUG_TAG_FILTER = []
 
 MSG_TYPE_TO_COLOR = {
     "debug": "\x1b[90m",   # Bright Black / Gray

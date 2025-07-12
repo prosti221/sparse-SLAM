@@ -47,7 +47,7 @@ class Frame:
         self.matched_pts_prev_frame = matched_pts_prev_frame
         self.num_tracked_features = len(matches) if matches else 0
 
-        self.__set_color_values_for_matched_points()
+        self._set_color_values_for_matched_points()
 
     def add_point_observation(self, point_id, keypoint_idx, pt_2d):
         """Add observation of a 3D point in this frame"""
@@ -199,7 +199,7 @@ class Frame:
     def get_gray_image(self):
         return cv.cvtColor(self.image, cv.IMREAD_GRAYSCALE)
 
-    def __set_color_values_for_matched_points(self):
+    def _set_color_values_for_matched_points(self):
         # Sets the color values for the matched points in the current frame
         if self.matched_pts is not None:
             self.matched_pts_colors = np.array(

@@ -40,6 +40,10 @@ class Map:
         return new_points
 
     def add_keyframe(self, kf):
+        if kf.frame_id in self.keyframes_by_id:
+            error_log(
+                LOG_TAG, f"Keyframe {kf.frame_id} already exists. Skipping.")
+            return
         self.keyframes.append(kf)
         self.keyframes_by_id[kf.frame_id] = kf
 

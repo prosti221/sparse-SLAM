@@ -4,11 +4,12 @@ MAX_DEPTH = 1500.0  # Maximum depth for valid points
 MIN_BASELINE_THRESHOLD = 0.1  # Minimum baseline for matching
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10  # Max frames before new keyframe
 NEW_POINTS_THRESHOLD = 0.16  # Threshold for adding new points
-MINIMUM_TRANSLATION_THRESHOLD = 1.8  # Minimum translation for new keyframe
+MINIMUM_TRANSLATION_THRESHOLD = 0.4  # Minimum translation for new keyframe
 MINIMUM_ROTATION_THRESHOLD = 0.1  # Minimum rotation for new keyframe
 MINIMUM_PARALLAX_THRESHOLD = 0.45
 # Minimum inliers for new keyframe
 MINIMUM_NUMBER_OF_INLIERS_FOR_NEW_KEYFRAME = 20
+MINIMUM_NUMBER_OF_KEY_FRAME_CRITERIAS_MET = 2
 PNP_ITERATIONS_COUNT = 100  # Iterations for PnP RANSAC
 PNP_REPROJECTION_ERROR = 8.0  # Reprojection error for PnP RANSAC
 PNP_MINIMUM_INLIERS = 6  # Minimum inliers for PnP

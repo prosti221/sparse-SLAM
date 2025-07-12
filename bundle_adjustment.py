@@ -10,6 +10,7 @@ from logger import debug_log, info_log, error_log, warning_log
 LOG_TAG = 'BundleAdjustment'
 
 
+# TODO: Make these static methods, no need to instantiate the class.
 class BundleAdjustment:
     def __init__(self, max_iterations=50, ftol=1e-6, xtol=1e-6):
         self.max_iterations = max_iterations

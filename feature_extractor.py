@@ -26,6 +26,6 @@ class FeatureExtractor:
         features = self.detector.compute(img, kps)
 
         debug_log(
-            LOG_TAG, f"Extracted {len(features[0])}")
+            LOG_TAG, f"Extracted {len(features[0])} features from current frame")
 
         return features  # keypoints, descriptors

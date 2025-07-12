@@ -2,6 +2,7 @@ import numpy as np
 import cv2 as cv
 from scipy.spatial.transform import Rotation
 from logger import info_log
+from constants import *
 
 LOG_TAG = 'Utils'
 
@@ -111,6 +112,52 @@ def compute_translation_distance(Tcw1, Tcw2):
     return np.linalg.norm(t1 - t2)
 
 
+def compute_reprojection_error(keyframe, point, kp_idx):
+    proj = keyframe.K @ point[:3]
+    proj = proj[:2] / proj[2]
+    kp = keyframe.get_keypoints_descriptors()[0][kp_idx].pt
+    error_vec = proj - np.array(kp)
+    return np.sum(error_vec ** 2)
+
+
+def is_valid_triangulated_point(point_idx, cur_keyframe, prev_keyframe, point_4d):
+    # Normalize points
+    pts1 = normalize(cur_keyframe.matched_pts_prev_frame,
+                     prev_keyframe.Kinv)
+    pts2 = normalize(cur_keyframe.matched_pts,
+                     cur_keyframe.Kinv)
+    pt1 = pts1[point_idx]
+    pt2 = pts2[point_idx]
+    # Get poses in world-to-camera coordinates
+    world_to_cam_cur = np.linalg.inv(cur_keyframe.pose)
+    world_to_cam_prev = np.linalg.inv(prev_keyframe.pose)
+
+    match = cur_keyframe.matches[point_idx]
+
+    # Check parallax
+    parallax = compute_parallax_angle(
+        pt1, pt2, world_to_cam_prev, world_to_cam_cur)
+    if parallax < np.radians(MINIMUM_PARALLAX_THRESHOLD):
+        return False
+
+    # Check depth in both cameras
+    pl1 = world_to_cam_cur @ point_4d
+    pl2 = world_to_cam_prev @ point_4d
+    if not (MIN_DEPTH < pl1[2] < MAX_DEPTH and MIN_DEPTH < pl2[2] < MAX_DEPTH):
+        return False
+
+    # Check reprojection error
+    reproj_error_cur = compute_reprojection_error(
+        cur_keyframe, pl1, match.trainIdx)
+    reproj_error_prev = compute_reprojection_error(
+        prev_keyframe, pl2, match.queryIdx)
+
+    if reproj_error_cur > MAX_SQUARED_REPROJECTION_ERROR or reproj_error_prev > MAX_SQUARED_REPROJECTION_ERROR:
+        return False
+
+    return True
+
+
 def compute_rotation_angle(Rcw1, Rcw2):
     R_rel = Rcw1 @ Rcw2.T
     angle_axis = Rotation.from_matrix(R_rel).as_rotvec()
@@ -118,16 +165,6 @@ def compute_rotation_angle(Rcw1, Rcw2):
 
 
 def compute_parallax_angle(pt1, pt2, pose1, pose2):
-    """
-    Compute parallax angle between two camera views of a point
-    Args:
-        pt1: 2D point in first camera's normalized coordinates
-        pt2: 2D point in second camera's normalized coordinates
-        pose1: First camera pose (world to camera)
-        pose2: Second camera pose (world to camera)
-    Returns:
-        Angle in radians between viewing rays
-    """
     # Convert to bearing vectors
     bearing1 = np.array([pt1[0], pt1[1], 1.0])
     bearing1 /= np.linalg.norm(bearing1)
@@ -144,5 +181,28 @@ def compute_parallax_angle(pt1, pt2, pose1, pose2):
 
     # Compute angle between rays
     cos_angle = np.dot(bearing1_world, bearing2_world)
-    cos_angle = np.clip(cos_angle, -1.0, 1.0)  # Avoid numerical issues
+    cos_angle = np.clip(cos_angle, -1.0, 1.0)
     return np.arccos(cos_angle)
+
+
+def compute_linear_dlt(prev_keyframe, cur_keyframe):
+    ret = np.zeros((cur_keyframe.matched_pts.shape[0], 4))
+
+    # Convert camera-to-world poses to world-to-camera for triangulation
+    pose1 = np.linalg.inv(cur_keyframe.pose)  # world-to-camera
+    pose2 = np.linalg.inv(prev_keyframe.pose)  # world-to-camera
+
+    pts1 = normalize(cur_keyframe.matched_pts, cur_keyframe.Kinv)
+    pts2 = normalize(cur_keyframe.matched_pts_prev_frame, prev_keyframe.Kinv)
+
+    for i, p in enumerate(zip(pts1, pts2)):
+        A = np.zeros((4, 4))
+        A[0] = p[0][0] * pose1[2] - pose1[0]
+        A[1] = p[0][1] * pose1[2] - pose1[1]
+        A[2] = p[1][0] * pose2[2] - pose2[0]
+        A[3] = p[1][1] * pose2[2] - pose2[1]
+
+        _, _, vt = np.linalg.svd(A)
+        ret[i] = vt[3]
+
+    return ret
