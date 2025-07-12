@@ -11,7 +11,7 @@ from logger import debug_log, info_log, error_log
 LOG_TAG = 'Main'
 
 if __name__ == '__main__':
-    VIDEO = 'road'
+    VIDEO = 'greece'
     config = Parser('config/config.yaml')
 
     cap, K = load_video(VIDEO, config)
@@ -52,7 +52,7 @@ if __name__ == '__main__':
         # Render the point cloud and camera poses if a new keyframe is detected
         if keyframe_count != len(global_map.keyframes):
             debug_log(
-                LOG_TAG, f"New keyframe detected: {len(global_map.keyframes)} keyframes")
+                LOG_TAG, f"Updating visualizer with {len(global_map.points)} points and {len(global_map.keyframes)} keyframes ")
             # Render point cloud and camera poses
             renderer.update_points(global_map.points)
             renderer.update_poses(global_map.keyframes)

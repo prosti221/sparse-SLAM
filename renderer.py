@@ -41,7 +41,7 @@ class Renderer:
             self.camera_parameters, allow_arbitrary=True)
 
         # Register spacebar (ASCII 32) to toggle pause
-        self.vis.register_key_callback(32, self.__toggle_pause)
+        self.vis.register_key_callback(32, self._toggle_pause)
 
     def stop(self):
         info_log(LOG_TAG, "Stopping Open3D visualizer")
@@ -75,30 +75,30 @@ class Renderer:
     def update_poses(self, keyframes):
         if not self.camera_initialized:
             first_kf = keyframes[0]
-            self.__initialize_camera(first_kf.get_pose().copy())
+            self._initialize_camera(first_kf.get_pose().copy())
 
         for kf in keyframes:
             if kf.frame_id not in self.poses:
                 debug_log(LOG_TAG, f"Adding new pose for frame {kf.frame_id}")
-                new_pose_geometry = self.__construct_pose_geometry(kf)
+                new_pose_geometry = self._construct_pose_geometry(kf)
                 self.poses[kf.frame_id] = [
                     new_pose_geometry, kf.optimization_iterations
                 ]
                 self.vis.add_geometry(new_pose_geometry, False)
             elif kf.is_pose_optimized and kf.optimization_iterations > self.poses[kf.frame_id][1]:
                 debug_log(LOG_TAG, f"Updating pose for frame {kf.frame_id}")
-                self.__update_pose_geometry(kf)
+                self._update_pose_geometry(kf)
             else:
                 continue
         self.vis.poll_events()
         self.vis.update_renderer()
 
-    def __toggle_pause(self, vis):
+    def _toggle_pause(self, vis):
         self.paused = not self.paused
         info_log(LOG_TAG, "Paused" if self.paused else "Resumed")
         return False
 
-    def __initialize_camera(self, pose):
+    def _initialize_camera(self, pose):
         debug_log(LOG_TAG, "Initializing camera parameters")
         R = pose[:3, :3]
         pose[:3, 3] += 20 * R[:, 2]
@@ -108,10 +108,10 @@ class Renderer:
         self.ctrl.set_constant_z_near(10)
         self.camera_initialized = True
 
-    def __construct_pose_geometry(self, keyframe):
+    def _construct_pose_geometry(self, keyframe):
         pose = keyframe.get_pose()
         R, t = pose[:3, :3], pose[:3, 3]
-        points, lines = self.__draw_camera_object(R, t)
+        points, lines = self._draw_camera_object(R, t)
 
         new_cam = o3d.geometry.LineSet()
         new_cam.points = points
@@ -124,10 +124,10 @@ class Renderer:
 
         return new_cam
 
-    def __update_pose_geometry(self, keyframe):
+    def _update_pose_geometry(self, keyframe):
         pose = keyframe.get_pose()
         R, t = pose[:3, :3], pose[:3, 3]
-        points, lines = self.__draw_camera_object(R, t)
+        points, lines = self._draw_camera_object(R, t)
 
         self.poses[keyframe.frame_id][0].points = points
         self.poses[keyframe.frame_id][0].lines = lines
@@ -135,7 +135,7 @@ class Renderer:
 
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
 
-    def __draw_camera_object(self, R, t, size=0.8):
+    def _draw_camera_object(self, R, t, size=0.8):
         _w, _h, _cx, _cy, _f = self.width, self.height, self.K[0,
                                                                2], self.K[1, 2], self.K[0, 0]
         f = 1
