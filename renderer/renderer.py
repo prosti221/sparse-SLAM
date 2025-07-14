@@ -108,11 +108,11 @@ class Renderer:
         self.ctrl.convert_from_pinhole_camera_parameters(
             self.camera_parameters, allow_arbitrary=True)
 
-        center = np.array([0.0, 0.0, 0.0])  # Scene center
-        self.ctrl.set_lookat(center.tolist())
-        self.ctrl.set_zoom(1)
-        self.ctrl.set_constant_z_near(0.01)
-        self.ctrl.set_constant_z_far(1500.0)
+        # center = np.array([0.0, 0.0, 0.0])  # Scene center
+        # self.ctrl.set_lookat(center.tolist())
+        # self.ctrl.set_zoom(1)
+        # self.ctrl.set_constant_z_near(0.01)
+        # self.ctrl.set_constant_z_far(1500.0)
         self.camera_initialized = True
 
     def _construct_pose_geometry(self, keyframe):

@@ -16,7 +16,7 @@ if __name__ == '__main__':
     cap, K = load_video(VIDEO, config)
 
     state_estimator = StateEstimator(
-        feature_extraction_method=ORB_EXTRACTOR_NAME)
+        feature_extraction_method=DNN_EXTRACTOR_NAME)
     global_map = Map()
     renderer = Renderer(K)
 

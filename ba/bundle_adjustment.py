@@ -1,23 +1,26 @@
-from collections import defaultdict
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
 import time
 from core.point import Point
+from core.map import Map
+from core.frame import Frame
 from utils.constants import *
 from utils.logger import debug_log, info_log, error_log, warning_log
+from uuid import UUID
+from typing import Optional, List, Tuple, Dict
 
 LOG_TAG = 'BundleAdjustment'
 
 
 # TODO: Make these static methods, no need to instantiate the class.
 class BundleAdjustment:
-    def __init__(self, max_iterations=50, ftol=1e-6, xtol=1e-6):
+    def __init__(self, max_iterations: int = 50, ftol: float = 1e-6, xtol: float = 1e-6):
         self.max_iterations = max_iterations
         self.ftol = ftol
         self.xtol = xtol
 
-    def local_bundle_adjustment(self, map_obj, reference_frame_id, window_size=5):
+    def local_bundle_adjustment(self, map_obj: Map, reference_frame_id: UUID, window_size: int = 5) -> bool:
         """
         Perform local bundle adjustment around a reference keyframe
 
@@ -63,7 +66,7 @@ class BundleAdjustment:
             for kf in local_keyframes:
                 kf.is_pose_optimized = True
                 kf.optimization_iterations += 1
-                kf.compute_tracking_quality(map_obj)
+                kf.compute_tracking_quality()
 
             # Remove outlier points after optimization
             map_obj.remove_outlier_points(
@@ -76,7 +79,7 @@ class BundleAdjustment:
             warning_log(LOG_TAG, "Local BA failed")
             return False
 
-    def global_bundle_adjustment(self, map_obj, max_keyframes=None):
+    def global_bundle_adjustment(self, map_obj: Map, max_keyframes: Optional[int] = None) -> bool:
         """
         Perform global bundle adjustment on all keyframes and points
 
@@ -118,7 +121,7 @@ class BundleAdjustment:
             for kf in keyframes:
                 kf.is_pose_optimized = True
                 kf.optimization_iterations += 1
-                kf.compute_tracking_quality(map_obj)
+                kf.compute_tracking_quality()
 
             # Remove outlier points after global optimization
             map_obj.remove_outlier_points(
@@ -128,7 +131,12 @@ class BundleAdjustment:
 
             return True
 
-    def _optimize_bundle(self, keyframes, points, observations):
+    def _optimize_bundle(
+        self,
+        keyframes: List[Frame],
+        points: List[Point],
+        observations: List[Tuple[int, int, np.ndarray]]
+    ) -> bool:
         """
         Core bundle adjustment optimization
         """
@@ -177,7 +185,7 @@ class BundleAdjustment:
             error_log(LOG_TAG, f"BA optimization error: {e}")
             return False
 
-    def _pack_parameters(self, keyframes, points):
+    def _pack_parameters(self, keyframes: List[Frame], points: List[Point]) -> np.ndarray:
         """
         Pack keyframe poses and 3D points into optimization vector
         """
@@ -196,7 +204,7 @@ class BundleAdjustment:
 
         return np.array(params)
 
-    def _unpack_parameters(self, x, keyframes, points):
+    def _unpack_parameters(self, x: List[np.ndarray], keyframes: List[Frame], points: List[Point]):
         """
         Unpack optimization vector back to keyframe poses and 3D points
         """
@@ -215,7 +223,13 @@ class BundleAdjustment:
             point.pt_3d = x[idx:idx+3]
             idx += 3
 
-    def _compute_residuals(self, x, keyframes, points, observations):
+    def _compute_residuals(
+        self,
+        x: List[np.ndarray],
+        keyframes: List[Frame],
+        points: List[Point],
+        observations: List[Tuple[int, int, np.ndarray]]
+    ) -> np.ndarray:
         """
         Compute reprojection error residuals
         """
@@ -247,7 +261,7 @@ class BundleAdjustment:
 
         return np.array(residuals)
 
-    def _get_jacobian_sparsity(self, keyframes, points, observations):
+    def _get_jacobian_sparsity(self, keyframes: List[Frame], points: List[Point], observations: List[Tuple[int, int, np.ndarray]]) -> lil_matrix:
         """
         Define Jacobian sparsity pattern for efficient optimization
         """

@@ -23,3 +23,9 @@ videos:
     fy: 456.134
     cx: 379.999
     cy: 255.238
+  calibrated2:
+    path: ./videos/calibrated/calibrated2.mp4
+    fx: 481.20
+    fy: 480.00
+    cx: 319.50
+    cy: 239.50

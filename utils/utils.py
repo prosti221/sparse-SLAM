@@ -150,8 +150,6 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
 
 
 def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
-    """Check if the parallax angle is sufficient for good triangulation"""
-
     # Get camera centers
     cur_center = cur_frame.get_camera_center()
     prev_center = prev_frame.get_camera_center()
@@ -174,8 +172,6 @@ def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
 
 
 def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_error):
-    """Check reprojection error for both frames"""
-
     # Get matched 2D points
     match = cur_frame.matches[point_idx]
     cur_2d = cur_frame.keypoints[match.trainIdx].pt
@@ -195,21 +191,7 @@ def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_err
     return cur_error <= max_error and prev_error <= max_error
 
 
-######## TESTING NEW TRIANGULATION  ########
-
-
 def compute_triangulation(frame1, frame2, use_optimization=True):
-    """
-    Compute robust triangulation using multiple methods
-
-    Args:
-        frame1: First frame with matches
-        frame2: Second frame with matches
-        use_optimization: Whether to use iterative optimization
-
-    Returns:
-        np.array: Triangulated 3D points in homogeneous coordinates
-    """
     if not frame2.matches or len(frame2.matches) == 0:
         warning_log(LOG_TAG, "No matches found for triangulation")
         return np.array([])
@@ -264,19 +246,6 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
 
 
 def optimize_triangulation(pt1, pt2, P1, P2, initial_guess, max_iterations=10):
-    """
-    Optimize triangulation using iterative least squares
-
-    Args:
-        pt1, pt2: Normalized 2D points
-        P1, P2: Projection matrices
-        initial_guess: Initial 3D point estimate
-        max_iterations: Maximum optimization iterations
-
-    Returns:
-        np.array: Optimized 3D point or None if failed
-    """
-
     def residual_function(point_3d):
         # Project 3D point to both cameras
         point_homo = np.append(point_3d, 1.0)
@@ -320,8 +289,6 @@ def optimize_triangulation(pt1, pt2, P1, P2, initial_guess, max_iterations=10):
         warning_log(LOG_TAG, f"Optimization failed: {e}")
         return None
 
-
-##### Testting keyframe selection #####
 
 def compute_baseline_distance(frame1, frame2):
     """Compute baseline distance between two frames"""
@@ -419,7 +386,7 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe, is_recovery=False)
     new_points_ok = new_points_ratio >= MINIMUM_NUMBER_OF_NEW_POINTS
 
     # 4. Check tracking quality
-    tracking_quality = cur_frame.compute_tracking_quality(map_obj)
+    tracking_quality = cur_frame.compute_tracking_quality()
     quality_ok = tracking_quality >= MINIMUM_KEYFRAME_QUALITY_THRESHOLD
 
     # Decision logic

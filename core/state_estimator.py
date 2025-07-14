@@ -1,31 +1,36 @@
-"""
-The state estimator will only take in cur features, and use these to compute all of our states.
-"""
-from collections import defaultdict
 import numpy as np
 import cv2 as cv
-from utils.utils import *
-from features.matcher import *
-from core.point import Point
 from scipy.spatial import cKDTree
-from ba.bundle_adjustment import BundleAdjustment
+
 from utils.constants import *
-from utils.logger import *
+from utils.logger import debug_log, warning_log, error_log
+from utils.utils import (
+    compute_triangulation,
+    is_valid_triangulated_point,
+    should_insert_keyframe,
+)
 from features.feature_extractor import FeatureExtractor
+from features.matcher import match_features_between_frames
 from core.frame import Frame
+from core.point import Point
+from core.map import Map
+from ba.bundle_adjustment import BundleAdjustment
+
+from typing import List, Tuple
+from collections import defaultdict
 
 LOG_TAG = 'StateEstimator'
 
 
 class StateEstimator:
-    def __init__(self, feature_extraction_method=ORB_EXTRACTOR_NAME):
+    def __init__(self, feature_extraction_method: str = ORB_EXTRACTOR_NAME):
         self.use_dnn = feature_extraction_method == DNN_EXTRACTOR_NAME
         self.step = 0
-        self.cur_frame = None
-        self.prev_frame = None
+        self.cur_frame: Frame = None
+        self.prev_frame: Frame = None
 
-        self.cur_keyframe = None
-        self.prev_keyframe = None
+        self.cur_keyframe: Frame = None
+        self.prev_keyframe: Frame = None
 
         self.velocity = np.eye(4)
         self.iterations_since_last_keyframe = 0
@@ -33,7 +38,7 @@ class StateEstimator:
         self.bundle_adjustment = BundleAdjustment()
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
 
-    def update(self, img, K, map):
+    def update(self, img: np.ndarray, K: np.ndarray, map: Map):
         # Construct the new Frame object with the current image, features and camera matrix
         gray_img = cv.cvtColor(img, cv.IMREAD_GRAYSCALE)
         new_kps, new_descs = self.feature_extractor.extract(gray_img)
@@ -79,7 +84,7 @@ class StateEstimator:
 
         self.step += 1
 
-    def _initialize(self, map):
+    def _initialize(self, map: Map):
         E = match_features_between_frames(
             self.prev_frame, self.cur_frame, is_binary_desc=(not self.use_dnn))
         self.cur_frame.pose = self._predict_pose_with_optical_flow()
@@ -91,19 +96,21 @@ class StateEstimator:
 
         self._on_keyframe_inserted(map)
 
-    def _on_keyframe_inserted(self, map):
+    def _on_keyframe_inserted(self, map: Map):
         triangulated_points = self._triangulate()
         map.add_points(triangulated_points)
         if (map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
+            return
             self.bundle_adjustment.global_bundle_adjustment(map)
         else:
+            return
             self.bundle_adjustment.local_bundle_adjustment(
                 map,
                 self.cur_keyframe.frame_id,
                 window_size=LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE
             )
 
-    def _handle_keyframe_insertion(self, map):
+    def _handle_keyframe_insertion(self, map: Map):
         should_insert, result = should_insert_keyframe(
             map, self.cur_frame, self.cur_keyframe)
 
@@ -121,9 +128,8 @@ class StateEstimator:
         self.iterations_since_last_keyframe = 0
         self._on_keyframe_inserted(map)
 
-    def _project_visible_map_points(self, map):
+    def _project_visible_map_points(self, map: Map) -> List[Tuple[Point, Tuple[float, float]]]:
         projected_points = []
-
         for mp in map.points:
             pt_3d = mp.pt_3d
             projected_point = self.cur_frame.project_point(pt_3d)
@@ -134,7 +140,7 @@ class StateEstimator:
 
         return projected_points
 
-    def _match_projected_points(self, projected_points, dist_thresh=5):
+    def _match_projected_points(self, projected_points, dist_thresh=5) -> Tuple[np.ndarray, np.ndarray]:
         matched_3d = []
         matched_2d = []
         keypoints, descriptors = self.cur_frame.get_keypoints_descriptors()
@@ -172,11 +178,11 @@ class StateEstimator:
                 pt_2d = kp_coords[best_idx]
                 mp.add_observation(self.cur_frame.frame_id, best_idx, pt_2d)
                 self.cur_frame.add_point_observation(
-                    mp.point_id, best_idx, pt_2d)
+                    mp, best_idx, pt_2d)
 
         return np.array(matched_3d), np.array(matched_2d)
 
-    def _estimate_refined_pose(self, matched_3d, matched_2d):
+    def _estimate_refined_pose(self, matched_3d: np.ndarray, matched_2d: np.ndarray) -> int:
         success, R, t, inliers = cv.solvePnPRansac(
             matched_3d.astype(np.float32),
             matched_2d.astype(np.float32),
@@ -200,7 +206,7 @@ class StateEstimator:
             warning_log(LOG_TAG, "PnP failed, keeping predicted pose.")
             return 0
 
-    def _triangulate(self):
+    def _triangulate(self) -> List[Point]:
         if not (self.cur_keyframe and self.prev_keyframe):
             warning_log(LOG_TAG, "Not enough keyframes to triangulate points.")
             return []
@@ -241,7 +247,7 @@ class StateEstimator:
         )
         return points
 
-    def _create_point_and_register_observations(self, point_4d, point_idx):
+    def _create_point_and_register_observations(self, point_4d: np.ndarray, point_idx: int) -> Point:
         match = self.cur_keyframe.matches[point_idx]
         point = Point(
             np.array(point_4d)[:3],
@@ -254,7 +260,7 @@ class StateEstimator:
         point.add_observation(self.cur_keyframe.frame_id,
                               kp_idx_cur, pt_2d_cur)
         self.cur_keyframe.add_point_observation(
-            point.point_id, kp_idx_cur, pt_2d_cur)
+            point, kp_idx_cur, pt_2d_cur)
 
         # Previous keyframe observation
         kp_idx_prev = match.queryIdx
@@ -262,11 +268,11 @@ class StateEstimator:
         point.add_observation(self.prev_keyframe.frame_id,
                               kp_idx_prev, pt_2d_prev)
         self.prev_keyframe.add_point_observation(
-            point.point_id, kp_idx_prev, pt_2d_prev)
+            point, kp_idx_prev, pt_2d_prev)
 
         return point
 
-    def _predict_pose_with_optical_flow(self):
+    def _predict_pose_with_optical_flow(self) -> np.ndarray:
         if self.prev_frame is None or self.cur_frame is None:
             debug_log(LOG_TAG, "Missing frames for optical flow prediction.")
             return np.eye(4)

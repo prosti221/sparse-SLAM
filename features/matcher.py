@@ -21,7 +21,7 @@ def match_features(prev_frame, cur_frame, is_binary_desc=True):
 
     good_matches = []
     for m, n in matches:
-        if m.distance < 0.75 * n.distance:
+        if m.distance < 0.60 * n.distance:
             good_matches.append(m)
 
     # Filter using RANSAC
