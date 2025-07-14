@@ -22,7 +22,6 @@ class Parser:
         if prop not in self.config['videos'][key]:
             warning_log(
                 LOG_TAG, f"Prop '{prop}' not found for video '{key}'. Using default value: {default}")
-            print(f"Prop '{prop}' not found in config. Using default value.")
             return default
 
         return self.config['videos'][key][prop]

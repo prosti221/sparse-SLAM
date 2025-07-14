@@ -19,19 +19,7 @@ videos:
     fx: 210
   calibrated1:
     path: ./videos/calibrated/calibrated1.mp4
-    fx: 525.0
-    fy: 525.0
-    cx: 319.5
-    cy: 239.5
-  calibrated2:
-    path: ./videos/calibrated/calibrated2.mp4
-    fx: 525.0
-    fy: 525.0
-    cx: 319.5
-    cy: 239.5
-  calibrated3:
-    path: ./videos/calibrated/calibrated3.mp4
-    fx: 525.0
-    fy: 525.0
-    cx: 319.5
-    cy: 239.5
+    fx: 457.587
+    fy: 456.134
+    cx: 379.999
+    cy: 255.238
