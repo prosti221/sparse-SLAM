@@ -2,6 +2,7 @@ import uuid
 import numpy as np
 import cv2 as cv
 from logger import debug_log
+from constants import MAX_SQUARED_REPROJECTION_ERROR
 
 LOG_TAG = 'Frame'
 
@@ -50,28 +51,47 @@ class Frame:
         self._set_color_values_for_matched_points()
 
     def add_point_observation(self, point_id, keypoint_idx, pt_2d):
-        """Add observation of a 3D point in this frame"""
         self.observed_points[point_id] = (keypoint_idx, pt_2d)
         self.keypoint_to_point_map[keypoint_idx] = point_id
 
     def remove_point_observation(self, point_id):
-        """Remove observation of a 3D point from this frame"""
         if point_id in self.observed_points:
             keypoint_idx, _ = self.observed_points[point_id]
             del self.observed_points[point_id]
             if keypoint_idx in self.keypoint_to_point_map:
                 del self.keypoint_to_point_map[keypoint_idx]
 
+    def get_camera_center(self):
+        # Camera center is -R^T * t
+        R = self.pose[:3, :3]
+        t = self.pose[:3, 3]
+        return -R.T @ t
+
+    def world_to_camera(self, point_3d):
+        """Transform 3D point from world to camera coordinates"""
+        # Convert to homogeneous coordinates
+        point_homo = np.append(point_3d, 1.0)
+
+        # Transform to camera coordinates
+        # Camera coordinates = R * (world_point - camera_center)
+        world_to_cam = np.linalg.inv(self.pose)
+        cam_coords = world_to_cam @ point_homo
+
+        return cam_coords[:3]
+
+    def get_projection_matrix(self):
+        """Get 3x4 projection matrix"""
+        # P = K * [R|t] where [R|t] is world-to-camera transformation
+        world_to_cam = np.linalg.inv(self.pose)
+        return self.K @ world_to_cam[:3, :]
+
     def get_observed_points(self):
-        """Get list of 3D point IDs observed in this frame"""
         return list(self.observed_points.keys())
 
     def get_point_observation(self, point_id):
-        """Get the 2D observation of a specific 3D point"""
         return self.observed_points.get(point_id, None)
 
     def get_keypoint_point_id(self, keypoint_idx):
-        """Get the 3D point ID associated with a keypoint"""
         return self.keypoint_to_point_map.get(keypoint_idx, None)
 
     def project_point(self, point_3d):
@@ -84,12 +104,8 @@ class Frame:
         Returns:
             2D point in image coordinates, or None if behind camera
         """
-        # Convert camera-to-world pose to world-to-camera
-        world_to_cam = np.linalg.inv(self.pose)
-        R, t = world_to_cam[:3, :3], world_to_cam[:3, 3]
-
         # Transform to camera coordinates
-        pt_cam = R @ point_3d + t
+        pt_cam = self.world_to_camera(point_3d)
 
         if pt_cam[2] <= 0:  # Behind camera
             return None
@@ -124,16 +140,6 @@ class Frame:
                 margin <= v < H - margin)
 
     def compute_reprojection_error(self, point_3d, observed_2d):
-        """
-        Compute reprojection error for a 3D point
-
-        Args:
-            point_3d: 3D point in world coordinates
-            observed_2d: Observed 2D point in image
-
-        Returns:
-            Reprojection error in pixels
-        """
         projected = self.project_point(point_3d)
         if projected is None:
             debug_log(
@@ -167,21 +173,33 @@ class Frame:
     def get_pose(self):
         return self.pose.copy()
 
-    def compute_tracking_quality(self):
-        """Compute tracking quality metrics"""
-        if not self.matches:
-            self.tracking_quality = 0.0
-            debug_log(
-                LOG_TAG, f"No matches found for frame {self.frame_id}, setting tracking quality to 0.0")
-            return
+    def compute_tracking_quality(self, map_obj):
+        if len(self.keypoints) == 0:
+            return 0.0
 
-        # Simple quality metric based on number of matches
-        # Could be enhanced with reprojection errors, feature distribution, etc.
-        max_features = 500  # Expected maximum number of features
-        self.tracking_quality = min(1.0, len(self.matches) / max_features)
+        # Count visible map points
+        visible_count = 0
+        high_quality_count = 0
+
+        for point in map_obj.points:
+            if self.frame_id in point.observations:
+                visible_count += 1
+                # Check if point has good quality (multiple observations, low reprojection error)
+                if point.num_observations >= 3 and point.average_reprojection_error < 1.0:
+                    high_quality_count += 1
+
+        if visible_count == 0:
+            return 0.0
+
+        # Quality score combines visibility ratio and point quality
+        visibility_ratio = visible_count / len(self.keypoints)
+        quality_ratio = high_quality_count / visible_count if visible_count > 0 else 0.0
+
+        self.tracking_quality = 0.7 * visibility_ratio + 0.3 * quality_ratio
+
+        return self.tracking_quality
 
     def get_keyframe_statistics(self):
-        """Get statistics about this keyframe"""
         stats = {
             'frame_id': self.frame_id,
             'num_keypoints': len(self.keypoints) if self.keypoints else 0,

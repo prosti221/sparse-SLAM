@@ -63,6 +63,7 @@ class BundleAdjustment:
             for kf in local_keyframes:
                 kf.is_pose_optimized = True
                 kf.optimization_iterations += 1
+                kf.compute_tracking_quality(map_obj)
 
             # Remove outlier points after optimization
             map_obj.remove_outlier_points(
@@ -117,6 +118,7 @@ class BundleAdjustment:
             for kf in keyframes:
                 kf.is_pose_optimized = True
                 kf.optimization_iterations += 1
+                kf.compute_tracking_quality(map_obj)
 
             # Remove outlier points after global optimization
             map_obj.remove_outlier_points(

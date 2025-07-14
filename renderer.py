@@ -2,6 +2,8 @@ import open3d as o3d
 import numpy as np
 from utils import pt_obj_to_array
 from logger import debug_log, info_log, error_log, warning_log
+from constants import TRACKING_QUALITY_GRADIENT
+import cv2 as cv
 
 LOG_TAG = 'Renderer'
 
@@ -105,7 +107,12 @@ class Renderer:
         self.camera_parameters.extrinsic = pose
         self.ctrl.convert_from_pinhole_camera_parameters(
             self.camera_parameters, allow_arbitrary=True)
-        self.ctrl.set_constant_z_near(10)
+
+        center = np.array([0.0, 0.0, 0.0])  # Scene center
+        self.ctrl.set_lookat(center.tolist())
+        self.ctrl.set_zoom(1)
+        self.ctrl.set_constant_z_near(0.01)
+        self.ctrl.set_constant_z_far(1500.0)
         self.camera_initialized = True
 
     def _construct_pose_geometry(self, keyframe):
@@ -118,8 +125,9 @@ class Renderer:
         new_cam.lines = lines
 
         # Set color to green
-        colors = np.zeros((len(lines), 3))
-        colors[:, 1] = 1
+        quality_color = self._get_tracking_quality_color(
+            keyframe.tracking_quality)
+        colors = np.tile(quality_color, (len(lines), 1))
         new_cam.colors = o3d.utility.Vector3dVector(colors)
 
         return new_cam
@@ -131,6 +139,11 @@ class Renderer:
 
         self.poses[keyframe.frame_id][0].points = points
         self.poses[keyframe.frame_id][0].lines = lines
+        quality_color = self._get_tracking_quality_color(
+            keyframe.tracking_quality)
+        colors = np.tile(quality_color, (len(lines), 1))
+        self.poses[keyframe.frame_id][0].colors = o3d.utility.Vector3dVector(
+            colors)
         self.poses[keyframe.frame_id][1] = keyframe.optimization_iterations
 
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
@@ -166,3 +179,17 @@ class Renderer:
         lines = o3d.utility.Vector2iVector(lines)
 
         return points, lines
+
+    def _get_tracking_quality_color(self, tracking_quality):
+        quality = np.clip(tracking_quality, 0.0, 1.0)
+
+        # Hue from red (0) to green (60) in OpenCV scale (0–179)
+        # green is at 60 (approx 120 deg standard HSV)
+        hue = int((60 * quality))
+        saturation = 230  # in [0, 255]
+        value = 230       # in [0, 255]
+
+        hsv_pixel = np.uint8([[[hue, saturation, value]]])  # shape (1, 1, 3)
+        rgb_pixel = cv.cvtColor(hsv_pixel, cv.COLOR_HSV2RGB)[0][0]
+
+        return [float(c) / 255.0 for c in rgb_pixel]
