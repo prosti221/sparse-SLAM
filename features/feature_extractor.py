@@ -1,8 +1,9 @@
 import cv2 as cv
 import numpy as np
-from super_point_extractor import SuperPointFrontend  # From the new implementation
-from constants import *
-from logger import debug_log
+# From the new implementation
+from features.super_point_extractor import SuperPointFrontend
+from utils.constants import *
+from utils.logger import debug_log
 
 LOG_TAG = 'FeatureExtractor'
 

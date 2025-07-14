@@ -1,8 +1,8 @@
 import uuid
 import numpy as np
 import cv2 as cv
-from logger import debug_log
-from constants import MAX_SQUARED_REPROJECTION_ERROR
+from utils.logger import debug_log
+from utils.constants import MAX_SQUARED_REPROJECTION_ERROR
 
 LOG_TAG = 'Frame'
 

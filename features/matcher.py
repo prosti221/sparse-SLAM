@@ -4,9 +4,9 @@ Takes a set of extracted features from two frames and uses a matching algorithm 
 """
 import cv2 as cv
 import numpy as np
-from utils import *
-from constants import *
-from logger import debug_log, error_log, warning_log
+from utils.utils import *
+from utils.constants import *
+from utils.logger import debug_log, error_log, warning_log
 
 LOG_TAG = 'Matcher'
 

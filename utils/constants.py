@@ -9,20 +9,20 @@ MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 50
 MINIMUM_BASELINE_THRESHOLD = 0.5  # Minimum translation for new keyframe
 # Minimum scene coverage for new keyframe
 MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
-MINIMUM_KEYFRAME_PARALLAX_THRESHOLD = 0.45  # Minimum parallax for new keyframe
+MINIMUM_KEYFRAME_PARALLAX_THRESHOLD = 1  # Minimum parallax for new keyframe
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.3  # Minimum quality for new keyframe
 # Minimum number of new points for keyframe selection
-MINIMUM_NUMBER_OF_NEW_POINTS = 0.2
+MINIMUM_NUMBER_OF_NEW_POINTS = 0.4
 
 # Triangulation constants
 MIN_DEPTH = 0.1  # Minimum depth for valid points
 MAX_DEPTH = 1500.0  # Maximum depth for valid points
 MAX_SQUARED_REPROJECTION_ERROR = 4.0
-MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = 0.35
+MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = 0.2
 
 # Window size for local bundle adjustment
 LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE = 10
-GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 20  # Interval for global BA
+GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 10  # Interval for global BA
 
 # Bidirectional validation codes
 TRIANGULATION_VALIDATION_CODE = {
@@ -43,7 +43,7 @@ ORB_EXTRACTOR_NAME = 'ORB'
 DNN_EXTRACTOR_NAME = 'DNN'
 AKAZE_EXTRACTOR_NAME = 'A-KAZE'
 
-ORB_NUMBER_OF_POINTS = 4000
+ORB_NUMBER_OF_POINTS = 2500
 ORB_QUALITY_LEVEL = 0.01  # Quality level for feature detection
 ORB_MIN_DISTANCE = 7  # Minimum distance between features
 ORB_KEYPOINT_SIZE = 20  # Size of keypoints for feature extraction
@@ -68,7 +68,7 @@ OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS = 2
 LEAST_SQUARES_F_SCALE = 1.0  # Scale for least squares optimization
 
 MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT = 50
-OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS = 2.0
+OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS = 1.5
 OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS = 3
 
 # --- Renderer constants

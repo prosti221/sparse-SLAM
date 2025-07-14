@@ -1,7 +1,7 @@
 from collections import defaultdict
 import numpy as np
-from logger import debug_log, error_log
-from constants import TRACKING_QUALITY_WINDOW_SIZE, TRACKING_QUALITY_THRESHOLD
+from utils.logger import debug_log, error_log
+from utils.constants import TRACKING_QUALITY_WINDOW_SIZE, TRACKING_QUALITY_THRESHOLD
 
 LOG_TAG = 'Map'
 

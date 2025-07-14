@@ -4,15 +4,15 @@ The state estimator will only take in cur features, and use these to compute all
 from collections import defaultdict
 import numpy as np
 import cv2 as cv
-from utils import *
-from matcher import *
-from point import Point
+from utils.utils import *
+from features.matcher import *
+from core.point import Point
 from scipy.spatial import cKDTree
-from bundle_adjustment import BundleAdjustment
-from constants import *
-from logger import *
-from feature_extractor import FeatureExtractor
-from frame import Frame
+from ba.bundle_adjustment import BundleAdjustment
+from utils.constants import *
+from utils.logger import *
+from features.feature_extractor import FeatureExtractor
+from core.frame import Frame
 
 LOG_TAG = 'StateEstimator'
 
@@ -20,6 +20,7 @@ LOG_TAG = 'StateEstimator'
 class StateEstimator:
     def __init__(self, feature_extraction_method=ORB_EXTRACTOR_NAME):
         self.use_dnn = feature_extraction_method == DNN_EXTRACTOR_NAME
+        self.step = 0
         self.cur_frame = None
         self.prev_frame = None
 
@@ -56,9 +57,8 @@ class StateEstimator:
             self._initialize(map)
         else:
             # Get initial predicted pose
-            # predicted_pose = self.velocity @ self.prev_frame.pose
-            # self.cur_frame.pose = predicted_pose
-            self.cur_frame.pose = self._predict_pose_with_optical_flow()
+            predicted_pose = self.velocity @ self.prev_frame.pose
+            self.cur_frame.pose = predicted_pose
 
             # Match projected points from the map to the current frame
             projected_points = self._project_visible_map_points(map)
@@ -76,6 +76,8 @@ class StateEstimator:
         # Update the velocity based on the current and previous frame poses
         self.velocity = self.cur_frame.pose @ np.linalg.inv(
             self.prev_frame.pose)
+
+        self.step += 1
 
     def _initialize(self, map):
         E = match_features_between_frames(

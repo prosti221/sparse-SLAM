@@ -2,8 +2,8 @@ import numpy as np
 import cv2 as cv
 from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
-from logger import *
-from constants import *
+from utils.logger import *
+from utils.constants import *
 
 LOG_TAG = 'Utils'
 
@@ -404,39 +404,6 @@ def compute_new_points_ratio(cur_frame, map_obj):
     return max(0.0, new_points_count / len(cur_frame.keypoints))
 
 
-def check_scene_coverage(cur_frame, prev_keyframe):
-    """Check if current frame provides good scene coverage"""
-
-    # Simple coverage check based on keypoint distribution
-    if len(cur_frame.keypoints) < 50:
-        return False
-
-    # Check keypoint distribution across image
-    points = np.array([kp.pt for kp in cur_frame.keypoints])
-
-    # Image dimensions (assuming available)
-    img_width = cur_frame.img.shape[1] if hasattr(cur_frame, 'img') else 640
-    img_height = cur_frame.img.shape[0] if hasattr(cur_frame, 'img') else 480
-
-    # Divide image into grid and check coverage
-    grid_size = 4
-    cell_width = img_width / grid_size
-    cell_height = img_height / grid_size
-
-    covered_cells = set()
-
-    for pt in points:
-        cell_x = int(pt[0] // cell_width)
-        cell_y = int(pt[1] // cell_height)
-        cell_x = min(cell_x, grid_size - 1)
-        cell_y = min(cell_y, grid_size - 1)
-        covered_cells.add((cell_x, cell_y))
-
-    coverage_ratio = len(covered_cells) / (grid_size * grid_size)
-
-    return coverage_ratio >= MINIMUM_SCENE_COVERAGE_THRESHOLD
-
-
 def should_insert_keyframe(map_obj, cur_frame, prev_keyframe, is_recovery=False):
     # 1. Check baseline constraints
     baseline_distance = compute_baseline_distance(cur_frame, prev_keyframe)
@@ -454,9 +421,6 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe, is_recovery=False)
     # 4. Check tracking quality
     tracking_quality = cur_frame.compute_tracking_quality(map_obj)
     quality_ok = tracking_quality >= MINIMUM_KEYFRAME_QUALITY_THRESHOLD
-
-    # 5. Check scene coverage
-    coverage_ok = check_scene_coverage(cur_frame, prev_keyframe)
 
     # Decision logic
     reasons = []
@@ -477,12 +441,9 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe, is_recovery=False)
         reasons.append(
             f"Tracking quality too low: {tracking_quality:.2f} < {MINIMUM_KEYFRAME_QUALITY_THRESHOLD}")
 
-    if not coverage_ok:
-        reasons.append("Poor scene coverage")
-
     # Keyframe insertion criteria
     critical_conditions = [baseline_ok, parallax_ok]
-    quality_conditions = [new_points_ok, coverage_ok, quality_ok]
+    quality_conditions = [new_points_ok, quality_ok]
 
     # Insert keyframe if:
     # - All critical conditions are met AND at least one quality condition is met
@@ -495,8 +456,7 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe, is_recovery=False)
                   f"Baseline: {baseline_distance:.3f}, "
                   f"Parallax: {avg_parallax:.2f}°, "
                   f"New Points Ratio: {new_points_ratio:.2f}, "
-                  f"Tracking Quality: {tracking_quality:.2f}, "
-                  f"Coverage OK: {coverage_ok}")
+                  f"Tracking Quality: {tracking_quality:.2f}, ")
         return True, "Quality criteria met"
     else:
         return False, "; ".join(reasons)
