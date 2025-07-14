@@ -1,12 +1,11 @@
 import cv2 as cv
-from utils import *
-from renderer import Renderer
-from state_estimator import StateEstimator
-from feature_extractor import FeatureExtractor
+from utils.utils import *
+from renderer.renderer import Renderer
+from core.state_estimator import StateEstimator
 from config.parser import Parser
-from map import Map
-from logger import *
-from constants import *
+from core.map import Map
+from utils.logger import *
+from utils.constants import *
 
 LOG_TAG = 'Main'
 
