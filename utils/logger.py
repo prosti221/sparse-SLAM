@@ -1,6 +1,11 @@
 import logging
 import inspect
 import threading
+import colorama
+from colorama import Fore, Style
+
+# Initialize colorama (for Windows compatibility)
+colorama.init(autoreset=True)
 
 # === Config ===
 # TODO: Make this configurable via environment variables or a config file
@@ -11,13 +16,13 @@ DEBUG_TAG_FILTER = ["Parser", "Renderer", "Map"]
 SEVERITY_FILTER = ["info", "error", "warning"]
 
 MSG_TYPE_TO_COLOR = {
-    "debug": "\x1b[90m",   # Bright Black / Gray
-    "info": "\x1b[32m",    # Green
-    "error": "\x1b[31m",   # Red
-    "warning": "\x1b[33m",  # Yellow
-    "tag": "\x1b[2m"
+    "debug": Fore.LIGHTBLACK_EX,
+    "info": Fore.GREEN,
+    "error": Fore.RED,
+    "warning": Fore.YELLOW,
+    "tag": Style.DIM
 }
-RESET_COLOR = "\x1b[0m"
+RESET_COLOR = Style.RESET_ALL
 
 logging.basicConfig(
     level=logging.DEBUG if DEBUG else logging.INFO,
