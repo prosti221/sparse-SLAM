@@ -1,8 +1,8 @@
-import uuid
 import numpy as np
 import cv2 as cv
-from utils.logger import debug_log
-from utils.constants import MAX_SQUARED_REPROJECTION_ERROR
+import uuid
+from slam.utils.logger import debug_log
+from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
 
 LOG_TAG = 'Frame'
 

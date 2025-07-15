@@ -1,12 +1,8 @@
-"""
-Takes a set of extracted features from two frames and uses a matching algorithm of choice to match corresponding features
-
-"""
 import cv2 as cv
 import numpy as np
-from utils.utils import *
-from utils.constants import *
-from utils.logger import debug_log, error_log, warning_log
+from slam.utils.utils import *
+from slam.utils.constants import *
+from slam.utils.logger import debug_log, error_log, warning_log
 
 LOG_TAG = 'Matcher'
 

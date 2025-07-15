@@ -1,7 +1,6 @@
 import numpy as np
-import cv2
 import torch
-from utils.logger import *
+from slam.utils.logger import *
 
 LOG_TAG = 'SuperPoint'
 
