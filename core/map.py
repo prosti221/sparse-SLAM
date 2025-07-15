@@ -256,6 +256,7 @@ class Map:
     def get_avg_tracking_quality(self) -> float:
         if not self.tracking_quality_history:
             return 0.0
+
         total_quality = sum(self.tracking_quality_history.values())
         return total_quality / len(self.tracking_quality_history)
 

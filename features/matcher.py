@@ -7,17 +7,24 @@ import numpy as np
 from utils.utils import *
 from utils.constants import *
 from utils.logger import debug_log, error_log, warning_log
+import time
 
 LOG_TAG = 'Matcher'
 
 
 def match_features(prev_frame, cur_frame, is_binary_desc=True):
-    matcher = cv.BFMatcher(
-        cv.NORM_HAMMING if is_binary_desc else cv.NORM_L2, crossCheck=False)
+    #matcher = cv.BFMatcher(
+    #    cv.NORM_HAMMING if is_binary_desc else cv.NORM_L2, crossCheck=False)
+    index_params = dict(algorithm=1, trees=5)  # FLANN_INDEX_KDTREE
+    search_params = dict(checks=50)
+    matcher = cv.FlannBasedMatcher(index_params, search_params)
     prev_kp, prev_desc = prev_frame.get_keypoints_descriptors()
     cur_kp, cur_desc = cur_frame.get_keypoints_descriptors()
 
+    st_time = time.time()
     matches = matcher.knnMatch(prev_desc, cur_desc, k=2)
+    end_time = time.time()
+    warning_log(LOG_TAG, f"Time taken for knnMatch: {end_time - st_time:.2f} seconds")
 
     good_matches = []
     for m, n in matches:

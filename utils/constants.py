@@ -1,14 +1,13 @@
 # --- State estimator constants
 MINIMUM_NUMBER_OF_INLIERS_FOR_PROJECTION_MATCHING = 10
-PNP_ITERATIONS_COUNT = 100  # Iterations for PnP RANSAC
-PNP_REPROJECTION_ERROR = 8.0  # Reprojection error for PnP RANSAC
+PNP_ITERATIONS_COUNT = 1000  # Iterations for PnP RANSAC
+PNP_REPROJECTION_ERROR = 1.0  # Reprojection error for PnP RANSAC
 PNP_MINIMUM_INLIERS = 6  # Minimum inliers for PnP
 
 ### KEYFRAME SELECTION CONSTANTS ###
-MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 50
+MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 20
 MINIMUM_BASELINE_THRESHOLD = 0.5  # Minimum translation for new keyframe
 # Minimum scene coverage for new keyframe
-MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
 MINIMUM_KEYFRAME_PARALLAX_THRESHOLD = 1  # Minimum parallax for new keyframe
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.3  # Minimum quality for new keyframe
 # Minimum number of new points for keyframe selection
@@ -17,8 +16,8 @@ MINIMUM_NUMBER_OF_NEW_POINTS = 0.4
 # Triangulation constants
 MIN_DEPTH = 0.1  # Minimum depth for valid points
 MAX_DEPTH = 1500.0  # Maximum depth for valid points
-MAX_SQUARED_REPROJECTION_ERROR = 4.0
-MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = 0.45
+MAX_SQUARED_REPROJECTION_ERROR = 2.0
+MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = 0.30
 
 # Window size for local bundle adjustment
 LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE = 10

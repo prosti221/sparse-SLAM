@@ -96,8 +96,8 @@ class SuperPointFrontend(object):
             self.net.load_state_dict(torch.load(weights_path,
                                      map_location=lambda storage, loc: storage))
         self.net.eval()
-        debug_log(LOG_TAG, 'SuperPoint initialized with weights on: {}'.format(
-            torch.cuda.current_device() if self.cuda else 'CPU'))
+        debug_log(LOG_TAG, 'SuperPoint initialized with weights on device: {}'.format(
+            "cuda:" + str(torch.cuda.current_device()) if self.cuda else 'CPU'))
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
         """

@@ -62,8 +62,9 @@ class StateEstimator:
             self._initialize(map)
         else:
             # Get initial predicted pose
-            predicted_pose = self.velocity @ self.prev_frame.pose
-            self.cur_frame.pose = predicted_pose
+            #predicted_pose = self.velocity @ self.prev_frame.pose
+            #self.cur_frame.pose = predicted_pose
+            self.cur_frame.pose = self._predict_pose_with_optical_flow()
 
             # Match projected points from the map to the current frame
             projected_points = self._project_visible_map_points(map)
@@ -101,8 +102,10 @@ class StateEstimator:
         map.add_points(triangulated_points)
         if (map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
             return
+            return
             self.bundle_adjustment.global_bundle_adjustment(map)
         else:
+            return
             return
             self.bundle_adjustment.local_bundle_adjustment(
                 map,
@@ -140,7 +143,7 @@ class StateEstimator:
 
         return projected_points
 
-    def _match_projected_points(self, projected_points, dist_thresh=5) -> Tuple[np.ndarray, np.ndarray]:
+    def _match_projected_points(self, projected_points, dist_thresh=10):
         matched_3d = []
         matched_2d = []
         keypoints, descriptors = self.cur_frame.get_keypoints_descriptors()
@@ -178,8 +181,9 @@ class StateEstimator:
                 pt_2d = kp_coords[best_idx]
                 mp.add_observation(self.cur_frame.frame_id, best_idx, pt_2d)
                 self.cur_frame.add_point_observation(
-                    mp, best_idx, pt_2d)
-
+                    mp.point_id, best_idx, pt_2d)
+        
+        warning_log(LOG_TAG, f"Found {len(matched_3d)} projected matches")
         return np.array(matched_3d), np.array(matched_2d)
 
     def _estimate_refined_pose(self, matched_3d: np.ndarray, matched_2d: np.ndarray) -> int:

@@ -6,7 +6,7 @@ import threading
 # TODO: Make this configurable via environment variables or a config file
 DEBUG = True
 
-DEBUG_TAG_FILTER = ["SuperPoint", "Parser", "Renderer", "Map"]
+DEBUG_TAG_FILTER = ["Parser", "Renderer", "Map"]
 
 SEVERITY_FILTER = ["info", "error", "warning"]
 

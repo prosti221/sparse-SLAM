@@ -31,7 +31,8 @@ class FeatureExtractor:
                 self.detector = SuperPointFrontend(
                     weights_path="weights/superpoint_v1.pth",
                     nms_dist=4,
-                    conf_thresh=0.00000015,
+                    #conf_thresh=0.015
+                    conf_thresh=0.000000015
                 )
                 self.extract_handler = self._extract_dnn
             case _:

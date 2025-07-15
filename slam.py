@@ -51,5 +51,8 @@ if __name__ == '__main__':
             info_log(
                 LOG_TAG, f"Map tracking quality is {global_map.get_avg_tracking_quality()}")
 
-        cv.imshow('frame', frame)
+            if keyframe_count == 6:
+                break
+        
+        #cv.imshow('frame', frame)
         prev_img = frame

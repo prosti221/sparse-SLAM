@@ -16,7 +16,7 @@ videos:
     fx: 520
   swiz:
     path: ./videos/swiz.mp4
-    fx: 210
+    fx: 665
   calibrated1:
     path: ./videos/calibrated/calibrated1.mp4
     fx: 457.587
