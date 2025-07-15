@@ -1,8 +1,8 @@
 import open3d as o3d
 import numpy as np
-from utils.utils import pt_obj_to_array
-from utils.logger import debug_log, info_log, error_log, warning_log
-from utils.constants import TRACKING_QUALITY_GRADIENT
+from slam.utils.utils import pt_obj_to_array
+from slam.utils.logger import debug_log, info_log, error_log, warning_log
+from slam.utils.constants import TRACKING_QUALITY_GRADIENT
 import cv2 as cv
 
 LOG_TAG = 'Renderer'

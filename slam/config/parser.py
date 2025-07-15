@@ -1,5 +1,5 @@
 import yaml
-from utils.logger import warning_log
+from slam.utils.logger import warning_log
 
 LOG_TAG = 'Parser'
 

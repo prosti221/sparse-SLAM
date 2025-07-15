@@ -2,8 +2,8 @@ import numpy as np
 import cv2 as cv
 from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
-from utils.logger import *
-from utils.constants import *
+from slam.utils.logger import *
+from slam.utils.constants import *
 
 LOG_TAG = 'Utils'
 

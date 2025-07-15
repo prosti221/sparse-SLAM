@@ -1,17 +1,17 @@
 import cv2 as cv
-from utils.utils import *
-from renderer.renderer import Renderer
-from core.state_estimator import StateEstimator
-from config.parser import Parser
-from core.map import Map
-from utils.logger import *
-from utils.constants import *
+from slam.utils.utils import *
+from slam.viz.renderer import Renderer
+from slam.core.state_estimator import StateEstimator
+from slam.config.parser import Parser
+from slam.core.map import Map
+from slam.utils.logger import *
+from slam.utils.constants import *
 
 LOG_TAG = 'Main'
 
 if __name__ == '__main__':
     VIDEO = 'greece'
-    config = Parser('config/config.yaml')
+    config = Parser('slam/config/config.yaml')
 
     cap, K = load_video(VIDEO, config)
 
