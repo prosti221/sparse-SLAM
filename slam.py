@@ -1,7 +1,7 @@
 import cv2 as cv
 from slam.utils.utils import *
 from slam.viz.renderer import Renderer
-from slam.core.state_estimator import StateEstimator
+from slam.core.tracker import Tracker
 from slam.config.parser import Parser
 from slam.core.map import Map
 from slam.utils.logger import *
@@ -15,7 +15,7 @@ if __name__ == '__main__':
 
     cap, K = load_video(VIDEO, config)
 
-    state_estimator = StateEstimator(
+    state_estimator = Tracker(
         feature_extraction_method=ORB_EXTRACTOR_NAME)
     global_map = Map()
     renderer = Renderer(K)

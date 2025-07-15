@@ -15,10 +15,10 @@ from slam.utils.logger import *
 from slam.features.feature_extractor import FeatureExtractor
 from slam.core.frame import Frame
 
-LOG_TAG = 'StateEstimator'
+LOG_TAG = 'Tracker'
 
 
-class StateEstimator:
+class Tracker:
     def __init__(self, feature_extraction_method=ORB_EXTRACTOR_NAME):
         self.use_dnn = feature_extraction_method == DNN_EXTRACTOR_NAME
         self.step = 0
