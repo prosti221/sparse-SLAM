@@ -1,6 +1,3 @@
-"""
-The state estimator will only take in cur features, and use these to compute all of our states.
-"""
 import numpy as np
 import cv2 as cv
 from scipy.spatial import cKDTree
