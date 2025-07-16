@@ -14,6 +14,7 @@ class Frame:
     def __init__(self, image: np.ndarray, K: np.ndarray):
         self.frame_id: UUID = uuid.uuid4()
         self.image = image
+        self.H, self.W = self.image.shape[:2]
 
         self.K = K
         self.Kinv = np.linalg.inv(self.K)

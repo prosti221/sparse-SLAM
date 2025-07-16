@@ -62,9 +62,8 @@ class StateEstimator:
             self._initialize(map)
         else:
             # Get initial predicted pose
-            #predicted_pose = self.velocity @ self.prev_frame.pose
-            #self.cur_frame.pose = predicted_pose
-            self.cur_frame.pose = self._predict_pose_with_optical_flow()
+            predicted_pose = self.velocity @ self.prev_frame.pose
+            self.cur_frame.pose = predicted_pose
 
             # Match projected points from the map to the current frame
             projected_points = self._project_visible_map_points(map)
@@ -102,11 +101,8 @@ class StateEstimator:
         map.add_points(triangulated_points)
         if (map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
             return
-            return
             self.bundle_adjustment.global_bundle_adjustment(map)
         else:
-            return
-            return
             self.bundle_adjustment.local_bundle_adjustment(
                 map,
                 self.cur_keyframe.frame_id,
@@ -155,6 +151,8 @@ class StateEstimator:
         tree = cKDTree(kp_coords)
 
         for mp, (u_proj, v_proj) in projected_points:
+            if not (0 <= u_proj < self.cur_frame.W and 0 <= v_proj < self.cur_frame.H):
+                continue
             # Find keypoints within threshold
             nearby_indices = tree.query_ball_point(
                 [u_proj, v_proj], r=dist_thresh)
@@ -181,8 +179,8 @@ class StateEstimator:
                 pt_2d = kp_coords[best_idx]
                 mp.add_observation(self.cur_frame.frame_id, best_idx, pt_2d)
                 self.cur_frame.add_point_observation(
-                    mp.point_id, best_idx, pt_2d)
-        
+                    mp, best_idx, pt_2d)
+
         warning_log(LOG_TAG, f"Found {len(matched_3d)} projected matches")
         return np.array(matched_3d), np.array(matched_2d)
 

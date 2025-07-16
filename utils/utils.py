@@ -4,6 +4,7 @@ from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
 from utils.logger import *
 from utils.constants import *
+from core.frame import Frame
 
 LOG_TAG = 'Utils'
 
@@ -25,6 +26,20 @@ def load_video(video_name, config):
              f"  Principal Point: Cx={Cx}, Cy={Cy}")
 
     return cap, K
+
+
+def recover_relative_pose(E, cur_frame: Frame, prev_frame: Frame):
+    _, R, t, _ = cv.recoverPose(
+        E, cur_frame.matched_pts_prev_frame, cur_frame.matched_pts)
+
+    # Step 7: Compose predicted pose
+    relative_pose = np.eye(4)
+    relative_pose[:3, :3] = R
+    relative_pose[:3, 3] = t.flatten()
+
+    predicted_pose = relative_pose @ prev_frame.pose
+
+    return predicted_pose
 
 
 def pt_obj_to_array(pts):
@@ -196,9 +211,23 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
         warning_log(LOG_TAG, "No matches found for triangulation")
         return np.array([])
 
+    valid_matches = []
+    for m in frame2.matches:
+        already_observed_in_f1 = m.queryIdx in frame1.keypoint_to_point_map
+        already_observed_in_f2 = m.trainIdx in frame2.keypoint_to_point_map
+        if not (already_observed_in_f1 or already_observed_in_f2):
+            valid_matches.append(m)
+
+    if len(valid_matches) == 0:
+        warning_log(LOG_TAG, "No valid matches to triangulate after filtering")
+        return np.array([])
+    else:
+        debug_log(
+            LOG_TAG, f"There are {len(valid_matches)} valid matches to triangulate")
+
     # Extract matched points
-    pts1 = np.array([frame1.keypoints[m.queryIdx].pt for m in frame2.matches])
-    pts2 = np.array([frame2.keypoints[m.trainIdx].pt for m in frame2.matches])
+    pts1 = np.array([frame1.keypoints[m.queryIdx].pt for m in valid_matches])
+    pts2 = np.array([frame2.keypoints[m.trainIdx].pt for m in valid_matches])
 
     # Normalize points
     pts1_norm = pts1
