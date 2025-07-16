@@ -28,9 +28,9 @@ def load_video(video_name, config):
     return cap, K
 
 
-def recover_relative_pose(E, cur_frame: Frame, prev_frame: Frame):
+def recover_relative_pose(E, cur_frame: Frame, prev_frame: Frame, cur_pts, prev_pts):
     _, R, t, _ = cv.recoverPose(
-        E, cur_frame.matched_pts_prev_frame, cur_frame.matched_pts)
+        E, cur_pts, prev_pts, cur_frame.K)
 
     # Step 7: Compose predicted pose
     relative_pose = np.eye(4)
@@ -206,17 +206,25 @@ def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_err
     return cur_error <= max_error and prev_error <= max_error
 
 
+c = 0
+
+
 def compute_triangulation(frame1, frame2, use_optimization=True):
+    global c
     if not frame2.matches or len(frame2.matches) == 0:
         warning_log(LOG_TAG, "No matches found for triangulation")
         return np.array([])
 
-    valid_matches = []
-    for m in frame2.matches:
-        already_observed_in_f1 = m.queryIdx in frame1.keypoint_to_point_map
-        already_observed_in_f2 = m.trainIdx in frame2.keypoint_to_point_map
-        if not (already_observed_in_f1 or already_observed_in_f2):
-            valid_matches.append(m)
+    if c < 8:
+        valid_matches = frame2.matches
+    else:
+        valid_matches = []
+        for m in frame2.matches:
+            already_observed_in_f1 = m.queryIdx in frame1.keypoint_to_point_map
+            already_observed_in_f2 = m.trainIdx in frame2.keypoint_to_point_map
+            if not (already_observed_in_f1 or already_observed_in_f2):
+                valid_matches.append(m)
+    c += 1
 
     if len(valid_matches) == 0:
         warning_log(LOG_TAG, "No valid matches to triangulate after filtering")
@@ -353,7 +361,7 @@ def compute_average_parallax(cur_frame, prev_keyframe, map_obj):
     return np.mean(parallax_angles)
 
 
-def compute_point_parallax(frame1, frame2, point_3d):
+def compute_point_parallax(frame1: Frame, frame2: Frame, point_3d):
     """Compute parallax angle for a specific 3D point"""
 
     center1 = frame1.get_camera_center()
