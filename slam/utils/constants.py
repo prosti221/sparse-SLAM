@@ -5,7 +5,7 @@ PNP_REPROJECTION_ERROR = 8.0  # Reprojection error for PnP RANSAC
 PNP_MINIMUM_INLIERS = 6  # Minimum inliers for PnP
 
 ### KEYFRAME SELECTION CONSTANTS ###
-MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 50
+MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10
 MINIMUM_BASELINE_THRESHOLD = 0.5  # Minimum translation for new keyframe
 # Minimum scene coverage for new keyframe
 MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
@@ -17,12 +17,12 @@ MINIMUM_NUMBER_OF_NEW_POINTS = 0.4
 # Triangulation constants
 MIN_DEPTH = 0.1  # Minimum depth for valid points
 MAX_DEPTH = 1500.0  # Maximum depth for valid points
-MAX_SQUARED_REPROJECTION_ERROR = 4.0
-MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = 0.2
+MAX_SQUARED_REPROJECTION_ERROR = 2.0
+MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = 0.45
 
 # Window size for local bundle adjustment
-LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE = 10
-GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 10  # Interval for global BA
+LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE = 2
+GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 15  # Interval for global BA
 
 # Bidirectional validation codes
 TRIANGULATION_VALIDATION_CODE = {
@@ -42,8 +42,9 @@ TRIANGULATION_VALIDATION_CODE.update(
 ORB_EXTRACTOR_NAME = 'ORB'
 DNN_EXTRACTOR_NAME = 'DNN'
 AKAZE_EXTRACTOR_NAME = 'A-KAZE'
+BINARY_DESCRIPTION_METHODS = [ORB_EXTRACTOR_NAME, AKAZE_EXTRACTOR_NAME]
 
-ORB_NUMBER_OF_POINTS = 2500
+ORB_NUMBER_OF_POINTS = 4000
 ORB_QUALITY_LEVEL = 0.01  # Quality level for feature detection
 ORB_MIN_DISTANCE = 7  # Minimum distance between features
 ORB_KEYPOINT_SIZE = 20  # Size of keypoints for feature extraction
@@ -51,8 +52,7 @@ ORB_KEYPOINT_SIZE = 20  # Size of keypoints for feature extraction
 
 # --- Feature matching constants
 KNN_K_VALUE = 2  # Number of nearest neighbors for KNN matching
-LOWE_RATIO = 0.7  # Lowe's ratio test threshold for feature matching
-LOWE_DISTANCE_THRESHOLD = 32  # Distance threshold for good matches
+LOWE_RATIO = 0.75  # Lowe's ratio test threshold for feature matching
 # RANSAC threshold for essential matrix estimation
 MATCHER_RANSAC_MINIMUM_INLIERS = 8  # Minimum inliers for RANSAC
 MATCHER_RANSAC_THRESHOLD = 0.005
@@ -62,13 +62,13 @@ MATCHER_RANSAC_PROBABILITY = 0.999  # Probability for RANSAC
 MINIMUM_LOCAL_KEYFRAMES = 2  # Minimum keyframes for local BA
 MINIMUM_LOCAL_POINTS = 10  # Minimum points for local BA
 MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT = 20
-OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS = 2  # Threshold for outlier points
+OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS = 4  # Threshold for outlier points
 # Threshold for number of ovservations needed to consider a point as outlier
 OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS = 2
-LEAST_SQUARES_F_SCALE = 1.0  # Scale for least squares optimization
+LEAST_SQUARES_F_SCALE = 0.2  # Scale for least squares optimization
 
 MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT = 50
-OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS = 1.5
+OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS = 2
 OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS = 3
 
 # --- Renderer constants

@@ -1,5 +1,6 @@
 import cv2 as cv
 import numpy as np
+from typing import Dict, Callable, Tuple, List
 
 from slam.features.super_point_extractor import SuperPointFrontend
 from slam.utils.constants import *
@@ -15,7 +16,7 @@ DEFAULT_ORB_CONFIG = {
 
 
 class FeatureExtractor:
-    def __init__(self, feature_extraction_method=ORB_EXTRACTOR_NAME, orb_config=DEFAULT_ORB_CONFIG):
+    def __init__(self, feature_extraction_method: str = ORB_EXTRACTOR_NAME, orb_config: Dict = DEFAULT_ORB_CONFIG):
         self.feature_extraction_method = feature_extraction_method
         self.orb_config = orb_config
         self.extract_handler = None
@@ -32,6 +33,7 @@ class FeatureExtractor:
                     weights_path="weights/superpoint_v1.pth",
                     nms_dist=4,
                     conf_thresh=0.015,
+                    # conf_thresh=0.000000015,
                 )
                 self.extract_handler = self._extract_dnn
             case _:
@@ -41,10 +43,10 @@ class FeatureExtractor:
         debug_log(
             LOG_TAG, f"Initialized {feature_extraction_method} feature extractor")
 
-    def extract(self, img):
+    def extract(self, img: np.ndarray) -> Callable[[np.ndarray], Tuple]:
         return self.extract_handler(img)
 
-    def _extract_dnn(self, img):
+    def _extract_dnn(self, img: np.ndarray) -> Tuple[List, List]:
         if len(img.shape) == 3:
             img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
         img = img.astype(np.float32) / 255.
@@ -62,11 +64,11 @@ class FeatureExtractor:
                 class_id=-1
             ) for i in range(pts.shape[1])]
         descriptors = desc.T
+
         return keypoints, descriptors
 
-    def _extract_orb(self, img):
-        gray = np.mean(img, axis=2).astype(
-            np.uint8) if len(img.shape) == 3 else img
+    def _extract_orb(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        gray = np.mean(img, axis=2).astype(np.uint8)
         pts = cv.goodFeaturesToTrack(
             gray,
             self.orb_config["n_pts"],
@@ -77,13 +79,15 @@ class FeatureExtractor:
             return [], None
         kps = [cv.KeyPoint(x=f[0][0], y=f[0][1], size=ORB_KEYPOINT_SIZE)
                for f in pts]
-        features = self.detector.compute(img, kps)
-        debug_log(LOG_TAG, f"Extracted {len(features[0])} ORB features")
-        return features  # keypoints, descriptors
+        keypoints, descriptors = self.detector.compute(img, kps)
+        debug_log(LOG_TAG, f"Extracted {len(keypoints)} ORB features")
 
-    def _extract_akaze(self, img):
+        return keypoints, descriptors
+
+    def _extract_akaze(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY) if len(
             img.shape) == 3 else img
         keypoints, descriptors = self.detector.detectAndCompute(gray, None)
         debug_log(LOG_TAG, f"Extracted {len(keypoints)} A-KAZE features")
+
         return keypoints, descriptors

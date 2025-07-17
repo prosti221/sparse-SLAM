@@ -15,9 +15,9 @@ if __name__ == '__main__':
 
     cap, K = load_video(VIDEO, config)
 
-    state_estimator = Tracker(
-        feature_extraction_method=ORB_EXTRACTOR_NAME)
     global_map = Map()
+    tracker = Tracker(
+        global_map, feature_extraction_method=ORB_EXTRACTOR_NAME)
     renderer = Renderer(K)
 
     renderer.start()
@@ -37,7 +37,7 @@ if __name__ == '__main__':
             break
 
         # Update state estimator with new features
-        state_estimator.update(frame, K, global_map)
+        tracker.update(frame, K)
 
         # Render the point cloud and camera poses if a new keyframe is detected
         if keyframe_count != len(global_map.keyframes):
