@@ -1,35 +1,29 @@
-import numpy as np
-from scipy.optimize import least_squares
-from scipy.sparse import lil_matrix
-from collections import defaultdict
 import time
+from uuid import UUID
+from collections import defaultdict
+from typing import Optional, List, Tuple, Dict
 
+import numpy as np
+from scipy.sparse import lil_matrix
+from scipy.optimize import least_squares
+
+from slam.core.map import Map
 from slam.core.point import Point
+from slam.core.frame import Frame
 from slam.utils.constants import *
-from slam.utils.logger import debug_log, info_log, error_log, warning_log
+from slam.utils.logger import debug_log, error_log, warning_log
 
 LOG_TAG = 'BundleAdjustment'
 
 
 # TODO: Make these static methods, no need to instantiate the class.
 class BundleAdjustment:
-    def __init__(self, max_iterations=50, ftol=1e-6, xtol=1e-6):
+    def __init__(self, max_iterations: int = 50, ftol: float = 1e-7, xtol: float = 1e-7):
         self.max_iterations = max_iterations
         self.ftol = ftol
         self.xtol = xtol
 
-    def local_bundle_adjustment(self, map_obj, reference_frame_id, window_size=5):
-        """
-        Perform local bundle adjustment around a reference keyframe
-
-        Args:
-            map_obj: Map object containing keyframes and points
-            reference_frame_id: ID of the reference keyframe
-            window_size: Number of keyframes to include in optimization
-
-        Returns:
-            bool: True if optimization was successful
-        """
+    def local_bundle_adjustment(self, map_obj: Map, reference_frame_id: UUID, window_size: int = 5) -> bool:
         debug_log(
             LOG_TAG, f"Starting local BA around keyframe {reference_frame_id}")
 
@@ -77,14 +71,7 @@ class BundleAdjustment:
             warning_log(LOG_TAG, "Local BA failed")
             return False
 
-    def global_bundle_adjustment(self, map_obj, max_keyframes=None):
-        """
-        Perform global bundle adjustment on all keyframes and points
-
-        Args:
-            map_obj: Map object
-            max_keyframes: Maximum number of keyframes to include (None for all)
-        """
+    def global_bundle_adjustment(self, map_obj: Map, max_keyframes: Optional[int] = None) -> bool:
         keyframes = map_obj.keyframes
         if max_keyframes and len(keyframes) > max_keyframes:
             # Take most recent keyframes
@@ -129,10 +116,12 @@ class BundleAdjustment:
 
             return True
 
-    def _optimize_bundle(self, keyframes, points, observations):
-        """
-        Core bundle adjustment optimization
-        """
+    def _optimize_bundle(
+        self,
+        keyframes: List[Frame],
+        points: List[Point],
+        observations: List[Tuple[int, int, np.ndarray]]
+    ) -> bool:
         try:
             # Pack parameters
             x0 = self._pack_parameters(keyframes, points)
@@ -151,7 +140,7 @@ class BundleAdjustment:
                 residual_function,
                 x0,
                 jac_sparsity=jac_sparsity,
-                max_nfev=self.max_iterations * len(x0),
+                max_nfev=self.max_iterations,
                 ftol=self.ftol,
                 xtol=self.xtol,
                 method='trf',
@@ -178,7 +167,7 @@ class BundleAdjustment:
             error_log(LOG_TAG, f"BA optimization error: {e}")
             return False
 
-    def _pack_parameters(self, keyframes, points):
+    def _pack_parameters(self, keyframes: List[Frame], points: List[Point]) -> np.ndarray:
         """
         Pack keyframe poses and 3D points into optimization vector
         """
@@ -197,7 +186,7 @@ class BundleAdjustment:
 
         return np.array(params)
 
-    def _unpack_parameters(self, x, keyframes, points):
+    def _unpack_parameters(self, x: List[np.ndarray], keyframes: List[Frame], points: List[Point]):
         """
         Unpack optimization vector back to keyframe poses and 3D points
         """
@@ -216,10 +205,13 @@ class BundleAdjustment:
             point.pt_3d = x[idx:idx+3]
             idx += 3
 
-    def _compute_residuals(self, x, keyframes, points, observations):
-        """
-        Compute reprojection error residuals
-        """
+    def _compute_residuals(
+        self,
+        x: List[np.ndarray],
+        keyframes: List[Frame],
+        points: List[Point],
+        observations: List[Tuple[int, int, np.ndarray]]
+    ) -> np.ndarray:
         # Temporarily unpack parameters
         keyframes_copy = [kf for kf in keyframes]  # Shallow copy
         points_copy = [Point(p.pt_3d.copy())
@@ -248,10 +240,12 @@ class BundleAdjustment:
 
         return np.array(residuals)
 
-    def _get_jacobian_sparsity(self, keyframes, points, observations):
-        """
-        Define Jacobian sparsity pattern for efficient optimization
-        """
+    def _get_jacobian_sparsity(
+        self,
+        keyframes: List[Frame],
+        points: List[Point],
+        observations: List[Tuple[int, int, np.ndarray]]
+    ) -> lil_matrix:
         num_kf_params = (len(keyframes) - 1) * 6  # Skip first keyframe
         num_point_params = len(points) * 3
         num_residuals = len(observations) * 2

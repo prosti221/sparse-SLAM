@@ -1,32 +1,36 @@
-import numpy as np
 from collections import defaultdict
+import numpy as np
 from slam.utils.logger import debug_log, error_log
 from slam.utils.constants import TRACKING_QUALITY_WINDOW_SIZE, TRACKING_QUALITY_THRESHOLD
+from slam.core.point import Point
+from slam.core.frame import Frame
+from typing import List, Tuple, Set
+from uuid import UUID
 
 LOG_TAG = 'Map'
 
 
 class Map:
     def __init__(self):
-        self.points = []
-        self.point_coords = set()
-        self.keyframes = []
+        self.points: List[Point] = []
+        self.keyframes: List[Frame] = []
+        self.point_coords: Set[Tuple[float, float, float]] = set()
 
         # Enhanced tracking for bundle adjustment
-        self.points_by_id = {}
-        self.keyframes_by_id = {}
+        self.points_by_id: dict[UUID, Point] = {}
+        self.keyframes_by_id: dict[UUID, Frame] = {}
 
-        # Optimized covisibility graph with weights
-        # {kf_id: {other_kf_id: shared_points_count}}
-        self.covisibility_graph = defaultdict(lambda: defaultdict(int))
+        # Covisibility graph: {keyframe_id: {keyframe_id: shared_observations_count}}
+        self.covisibility_graph: dict[UUID, dict[UUID, int]] = defaultdict(
+            lambda: defaultdict(int))
 
         # Cache for covisibility scores to avoid recomputation
-        self._covisibility_score_cache = {}
+        self._covisibility_score_cache: dict[Tuple[UUID, UUID], int] = {}
 
         # Tracking quality history
-        self.tracking_quality_history = {}
+        self.tracking_quality_history: dict[UUID, float] = {}
 
-    def add_points(self, points):
+    def add_points(self, points: List[Point]):
         new_points = []
 
         for pt in points:
@@ -40,9 +44,8 @@ class Map:
                 self._add_point_to_covisibility_graph(pt)
 
         self.points.extend(new_points)
-        return new_points
 
-    def add_keyframe(self, kf):
+    def add_keyframe(self, kf: Frame):
         if kf.frame_id in self.keyframes_by_id:
             error_log(
                 LOG_TAG, f"Keyframe {kf.frame_id} already exists. Skipping.")
@@ -62,8 +65,7 @@ class Map:
 
         self.update_tracking_quality(kf.frame_id, kf.tracking_quality)
 
-    def _add_point_to_covisibility_graph(self, point):
-        """Incrementally add a point's covisibility connections"""
+    def _add_point_to_covisibility_graph(self, point: Point):
         observing_kfs = point.get_observing_keyframes()
 
         # Connect all pairs of keyframes that observe this point
@@ -76,8 +78,7 @@ class Map:
                 # Invalidate cached scores for these keyframes
                 self._invalidate_covisibility_cache(kf1_id, kf2_id)
 
-    def _add_keyframe_to_point_covisibility(self, new_kf_id, point):
-        """Add covisibility connections for a new keyframe observing an existing point"""
+    def _add_keyframe_to_point_covisibility(self, new_kf_id: UUID, point: Point):
         observing_kfs = point.get_observing_keyframes()
 
         for other_kf_id in observing_kfs:
@@ -88,8 +89,7 @@ class Map:
                 # Invalidate cached scores
                 self._invalidate_covisibility_cache(new_kf_id, other_kf_id)
 
-    def _remove_point_from_covisibility_graph(self, point):
-        """Incrementally remove a point's covisibility connections"""
+    def _remove_point_from_covisibility_graph(self, point: Point):
         observing_kfs = point.get_observing_keyframes()
 
         # Remove connections between all pairs of keyframes that observe this point
@@ -108,8 +108,7 @@ class Map:
                 # Invalidate cached scores
                 self._invalidate_covisibility_cache(kf1_id, kf2_id)
 
-    def _invalidate_covisibility_cache(self, kf1_id, kf2_id):
-        """Invalidate cached covisibility scores for a pair of keyframes"""
+    def _invalidate_covisibility_cache(self, kf1_id: UUID, kf2_id: UUID):
         cache_key1 = (kf1_id, kf2_id)
         cache_key2 = (kf2_id, kf1_id)
 
@@ -118,7 +117,7 @@ class Map:
         if cache_key2 in self._covisibility_score_cache:
             del self._covisibility_score_cache[cache_key2]
 
-    def get_local_keyframes(self, reference_frame_id, window_size=5):
+    def get_local_keyframes(self, reference_frame_id: UUID, window_size: int = 5) -> List[Frame]:
         if reference_frame_id not in self.keyframes_by_id:
             error_log(
                 LOG_TAG, f"Reference keyframe {reference_frame_id} not found")
@@ -147,7 +146,7 @@ class Map:
 
         return local_keyframes
 
-    def get_local_points(self, local_keyframes, min_observations=2):
+    def get_local_points(self, local_keyframes: List[Frame], min_observations: int = 2) -> List[Point]:
         local_kf_ids = {kf.frame_id for kf in local_keyframes}
         local_points = []
 
@@ -161,7 +160,7 @@ class Map:
 
         return local_points
 
-    def get_observations(self, local_keyframes, local_points):
+    def get_observations(self, local_keyframes: List[Frame], local_points: List[Point]) -> List[Tuple[int, int, np.ndarray]]:
         observations = []
 
         # Create index mappings
@@ -178,7 +177,7 @@ class Map:
 
         return observations
 
-    def remove_outlier_points(self, outlier_threshold=3.0, min_observations=3):
+    def remove_outlier_points(self, outlier_threshold: float = 3.0, min_observations: int = 3):
         removed_count = 0
 
         for idx in reversed(range(len(self.points))):
@@ -189,7 +188,7 @@ class Map:
 
         debug_log(LOG_TAG, f"Removed {removed_count} outlier points")
 
-    def remove_point_by_index(self, idx):
+    def remove_point_by_index(self, idx: int) -> bool:
         if idx < 0 or idx >= len(self.points):
             error_log(LOG_TAG, f"Index {idx} out of range for points list")
             return False
@@ -214,8 +213,7 @@ class Map:
 
         return True
 
-    def _compute_covisibility_score(self, kf1, kf2):
-        """Compute covisibility score with caching"""
+    def _compute_covisibility_score(self, kf1: Frame, kf2: Frame) -> int:
         cache_key = (kf1.frame_id, kf2.frame_id)
 
         if cache_key in self._covisibility_score_cache:
@@ -233,16 +231,16 @@ class Map:
 
         return shared_count
 
-    def should_perform_global_bundle_adjustment(self, interval):
+    def should_perform_global_bundle_adjustment(self, interval: int) -> bool:
         return len(self.keyframes) % interval == 0
 
-    def get_keyframe_by_id(self, frame_id):
+    def get_keyframe_by_id(self, frame_id: UUID) -> Frame:
         return self.keyframes_by_id.get(frame_id, None)
 
-    def get_point_by_id(self, point_id):
+    def get_point_by_id(self, point_id: UUID) -> Point:
         return self.points_by_id.get(point_id, None)
 
-    def update_tracking_quality(self, keyframe_id, quality):
+    def update_tracking_quality(self, keyframe_id: UUID, quality: float):
         self.tracking_quality_history.setdefault(keyframe_id, 0)
         self.tracking_quality_history[keyframe_id] = quality
 
@@ -250,20 +248,17 @@ class Map:
             self.tracking_quality_history.pop(
                 next(iter(self.tracking_quality_history)))
 
-    def get_avg_tracking_quality(self):
+    def get_avg_tracking_quality(self) -> float:
         if not self.tracking_quality_history:
             return 0.0
-        if len(self.tracking_quality_history) < TRACKING_QUALITY_WINDOW_SIZE:
-            return 1.0
 
         total_quality = sum(self.tracking_quality_history.values())
         return total_quality / len(self.tracking_quality_history)
 
-    def needs_recovery(self):
+    def needs_recovery(self) -> bool:
         return self.get_avg_tracking_quality() < TRACKING_QUALITY_THRESHOLD
 
-    def get_covisibility_keyframes(self, keyframe_id, min_shared_points=15):
-        """Get keyframes that share at least min_shared_points with the given keyframe"""
+    def get_covisibility_keyframes(self, keyframe_id: UUID, min_shared_points: int = 15) -> List[Frame]:
         if keyframe_id not in self.covisibility_graph:
             return []
 
@@ -278,11 +273,10 @@ class Map:
         return [kf for kf, _ in covisible_kfs]
 
     def cleanup_covisibility_cache(self):
-        """Periodically clean up the covisibility cache to prevent memory bloat"""
         self._covisibility_score_cache.clear()
         debug_log(LOG_TAG, "Cleaned up covisibility score cache")
 
-    def get_statistics(self):
+    def get_statistics(self) -> dict:
         stats = {
             'total_keyframes': len(self.keyframes),
             'total_points': len(self.points),

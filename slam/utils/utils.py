@@ -199,17 +199,6 @@ def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_err
 
 
 def compute_triangulation(frame1, frame2, use_optimization=True):
-    """
-    Compute robust triangulation using multiple methods
-
-    Args:
-        frame1: First frame with matches
-        frame2: Second frame with matches
-        use_optimization: Whether to use iterative optimization
-
-    Returns:
-        np.array: Triangulated 3D points in homogeneous coordinates
-    """
     if not frame2.matches or len(frame2.matches) == 0:
         warning_log(LOG_TAG, "No matches found for triangulation")
         return np.array([])
@@ -226,7 +215,6 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
     P1 = frame1.get_projection_matrix()
     P2 = frame2.get_projection_matrix()
 
-    # Method 1: OpenCV triangulation (fast but basic)
     points_4d_cv = cv.triangulatePoints(P1, P2, pts1_norm.T, pts2_norm.T).T
 
     if len(points_4d_cv) == 0:
@@ -236,7 +224,6 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
     if not use_optimization:
         return points_4d_cv
 
-    # Method 2: Iterative optimization for better accuracy
     points_4d_optimized = []
     optimized_points_count = 0
     for i in range(len(pts1)):
