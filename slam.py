@@ -1,11 +1,12 @@
-import cv2 as cv
 from slam.utils.utils import *
 from slam.viz.renderer import Renderer
 from slam.core.tracker import Tracker
 from slam.config.parser import Parser
 from slam.core.map import Map
+from slam.core.frame import Frame
 from slam.utils.logger import *
 from slam.utils.constants import *
+import cv2 as cv
 
 LOG_TAG = 'Main'
 
@@ -31,13 +32,15 @@ if __name__ == '__main__':
         if renderer.is_paused():
             continue  # Skip SLAM updates
 
-        ret, frame = cap.read()
+        ret, img = cap.read()
         if not ret:
             error_log(LOG_TAG, "Can't receive frame (stream end?). Exiting ...")
             break
 
+        frame = Frame(img, K)
+
         # Update state estimator with new features
-        tracker.update(frame, K)
+        tracker.update(frame)
 
         # Render the point cloud and camera poses if a new keyframe is detected
         if keyframe_count != len(global_map.keyframes):
@@ -51,5 +54,5 @@ if __name__ == '__main__':
             info_log(
                 LOG_TAG, f"Map tracking quality is {global_map.get_avg_tracking_quality()}")
 
-        cv.imshow('frame', frame)
-        prev_img = frame
+        cv.imshow('frame', img)
+        prev_img = img

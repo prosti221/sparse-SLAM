@@ -160,7 +160,12 @@ class Map:
 
         return local_points
 
-    def get_observations(self, local_keyframes: List[Frame], local_points: List[Point]) -> List[Tuple[int, int, np.ndarray]]:
+    def get_observations(
+        self,
+        local_keyframes: List[Frame],
+        local_points: List[Point],
+        normalize_points=False
+    ) -> List[Tuple[int, int, np.ndarray]]:
         observations = []
 
         # Create index mappings
@@ -173,6 +178,9 @@ class Map:
             for kf_id, (keypoint_idx, pt_2d) in point.observations.items():
                 if kf_id in kf_id_to_idx:
                     kf_idx = kf_id_to_idx[kf_id]
+                    if normalize_points:
+                        pt_2d = self.keyframes[kf_idx].normalize_keypoint(
+                            pt_2d)
                     observations.append((point_idx, kf_idx, pt_2d))
 
         return observations
