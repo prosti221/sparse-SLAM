@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import List, Tuple
 
 from slam.utils.utils import *
-from slam.ba.bundle_adjustment import BundleAdjustment
+from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 from slam.features.matcher import *
 from slam.core.point import Point
 from slam.utils.constants import *
@@ -31,15 +31,13 @@ class Tracker:
         self.velocity = np.eye(4)
         self.iterations_since_last_keyframe = 0
 
-        self.bundle_adjustment = BundleAdjustment()
+        self.bundle_adjustment = G2OBundleAdjustment()
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
 
-    def update(self, img: np.ndarray, K: np.ndarray) -> None:
-        # Construct the new Frame object with the current image, features and camera matrix
-        gray_img = cv.cvtColor(img, cv.IMREAD_GRAYSCALE)
-        new_kps, new_descs = self.feature_extractor.extract(gray_img)
-
-        new_frame = Frame(img, K)
+    def update(self, new_frame: Frame) -> None:
+        # Extract features from the new frame
+        new_kps, new_descs = self.feature_extractor.extract(
+            new_frame.get_gray_image())
         new_frame.set_features(new_kps, new_descs)
 
         # If this is the first frame, initialize the current frame
@@ -52,39 +50,37 @@ class Tracker:
         self.prev_frame = self.cur_frame
         self.cur_frame = new_frame
 
-        self.iterations_since_last_keyframe += 1
+        # Get initial predicted pose
+        Rt = match_features_between_frames(
+            self.cur_frame, self.prev_frame, self.feature_extraction_method)
+        self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
+
+        # Optical flow gives mixed results, sometimes good, sometimes shit.
+        # self.cur_frame.pose = self._predict_pose_with_optical_flow()
 
         if should_initialize:
             self._initialize()
         else:
-            # Get initial predicted pose
-            predicted_pose = self.velocity @ self.prev_frame.pose
-            self.cur_frame.pose = predicted_pose
-            # self.cur_frame.pose = self._predict_pose_with_optical_flow()
-
             # Match projected points from the map to the current frame
             projected_points = self._project_visible_map_points()
 
             # Match the projected points with the current frame's keypoints
-            matched_3d, matched_2d = self._match_projected_points(
-                projected_points)
+            self._match_projected_points(projected_points)
 
-            # Estimate the refined pose using matched 3D and 2D points
-            if len(matched_3d) >= MINIMUM_NUMBER_OF_INLIERS_FOR_PROJECTION_MATCHING:
-                self._estimate_refined_pose(matched_3d, matched_2d)
-
+            # Check & handle keyframe insertion criteria
             self._handle_keyframe_insertion()
 
         # Update the velocity based on the current and previous frame poses
+        """
         self.velocity = self.cur_frame.pose @ np.linalg.inv(
             self.prev_frame.pose)
+        """
 
         self.step += 1
+        self.iterations_since_last_keyframe += 1
 
     def _initialize(self):
-        E = match_features_between_frames(
-            self.prev_frame, self.cur_frame, self.feature_extraction_method)
-        self.cur_frame.pose = self._predict_pose_with_optical_flow()
+
         self.prev_keyframe = self.prev_frame
         self.cur_keyframe = self.cur_frame
 
@@ -95,17 +91,13 @@ class Tracker:
 
     def _on_keyframe_inserted(self):
         if (self.map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
-            pass
-            # self.bundle_adjustment.global_bundle_adjustment(self.map)
+            self.bundle_adjustment.global_bundle_adjustment(self.map)
         else:
-            pass
-            """ 
             self.bundle_adjustment.local_bundle_adjustment(
                 self.map,
-                self.cur_keyframe.frame_id,
+                self.prev_keyframe.frame_id,
                 window_size=LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE
             )
-            """
         triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
 
@@ -122,7 +114,7 @@ class Tracker:
         self.prev_keyframe = self.cur_keyframe
         self.cur_keyframe = self.cur_frame
         match_features_between_frames(
-            self.prev_keyframe, self.cur_keyframe, self.feature_extraction_method)
+            self.cur_keyframe, self.prev_keyframe, self.feature_extraction_method)
         self.map.add_keyframe(self.cur_keyframe)
         self.iterations_since_last_keyframe = 0
         self._on_keyframe_inserted()
@@ -142,21 +134,21 @@ class Tracker:
 
     def _match_projected_points(
         self, projected_points: List[Tuple[Point, np.ndarray]],
-        dist_thresh: int = 5
+        dist_thresh: int = 50
     ) -> Tuple[np.ndarray, np.ndarray]:
         matched_3d = []
         matched_2d = []
-        keypoints, descriptors = self.cur_frame.get_keypoints_descriptors()
+        _, descriptors = self.cur_frame.get_keypoints_descriptors()
+        kp_coords = self.cur_frame.kp_pts
 
-        if len(keypoints) == 0:
+        if len(kp_coords) == 0:
             return np.array([]), np.array([])
 
-        kp_coords = np.array([kp.pt for kp in keypoints])
         tree = cKDTree(kp_coords)
 
         for mp, (u_proj, v_proj) in projected_points:
             # If the points are out of bounds, we skip.
-            if not (0 <= u_proj < self.cur_frame.W and 0 <= v_proj < self.cur_frame.H):
+            if not self.cur_frame.is_point_visible(mp.pt_3d):
                 continue
 
             if self.cur_frame in mp.observations:
@@ -180,7 +172,7 @@ class Tracker:
                     best_dist = desc_dist
                     best_idx = i
 
-            if best_idx != -1 and best_dist < 10:
+            if best_idx != -1 and best_dist < 50:
                 matched_3d.append(mp.pt_3d)
                 matched_2d.append(kp_coords[best_idx])
 
@@ -195,34 +187,6 @@ class Tracker:
 
         return np.array(matched_3d), np.array(matched_2d)
 
-    def _estimate_refined_pose(
-        self,
-        matched_3d: np.ndarray,
-        matched_2d: np.ndarray
-    ) -> None:
-        success, R, t, inliers = cv.solvePnPRansac(
-            matched_3d.astype(np.float32),
-            matched_2d.astype(np.float32),
-            self.cur_frame.K.astype(np.float32),
-            None,  # No distortion
-            flags=cv.SOLVEPNP_ITERATIVE,
-            iterationsCount=PNP_ITERATIONS_COUNT,
-            reprojectionError=PNP_REPROJECTION_ERROR
-        )
-
-        if success and len(inliers) >= PNP_MINIMUM_INLIERS:
-            R, _ = cv.Rodrigues(R)
-            # Convert world-to-camera back to camera-to-world
-            world_to_cam = np.eye(4)
-            world_to_cam[:3, :3] = R
-            world_to_cam[:3, 3] = t.flatten()
-
-            self.cur_frame.pose = np.linalg.inv(world_to_cam)
-            return len(inliers)
-        else:
-            warning_log(LOG_TAG, "PnP failed, keeping predicted pose.")
-            return 0
-
     def _triangulate(self) -> List[Point]:
         if not (self.cur_keyframe and self.prev_keyframe):
             warning_log(LOG_TAG, "Not enough keyframes to triangulate points.")
@@ -232,7 +196,7 @@ class Tracker:
         pre_filter_match_count = len(self.cur_frame.matches)
         self.cur_frame.set_match_data([
             m for m in self.cur_frame.matches
-            if m.trainIdx not in self.cur_frame.keypoint_to_point_map
+            if m.queryIdx not in self.cur_frame.keypoint_to_point_map
         ])
         post_filter_match_count = len(self.cur_frame.matches)
         debug_log(
@@ -240,7 +204,7 @@ class Tracker:
 
         # Triangulate points
         points_4d = compute_triangulation(
-            self.prev_keyframe, self.cur_keyframe, use_optimization=True)
+            self.cur_keyframe, self.prev_keyframe, use_optimization=True)
 
         valid_points = points_4d[:, 3] != 0
         points_4d = points_4d[valid_points]
@@ -279,11 +243,11 @@ class Tracker:
         match = self.cur_keyframe.matches[point_idx]
         point = Point(
             np.array(point_4d)[:3],
-            self.cur_frame.get_color_value_for_keypoint(match.trainIdx),
-            self.cur_keyframe.get_keypoints_descriptors()[1][match.trainIdx]
+            self.cur_frame.get_color_value_for_keypoint(match.queryIdx),
+            self.cur_keyframe.get_keypoints_descriptors()[1][match.queryIdx]
         )
         # Current keyframe observation
-        kp_idx_cur = match.trainIdx
+        kp_idx_cur = match.queryIdx
         pt_2d_cur = self.cur_keyframe.keypoints[kp_idx_cur].pt
         point.add_observation(self.cur_keyframe.frame_id,
                               kp_idx_cur, pt_2d_cur)
@@ -291,7 +255,7 @@ class Tracker:
             point.point_id, kp_idx_cur, pt_2d_cur)
 
         # Previous keyframe observation
-        kp_idx_prev = match.queryIdx
+        kp_idx_prev = match.trainIdx
         pt_2d_prev = self.prev_keyframe.keypoints[kp_idx_prev].pt
         point.add_observation(self.prev_keyframe.frame_id,
                               kp_idx_prev, pt_2d_prev)
@@ -300,6 +264,7 @@ class Tracker:
 
         return point
 
+    """
     def _predict_pose_with_optical_flow(self) -> np.ndarray:
         if self.prev_frame is None or self.cur_frame is None:
             debug_log(LOG_TAG, "Missing frames for optical flow prediction.")
@@ -330,14 +295,17 @@ class Tracker:
         matched_prev = prev_kps[status == 1]
         matched_next = next_kps[status == 1]
 
+        matched_prev_norm = normalize(matched_prev, self.prev_frame.Kinv)
+        matched_next_norm = normalize(matched_next, self.cur_frame.Kinv)
+
         if len(matched_prev) < 8:
             debug_log(LOG_TAG, "Too few optical flow matches.")
             return self.velocity @ self.prev_frame.pose
 
         # Step 5: Estimate essential matrix
         E, mask = cv.findEssentialMat(
-            matched_next, matched_prev,
-            self.cur_frame.K, method=cv.RANSAC, prob=0.999, threshold=0.005
+            matched_next_norm, matched_prev_norm,
+            method=cv.RANSAC, prob=0.999, threshold=0.005
         )
 
         if E is None or mask is None:
@@ -345,26 +313,20 @@ class Tracker:
             return self.velocity @ self.prev_frame.pose
 
         inliers = mask.flatten() == 1
-        matched_prev = matched_prev[inliers]
-        matched_next = matched_next[inliers]
+        matched_prev_norm = matched_prev_norm[inliers]
+        matched_next_norm = matched_next_norm[inliers]
 
         if len(matched_prev) < 5:
             debug_log(
                 LOG_TAG, "Too few inliers after essential matrix estimation.")
             return self.velocity @ self.prev_frame.pose
 
-        # Step 6: Recover pose
-        _, R, t, _ = cv.recoverPose(
-            E, matched_next, matched_prev, self.cur_frame.K)
+        Rt = extractRt(E)
 
-        # Step 7: Compose predicted pose
-        relative_pose = np.eye(4)
-        relative_pose[:3, :3] = R
-        relative_pose[:3, 3] = t.flatten()
-
-        predicted_pose = relative_pose @ self.prev_frame.pose
+        predicted_pose = Rt @ self.prev_frame.pose
 
         debug_log(
             LOG_TAG, f"Predicted pose using optical flow with {len(matched_prev)} inliers.")
 
         return predicted_pose
+    """

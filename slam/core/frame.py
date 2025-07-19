@@ -4,6 +4,7 @@ import uuid
 from uuid import UUID
 from slam.utils.logger import debug_log, error_log, warning_log
 from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
+from slam.utils.utils import normalize
 from slam.core.point import Point
 from typing import List, Tuple, Dict
 
@@ -21,6 +22,8 @@ class Frame:
         self.Kinv = np.linalg.inv(self.K)
 
         self.keypoints = None
+        self.kp_pts = None
+        self.kp_pts_norm = None
         self.descriptors = None
 
         self.pose = np.eye(4)
@@ -29,7 +32,7 @@ class Frame:
         self.matches = None
 
         # Enhanced for bundle adjustment
-        self.observed_points: Dict[UUID, Tuple[int, np.ndarray, Point]] = {}
+        self.observed_points: Dict[UUID, Tuple[int, np.ndarray]] = {}
         self.keypoint_to_point_map: Dict[int, UUID] = {}
 
         # Track pose uncertainty and optimization status
@@ -118,6 +121,8 @@ class Frame:
     def set_features(self, keypoints: List[cv.KeyPoint], descriptors: np.ndarray) -> None:
         self.keypoints = keypoints
         self.descriptors = descriptors
+        self.kp_pts = np.array([kp.pt for kp in keypoints], dtype=np.float32)
+        self.kp_pts_norm = normalize(self.kp_pts, self.Kinv)
 
     def set_match_data(self, matches: List[cv.DMatch]) -> None:
         self.matches = matches
@@ -182,7 +187,7 @@ class Frame:
                 LOG_TAG, f"Point {point_3d} cannot be projected in frame {self.frame_id}")
             return float('inf')
 
-        return np.linalg.norm(projected - observed_2d)
+        return np.linalg.norm(projected - self.normalize_keypoint(observed_2d))
 
     def set_pose_from_6dof(self, pose_6dof: np.ndarray) -> None:
         rvec = pose_6dof[:3]
@@ -220,3 +225,9 @@ class Frame:
         self.tracking_quality = 0.7 * visibility_ratio + 0.3 * quality_ratio
 
         return self.tracking_quality
+
+    def normalize_keypoint(self, pt_2d: np.ndarray) -> np.ndarray:
+        if self.Kinv is None:
+            raise ValueError("Camera intrinsic matrix Kinv is not set.")
+
+        return (self.Kinv @ np.array([pt_2d[0], pt_2d[1], 1.0])).astype(np.float32)[:2]

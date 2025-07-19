@@ -10,7 +10,7 @@ LOG_TAG = 'Utils'
 
 def load_video(video_name, config):
     VIDEO_PATH = config.get_video_property(video_name, 'path')
-    cap = get_video_cap(VIDEO_PATH)
+    cap = cap = cv.VideoCapture(VIDEO_PATH)
     W = cap.get(cv.CAP_PROP_FRAME_WIDTH)
     H = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
     Fx = config.get_video_property(video_name, 'fx', default=0)
@@ -43,14 +43,9 @@ def normalize(pts, Kinv):
     return np.dot(Kinv, add_ones(pts).T).T[:, :2]
 
 
-def denormalize(points, K):
-    ret = np.dot(K, np.array([points[0], points[1], 1.0]))
-    return int(round(ret[0])), int(round(ret[1]))
-
-
-def extractRt(E):
-    W = np.mat([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
-    U, d, Vt = np.linalg.svd(E)
+def extractRt(F):
+    W = np.asmatrix([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
+    U, d, Vt = np.linalg.svd(F)
     if np.linalg.det(U) < 0:
         U *= -1.0
     if np.linalg.det(Vt) < 0:
@@ -61,6 +56,10 @@ def extractRt(E):
         R = np.dot(np.dot(U, W.T), Vt)
 
     t = U[:, 2]
+    if t[2] < 0:
+        t *= -1
+
+    t = U[:, 2]
     ret = np.eye(4)
     ret[:3, :3] = R
     ret[:3, 3] = t
@@ -68,55 +67,11 @@ def extractRt(E):
     return ret
 
 
-def get_video_cap(path):
-    # FRAME_RATE = 15
-    cap = cv.VideoCapture(path)
-    # cap.set(cv.CAP_PROP_FPS, FRAME_RATE)
-
-    return cap
-
-
 def construct_K(focal_x, focal_y, c_x, c_y):
 
     return np.array([[focal_x, 0, c_x],
                      [0, focal_y, c_y],
                      [0, 0, 1]])
-
-
-def draw_keypoints(frame, keypoints):
-    img_cpy = frame.copy()
-    keypoint_frame = cv.drawKeypoints(
-        frame, keypoints, img_cpy, color=(0, 255, 0), flags=0
-    )
-
-    return img_cpy
-
-
-def draw_matches(prev_img, prev_keypoints, cur_img, cur_keypoints, matches):
-    prev_img = prev_img.copy()
-    cur_img = cur_img.copy()
-
-    match_img = cv.drawMatchesKnn(
-        prev_img, prev_keypoints,
-        cur_img, cur_keypoints,
-        [matches],
-        None,
-        flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-    )
-
-    return match_img
-
-
-def compute_translation_distance(Tcw1, Tcw2):
-    t1 = Tcw1[:3, 3]
-    t2 = Tcw2[:3, 3]
-    return np.linalg.norm(t1 - t2)
-
-
-def compute_rotation_angle(Rcw1, Rcw2):
-    R_rel = Rcw1 @ Rcw2.T
-    angle_axis = Rotation.from_matrix(R_rel).as_rotvec()
-    return np.linalg.norm(angle_axis)  # Angle in radians
 
 
 def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
@@ -150,8 +105,6 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
 
 
 def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
-    """Check if the parallax angle is sufficient for good triangulation"""
-
     # Get camera centers
     cur_center = cur_frame.get_camera_center()
     prev_center = prev_frame.get_camera_center()
@@ -174,48 +127,43 @@ def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
 
 
 def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_error):
-    """Check reprojection error for both frames"""
-
-    # Get matched 2D points
     match = cur_frame.matches[point_idx]
-    cur_2d = cur_frame.keypoints[match.trainIdx].pt
-    prev_2d = prev_frame.keypoints[match.queryIdx].pt
 
-    # Project 3D point to both frames
+    # TODO: Might need to do this with normalized coordinates
+    # Get normalized keypoints
+    cur_2d = np.array(cur_frame.keypoints[match.queryIdx].pt)
+    prev_2d = np.array(prev_frame.keypoints[match.trainIdx].pt)
+
     cur_proj = cur_frame.project_point(point_3d)
     prev_proj = prev_frame.project_point(point_3d)
 
     if cur_proj is None or prev_proj is None:
         return False
 
-    # Compute reprojection errors
-    cur_error = np.linalg.norm(np.array(cur_proj) - np.array(cur_2d))
-    prev_error = np.linalg.norm(np.array(prev_proj) - np.array(prev_2d))
+    # Compute reprojection errors in normalized space
+    cur_error = np.linalg.norm(cur_proj - cur_2d)
+    prev_error = np.linalg.norm(prev_proj - prev_2d)
 
     return cur_error <= max_error and prev_error <= max_error
 
 
-######## TESTING NEW TRIANGULATION  ########
-
-
 def compute_triangulation(frame1, frame2, use_optimization=True):
-    if not frame2.matches or len(frame2.matches) == 0:
+    if not frame1.matches or len(frame1.matches) == 0:
         warning_log(LOG_TAG, "No matches found for triangulation")
         return np.array([])
 
     # Extract matched points
-    pts1 = np.array([frame1.keypoints[m.queryIdx].pt for m in frame2.matches])
-    pts2 = np.array([frame2.keypoints[m.trainIdx].pt for m in frame2.matches])
+    pts1 = np.array([frame1.keypoints[m.queryIdx].pt for m in frame1.matches])
+    pts2 = np.array([frame2.keypoints[m.trainIdx].pt for m in frame1.matches])
 
-    # Normalize points
-    pts1_norm = pts1
-    pts2_norm = pts2
+    pts1 = normalize(pts1, frame1.Kinv)
+    pts2 = normalize(pts2, frame2.Kinv)
 
     # Get projection matrices
-    P1 = frame1.get_projection_matrix()
-    P2 = frame2.get_projection_matrix()
+    P1 = np.linalg.inv(frame1.pose)[:3, :]
+    P2 = np.linalg.inv(frame2.pose)[:3, :]
 
-    points_4d_cv = cv.triangulatePoints(P1, P2, pts1_norm.T, pts2_norm.T).T
+    points_4d_cv = cv.triangulatePoints(P1, P2, pts1.T, pts2.T).T
 
     if len(points_4d_cv) == 0:
         warning_log(LOG_TAG,
@@ -227,8 +175,8 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
     points_4d_optimized = []
     optimized_points_count = 0
     for i in range(len(pts1)):
-        pt1 = pts1_norm[i]
-        pt2 = pts2_norm[i]
+        pt1 = pts1[i]
+        pt2 = pts2[i]
 
         # Use CV result as initial guess
         initial_guess = points_4d_cv[i][:3] / points_4d_cv[i][3]
@@ -251,19 +199,6 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
 
 
 def optimize_triangulation(pt1, pt2, P1, P2, initial_guess, max_iterations=10):
-    """
-    Optimize triangulation using iterative least squares
-
-    Args:
-        pt1, pt2: Normalized 2D points
-        P1, P2: Projection matrices
-        initial_guess: Initial 3D point estimate
-        max_iterations: Maximum optimization iterations
-
-    Returns:
-        np.array: Optimized 3D point or None if failed
-    """
-
     def residual_function(point_3d):
         # Project 3D point to both cameras
         point_homo = np.append(point_3d, 1.0)
@@ -293,33 +228,30 @@ def optimize_triangulation(pt1, pt2, P1, P2, initial_guess, max_iterations=10):
             residual_function,
             initial_guess,
             max_nfev=max_iterations * 10,
-            ftol=1e-8,
-            xtol=1e-8,
+            ftol=1e-15,
+            xtol=1e-15,
             method='lm'
         )
 
         if result.success:
             return result.x
         else:
+            warning_log(
+                LOG_TAG, "Least squares optimization failed for triangulation")
             return None
 
     except Exception as e:
-        warning_log(LOG_TAG, f"Optimization failed: {e}")
+        warning_log(LOG_TAG, f"Least squares optimization error: {e}")
         return None
 
 
-##### Testting keyframe selection #####
-
 def compute_baseline_distance(frame1, frame2):
-    """Compute baseline distance between two frames"""
     center1 = frame1.get_camera_center()
     center2 = frame2.get_camera_center()
     return np.linalg.norm(center2 - center1)
 
 
 def compute_average_parallax(cur_frame, prev_keyframe, map_obj):
-    """Compute average parallax angle for visible map points"""
-
     visible_points = []
 
     # Get points visible in both frames
@@ -345,8 +277,6 @@ def compute_average_parallax(cur_frame, prev_keyframe, map_obj):
 
 
 def compute_point_parallax(frame1, frame2, point_3d):
-    """Compute parallax angle for a specific 3D point"""
-
     center1 = frame1.get_camera_center()
     center2 = frame2.get_camera_center()
 
