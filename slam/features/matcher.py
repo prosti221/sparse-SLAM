@@ -43,12 +43,20 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
 
         E, mask = cv.findEssentialMat(
             pts_f1_norm, pts_f2_norm, method=cv.RANSAC, prob=MATCHER_RANSAC_PROBABILITY, threshold=MATCHER_RANSAC_THRESHOLD)
+
         filtered_matches = [m for i, m in enumerate(
             good_matches) if mask[i] == 1]
 
+        pts_f1_filtered = np.array(
+            [f1_kp[m.queryIdx].pt for m in filtered_matches])
+        pts_f2_filtered = np.array(
+            [f2_kp[m.trainIdx].pt for m in filtered_matches])
+
+        Rt = extractRtFromE(pts_f1_filtered, pts_f2_filtered, E, frame1.K)
+
         debug_log(
             LOG_TAG, f"Found {len(filtered_matches)} filtered matches, {len(filtered_matches) / len(matches) * 100:.2f}% inliers")
-        return filtered_matches, E
+        return filtered_matches, Rt
     else:
         warning_log(LOG_TAG, "Not enough matches found for RANSAC")
 
@@ -56,7 +64,7 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
 
 
 def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extraction_method: str) -> np.ndarray:
-    matches, E = match_features(frame1, frame2, feature_extraction_method)
+    matches, Rt = match_features(frame1, frame2, feature_extraction_method)
 
     if len(matches) == 0:
         warning_log(
@@ -68,4 +76,4 @@ def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extracti
 
     frame1.set_match_data(matches)
 
-    return extractRt(E)
+    return Rt

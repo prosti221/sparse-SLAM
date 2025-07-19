@@ -155,13 +155,12 @@ class Frame:
         return cam_coords[:3]
 
     def project_point(self, point_3d: np.ndarray) -> np.ndarray:
-        # Transform to camera coordinates
         pt_cam = self.world_to_camera(point_3d)
 
         if pt_cam[2] <= 0:  # Behind camera
             return None
 
-        # Project to image
+        # Project to image pixel coordinates (u, v)
         pt_img = self.K @ pt_cam
         u, v = pt_img[0] / pt_img[2], pt_img[1] / pt_img[2]
 
@@ -175,19 +174,25 @@ class Frame:
             return False
 
         H, W = self.image.shape[:2]
+        # projected gives us pixel coordinates (u, v)
         u, v = projected
 
         return (margin <= u < W - margin and
                 margin <= v < H - margin)
 
     def compute_reprojection_error(self, point_3d: np.ndarray, observed_2d: np.ndarray) -> float:
+        """Compute reprojection error for a 3D point projected to this frame
+        Args:
+            point_3d: 3D point in world coordinates
+            observed_2d: 2D point in image pixel oordinates (u, v)
+        """
         projected = self.project_point(point_3d)
         if projected is None:
             debug_log(
                 LOG_TAG, f"Point {point_3d} cannot be projected in frame {self.frame_id}")
             return float('inf')
 
-        return np.linalg.norm(projected - self.normalize_keypoint(observed_2d))
+        return np.linalg.norm(projected - observed_2d)
 
     def set_pose_from_6dof(self, pose_6dof: np.ndarray) -> None:
         rvec = pose_6dof[:3]

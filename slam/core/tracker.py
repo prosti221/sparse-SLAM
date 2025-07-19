@@ -6,6 +6,7 @@ from typing import List, Tuple
 
 from slam.utils.utils import *
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
+# from slam.ba.bundle_adjustment import BundleAdjustment
 from slam.features.matcher import *
 from slam.core.point import Point
 from slam.utils.constants import *
@@ -32,6 +33,7 @@ class Tracker:
         self.iterations_since_last_keyframe = 0
 
         self.bundle_adjustment = G2OBundleAdjustment()
+        # self.bundle_adjustment = BundleAdjustment()
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
 
     def update(self, new_frame: Frame) -> None:
@@ -90,6 +92,7 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _on_keyframe_inserted(self):
+        """ 
         if (self.map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
             self.bundle_adjustment.global_bundle_adjustment(self.map)
         else:
@@ -98,6 +101,7 @@ class Tracker:
                 self.prev_keyframe.frame_id,
                 window_size=LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE
             )
+        """
         triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
 
@@ -124,6 +128,7 @@ class Tracker:
 
         for mp in self.map.points:
             pt_3d = mp.pt_3d
+            # Project the 3D point to the current frame pixel coordinates (u, v)
             projected_point = self.cur_frame.project_point(pt_3d)
             if projected_point is None:
                 continue
