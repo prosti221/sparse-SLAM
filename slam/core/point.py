@@ -12,6 +12,7 @@ class Point:
         self.descriptor: np.ndarray = descriptor
 
         # Track which keyframes observe this point
+        # TODO: Refactor for a better structure, define an observation class
         self.observations = {}  # {frame_id: (keypoint_idx, 2d_point)}
 
         # Track quality metrics

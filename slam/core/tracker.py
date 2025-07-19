@@ -6,7 +6,7 @@ from typing import List, Tuple
 
 from slam.utils.utils import *
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
-# from slam.ba.bundle_adjustment import BundleAdjustment
+from slam.ba.bundle_adjustment import BundleAdjustment
 from slam.features.matcher import *
 from slam.core.point import Point
 from slam.utils.constants import *
@@ -32,8 +32,7 @@ class Tracker:
         self.velocity = np.eye(4)
         self.iterations_since_last_keyframe = 0
 
-        self.bundle_adjustment = G2OBundleAdjustment()
-        # self.bundle_adjustment = BundleAdjustment()
+        self.bundle_adjustment = G2OBundleAdjustment(map)
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
 
     def update(self, new_frame: Frame) -> None:
@@ -55,7 +54,8 @@ class Tracker:
         # Get initial predicted pose
         Rt = match_features_between_frames(
             self.cur_frame, self.prev_frame, self.feature_extraction_method)
-        self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
+        np.dot(self.prev_frame.pose, np.linalg.inv(Rt))
+        # self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
 
         # Optical flow gives mixed results, sometimes good, sometimes shit.
         # self.cur_frame.pose = self._predict_pose_with_optical_flow()
@@ -94,12 +94,11 @@ class Tracker:
     def _on_keyframe_inserted(self):
         """ 
         if (self.map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
-            self.bundle_adjustment.global_bundle_adjustment(self.map)
+            self.bundle_adjustment.global_bundle_adjustment()
         else:
             self.bundle_adjustment.local_bundle_adjustment(
-                self.map,
                 self.prev_keyframe.frame_id,
-                window_size=LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE
+                window_size=LOCAL_MAP_WINDOW_SIZE
             )
         """
         triangulated_points = self._triangulate()
@@ -125,11 +124,15 @@ class Tracker:
 
     def _project_visible_map_points(self) -> List[Tuple[Point, np.ndarray]]:
         projected_points = []
+        local_keyframes = self.map.get_local_keyframes(
+            self.cur_keyframe.frame_id, LOCAL_MAP_WINDOW_SIZE)
+        local_map_points = self.map.get_local_points(local_keyframes)
 
-        for mp in self.map.points:
+        for mp in local_map_points:
             pt_3d = mp.pt_3d
-            # Project the 3D point to the current frame pixel coordinates (u, v)
-            projected_point = self.cur_frame.project_point(pt_3d)
+            # Project the 3D point to the current frame as pixel image coordinates (u, v)
+            projected_point = self.cur_frame.project_point(
+                pt_3d, normalized=False)
             if projected_point is None:
                 continue
             projected_points.append(
@@ -178,14 +181,22 @@ class Tracker:
                     best_idx = i
 
             if best_idx != -1 and best_dist < 50:
+                repro_error = np.linalg.norm(
+                    kp_coords[best_idx] - np.array([u_proj, v_proj]))
+
+                # TODO: Maybe we should allow a larger reprojection error here?
+                if repro_error > 4:
+                    continue
+
                 matched_3d.append(mp.pt_3d)
                 matched_2d.append(kp_coords[best_idx])
 
                 # Update observation relationships
                 pt_2d = kp_coords[best_idx]
                 mp.add_observation(self.cur_frame.frame_id, best_idx, pt_2d)
+                mp.update_reprojection_error(repro_error)
                 self.cur_frame.add_point_observation(
-                    mp.point_id, best_idx, pt_2d)
+                    mp, best_idx, pt_2d)
 
         debug_log(
             LOG_TAG, f"Found {len(matched_2d)} projected matches after filtering")
@@ -227,13 +238,19 @@ class Tracker:
 
             point_4d = points_4d[i]
 
-            if (code := is_valid_triangulated_point(idx, self.cur_keyframe, self.prev_keyframe, point_4d)) != TRIANGULATION_VALIDATION_CODE["VALID"]:
+            point_validation_result = is_valid_triangulated_point(
+                idx, self.cur_keyframe, self.prev_keyframe, point_4d)
+
+            if (code := point_validation_result['validation_code']) != TRIANGULATION_VALIDATION_CODE["VALID"]:
                 rejected_points += 1
                 validation_results[TRIANGULATION_VALIDATION_CODE[code]] += 1
                 continue
 
             point = self._create_point_and_register_observations(
                 point_4d, idx)
+            point.update_reprojection_error(
+                point_validation_result['reprojection_error'])
+
             points.append(point)
 
         validation_str = "".join(
@@ -257,7 +274,7 @@ class Tracker:
         point.add_observation(self.cur_keyframe.frame_id,
                               kp_idx_cur, pt_2d_cur)
         self.cur_keyframe.add_point_observation(
-            point.point_id, kp_idx_cur, pt_2d_cur)
+            point, kp_idx_cur, pt_2d_cur)
 
         # Previous keyframe observation
         kp_idx_prev = match.trainIdx
@@ -265,10 +282,11 @@ class Tracker:
         point.add_observation(self.prev_keyframe.frame_id,
                               kp_idx_prev, pt_2d_prev)
         self.prev_keyframe.add_point_observation(
-            point.point_id, kp_idx_prev, pt_2d_prev)
+            point, kp_idx_prev, pt_2d_prev)
 
         return point
 
+    # TODO: Revisit this to see if we can make it more robust
     """
     def _predict_pose_with_optical_flow(self) -> np.ndarray:
         if self.prev_frame is None or self.cur_frame is None:

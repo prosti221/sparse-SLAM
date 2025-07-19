@@ -19,12 +19,12 @@ LOG_TAG = 'BundleAdjustment'
 
 # TODO: Make these static methods, no need to instantiate the class.
 class BundleAdjustment:
-    def __init__(self, max_iterations: int = 50, ftol: float = 1e-7, xtol: float = 1e-7):
+    def __init__(self, max_iterations: int = 10, ftol: float = 1e-7, xtol: float = 1e-7):
         self.max_iterations = max_iterations
         self.ftol = ftol
         self.xtol = xtol
 
-    def local_bundle_adjustment(self, map_obj: Map, reference_frame_id: UUID, window_size: int = 5, fix_points: bool = False) -> bool:
+    def local_bundle_adjustment(self, map_obj: Map, reference_frame_id: UUID, window_size: int = 5) -> bool:
         debug_log(
             LOG_TAG, f"Starting local BA around keyframe {reference_frame_id}")
 
@@ -41,7 +41,7 @@ class BundleAdjustment:
 
         # Get observations (point_idx, frame_idx, 2d_point)
         observations = map_obj.get_observations(
-            local_keyframes, local_points, normalize_points=False)
+            local_keyframes, local_points, normalize_points=True)
 
         if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             warning_log(
@@ -53,14 +53,14 @@ class BundleAdjustment:
 
         # Setup optimization problem
         success = self._optimize_bundle(
-            local_keyframes, local_points, observations, fix_points)
+            local_keyframes, local_points, observations)
 
         if success:
             # Update optimization status
             for kf in local_keyframes:
                 kf.is_pose_optimized = True
                 kf.optimization_iterations += 1
-                kf.compute_tracking_quality(map_obj)
+                kf.compute_tracking_quality()
 
             # Remove outlier points after optimization
             map_obj.remove_outlier_points(
@@ -73,7 +73,7 @@ class BundleAdjustment:
             warning_log(LOG_TAG, "Local BA failed")
             return False
 
-    def global_bundle_adjustment(self, map_obj: Map, max_keyframes: Optional[int] = None, fix_points: bool = True) -> bool:
+    def global_bundle_adjustment(self, map_obj: Map, max_keyframes: Optional[int] = None) -> bool:
         keyframes = map_obj.keyframes
         if max_keyframes and len(keyframes) > max_keyframes:
             # Take most recent keyframes
@@ -81,7 +81,7 @@ class BundleAdjustment:
         points = map_obj.points
 
         observations = map_obj.get_observations(
-            keyframes, points, normalize_points=False)
+            keyframes, points, normalize_points=True)
 
         if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
             warning_log(
@@ -92,14 +92,14 @@ class BundleAdjustment:
             LOG_TAG, f"Global BA with {len(keyframes)} keyframes, {len(points)} points, {len(observations)} observations")
 
         success = self._optimize_bundle(
-            keyframes, points, observations, fix_points)
+            keyframes, points, observations)
 
         if success:
             # Update optimization status
             for kf in keyframes:
                 kf.is_pose_optimized = True
                 kf.optimization_iterations += 1
-                kf.compute_tracking_quality(map_obj)
+                kf.compute_tracking_quality()
 
             # Remove outlier points after global optimization
             map_obj.remove_outlier_points(
@@ -113,8 +113,7 @@ class BundleAdjustment:
         self,
         keyframes: List[Frame],
         points: List[Point],
-        observations: List[Tuple[int, int, np.ndarray]],
-        fix_points: bool = True
+        observations: List[Tuple[int, int, np.ndarray]]
     ) -> bool:
         try:
             # Pack parameters
@@ -147,7 +146,7 @@ class BundleAdjustment:
             if result.success:
                 # Unpack optimized parameters
                 self._unpack_parameters(
-                    result.x, keyframes, points, fix_points)
+                    result.x, keyframes, points)
                 debug_log(
                     LOG_TAG, f"BA converged in {result.nfev} iterations, {optimization_time:.3f}s")
                 avg_reproj_error = np.sqrt(result.cost / len(observations))
@@ -181,7 +180,7 @@ class BundleAdjustment:
 
         return np.array(params)
 
-    def _unpack_parameters(self, x: List[np.ndarray], keyframes: List[Frame], points: List[Point], fix_points: bool = True):
+    def _unpack_parameters(self, x: List[np.ndarray], keyframes: List[Frame], points: List[Point]):
         """
         Unpack optimization vector back to keyframe poses and 3D points
         """
@@ -196,10 +195,9 @@ class BundleAdjustment:
             idx += 6
 
         # Unpack 3D points
-        if not fix_points:
-            for point in points:
-                point.pt_3d = x[idx:idx+3]
-                idx += 3
+        for point in points:
+            point.pt_3d = x[idx:idx+3]
+            idx += 3
 
     def _compute_residuals(
         self,
@@ -233,9 +231,6 @@ class BundleAdjustment:
                     np.linalg.norm(error)
                 )
                 residuals.extend(error)
-
-        debug_log(
-            LOG_TAG, f"Computed {len(residuals)//2} residuals for BA. Error norm: {np.linalg.norm(residuals):.6f}")
 
         return np.array(residuals)
 

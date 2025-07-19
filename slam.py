@@ -11,7 +11,7 @@ import cv2 as cv
 LOG_TAG = 'Main'
 
 if __name__ == '__main__':
-    VIDEO = 'greece'
+    VIDEO = 'desk'
     config = Parser('slam/config/config.yaml')
 
     cap, K = load_video(VIDEO, config)

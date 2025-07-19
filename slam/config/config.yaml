@@ -20,9 +20,36 @@ videos:
   desk:
     path: ./videos/vid3.mp4
     fx: 525
+    fy: 525
+    cx: 319.5
+    cy: 239.5
   calibrated1:
     path: ./videos/calibrated/calibrated1.mp4
     fx: 457.587
     fy: 456.134
     cx: 379.999
     cy: 255.238
+  calibrated3:
+    path: ./videos/calibrated/calibrated3.mp4
+    fx: 896.8715
+    fy: 896.8715
+  calibrated4:
+    path: ./videos/calibrated/calibrated4.mp4
+    fx: 896.8715
+    fy: 896.8715
+  calibrated5:
+    path: ./videos/calibrated/calibrated5.mp4
+    fx: 897.8715
+    fy: 897.8715
+  calibrated6:
+    path: ./videos/calibrated/calibrated6.mp4
+    fx: 896.8715
+    fy: 896.8715
+  calibrated7:
+    path: ./videos/calibrated/calibrated7.mp4
+    fx: 896.8715
+    fy: 896.8715
+  calibrated8:
+    path: ./videos/calibrated/calibrated8.mp4
+    fx: 896.8715
+    fy: 896.8715
