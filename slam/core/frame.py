@@ -31,8 +31,11 @@ class Frame:
         # Matching data
         self.matches = None
 
-        # Enhanced for bundle adjustment
-        self.observed_points: Dict[UUID, Tuple[int, np.ndarray]] = {}
+        # TODO: Could be refactored to use a shared observations structure
+        self.observed_points: Dict[UUID,
+                                   Tuple[int, np.ndarray, Point]] = {}
+
+        # TODO: Remove this, probably not useful
         self.keypoint_to_point_map: Dict[int, UUID] = {}
 
         # Track pose uncertainty and optimization status
@@ -129,12 +132,13 @@ class Frame:
         self.num_tracked_features = len(matches) if matches else 0
 
     def add_point_observation(
-        self, point_id: UUID,
+        self,
+        point: Point,
         keypoint_idx: int,
         pt_2d: np.ndarray
     ) -> None:
-        self.observed_points[point_id] = (keypoint_idx, pt_2d)
-        self.keypoint_to_point_map[keypoint_idx] = point_id
+        self.observed_points[point.point_id] = (keypoint_idx, pt_2d, point)
+        self.keypoint_to_point_map[keypoint_idx] = point.point_id
 
     def remove_point_observation(self, point_id: UUID) -> None:
         if point_id in self.observed_points:
@@ -154,20 +158,27 @@ class Frame:
 
         return cam_coords[:3]
 
-    def project_point(self, point_3d: np.ndarray) -> np.ndarray:
+    def project_point(self, point_3d: np.ndarray, normalized: bool = True) -> np.ndarray:
+        # Transform to camera coordinates
         pt_cam = self.world_to_camera(point_3d)
 
         if pt_cam[2] <= 0:  # Behind camera
             return None
 
-        # Project to image pixel coordinates (u, v)
-        pt_img = self.K @ pt_cam
-        u, v = pt_img[0] / pt_img[2], pt_img[1] / pt_img[2]
+        # Normalized image coordinates (x/z and y/z)
+        x = pt_cam[0] / pt_cam[2]
+        y = pt_cam[1] / pt_cam[2]
 
-        return np.array([u, v])
+        if normalized:
+            return np.array([x, y])
+        else:
+            # Pixel coordinates (u, v)
+            u = self.K[0, 0] * x + self.K[0, 2]
+            v = self.K[1, 1] * y + self.K[1, 2]
+            return np.array([u, v])
 
     def is_point_visible(self, point_3d: np.ndarray, margin: int = 10) -> bool:
-        projected = self.project_point(point_3d)
+        projected = self.project_point(point_3d, normalized=False)
         if projected is None:
             debug_log(
                 LOG_TAG, f"Point {point_3d} is not visible in frame {self.frame_id}")
@@ -186,13 +197,13 @@ class Frame:
             point_3d: 3D point in world coordinates
             observed_2d: 2D point in image pixel oordinates (u, v)
         """
-        projected = self.project_point(point_3d)
+        projected = self.project_point(point_3d, normalized=True)
         if projected is None:
             debug_log(
                 LOG_TAG, f"Point {point_3d} cannot be projected in frame {self.frame_id}")
             return float('inf')
 
-        return np.linalg.norm(projected - observed_2d)
+        return np.linalg.norm(projected - self.normalize_keypoint(observed_2d))
 
     def set_pose_from_6dof(self, pose_6dof: np.ndarray) -> None:
         rvec = pose_6dof[:3]
@@ -205,23 +216,20 @@ class Frame:
         self.pose[:3, :3] = R
         self.pose[:3, 3] = t
 
-    def compute_tracking_quality(self, map_obj) -> float:
+    def compute_tracking_quality(self) -> float:
         if len(self.keypoints) == 0:
             return 0.0
 
         # Count visible map points
-        visible_count = 0
-        high_quality_count = 0
-
-        for point in map_obj.points:
-            if self.frame_id in point.observations:
-                visible_count += 1
-                # Check if point has good quality (multiple observations, low reprojection error)
-                if point.num_observations >= 3 and point.average_reprojection_error < 1.0:
-                    high_quality_count += 1
-
+        visible_count = len(self.observed_points)
         if visible_count == 0:
             return 0.0
+
+        high_quality_count = 0
+        for _, _, point in self.observed_points.values():
+            # Check if point has good quality (multiple observations, low reprojection error)
+            if point.num_observations >= 3 and point.average_reprojection_error < 1.0:
+                high_quality_count += 1
 
         # Quality score combines visibility ratio and point quality
         visibility_ratio = visible_count / len(self.keypoints)

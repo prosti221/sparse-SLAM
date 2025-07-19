@@ -1,6 +1,6 @@
 from collections import defaultdict
 import numpy as np
-from slam.utils.logger import debug_log, error_log
+from slam.utils.logger import debug_log, error_log, warning_log
 from slam.utils.constants import TRACKING_QUALITY_WINDOW_SIZE, TRACKING_QUALITY_THRESHOLD
 from slam.core.point import Point
 from slam.core.frame import Frame
@@ -16,7 +16,6 @@ class Map:
         self.keyframes: List[Frame] = []
         self.point_coords: Set[Tuple[float, float, float]] = set()
 
-        # Enhanced tracking for bundle adjustment
         self.points_by_id: dict[UUID, Point] = {}
         self.keyframes_by_id: dict[UUID, Frame] = {}
 
@@ -40,8 +39,11 @@ class Map:
                 new_points.append(pt)
                 self.points_by_id[pt.point_id] = pt
 
-                # Incrementally update covisibility graph for this point
+                # Update covisibility graph for this point
                 self._add_point_to_covisibility_graph(pt)
+            else:
+                warning_log(
+                    LOG_TAG, f"Point with coordinates {coord_key} already exists. Skipping.")
 
         self.points.extend(new_points)
 

@@ -94,26 +94,37 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     cur_cam_coords = cur_frame.world_to_camera(point_3d)
     prev_cam_coords = prev_frame.world_to_camera(point_3d)
 
+    cur_reprojection_error, prev_reprojection_error = get_reprojection_error(
+        point_idx, cur_frame, prev_frame, point_3d)
+
+    # return cur_error <= max_error and prev_error <= max_error
+    validation_code = TRIANGULATION_VALIDATION_CODE['VALID']
+
     if cur_cam_coords[2] <= MIN_DEPTH or prev_cam_coords[2] <= MIN_DEPTH:
-        return TRIANGULATION_VALIDATION_CODE['MIN_DEPTH_VIOLATION']
+        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_DEPTH_VIOLATION']
 
     # 2. Check depth bounds
     if cur_cam_coords[2] > MAX_DEPTH or prev_cam_coords[2] > MAX_DEPTH:
-        return TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
+        validation_code = TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
 
     # 3. Check parallax angle
     if not check_parallax_angle(cur_frame, prev_frame, point_3d, MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD):
-        return TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION']
+        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION']
 
     # 4. Check reprojection error
-    if not check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, MAX_SQUARED_REPROJECTION_ERROR):
-        return TRIANGULATION_VALIDATION_CODE['MAX_REPROJECTION_ERROR_VIOLATION']
+    if cur_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR:
+        validation_code = TRIANGULATION_VALIDATION_CODE['MAX_REPROJECTION_ERROR_VIOLATION']
 
     # 5. Check if point is well-conditioned (not at infinity)
     if np.abs(point_4d[3]) < 1e-6:
-        return TRIANGULATION_VALIDATION_CODE['WELL_CONDITIONED_VIOLATION']
+        validation_code = TRIANGULATION_VALIDATION_CODE['WELL_CONDITIONED_VIOLATION']
 
-    return TRIANGULATION_VALIDATION_CODE['VALID']
+    result = {
+        'validation_code': validation_code,
+        'reprojection_error': (cur_reprojection_error + prev_reprojection_error) / 2,
+    }
+
+    return result
 
 
 def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
@@ -138,7 +149,7 @@ def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
     return angle_deg >= min_parallax_deg
 
 
-def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_error):
+def get_reprojection_error(point_idx, cur_frame, prev_frame, point_3d):
     match = cur_frame.matches[point_idx]
 
     # Pixel coordinates of the matched keypoints
@@ -146,18 +157,17 @@ def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_err
     prev_2d = np.array(prev_frame.keypoints[match.trainIdx].pt)
 
     # Project the 3D point to both frames
-    # Note: project_point returns pixel coordinates (u, v)
-    cur_proj = cur_frame.project_point(point_3d)
-    prev_proj = prev_frame.project_point(point_3d)
+    cur_proj = cur_frame.project_point(point_3d, normalized=False)
+    prev_proj = prev_frame.project_point(point_3d, normalized=False)
 
     if cur_proj is None or prev_proj is None:
-        return False
+        return float('inf'), float('inf')
 
-    # Compute reprojection errors in normalized space
+    # Compute reprojection errors in pixel image space
     cur_error = np.linalg.norm(cur_proj - cur_2d)
     prev_error = np.linalg.norm(prev_proj - prev_2d)
 
-    return cur_error <= max_error and prev_error <= max_error
+    return cur_error, prev_error
 
 
 def compute_triangulation(frame1, frame2, use_optimization=True):
@@ -333,7 +343,7 @@ def compute_new_points_ratio(cur_frame, map_obj):
     return max(0.0, new_points_count / len(cur_frame.keypoints))
 
 
-def should_insert_keyframe(map_obj, cur_frame, prev_keyframe, is_recovery=False):
+def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
     # 1. Check baseline constraints
     baseline_distance = compute_baseline_distance(cur_frame, prev_keyframe)
     baseline_ok = MINIMUM_BASELINE_THRESHOLD <= baseline_distance
@@ -348,7 +358,7 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe, is_recovery=False)
     new_points_ok = new_points_ratio >= MINIMUM_NUMBER_OF_NEW_POINTS
 
     # 4. Check tracking quality
-    tracking_quality = cur_frame.compute_tracking_quality(map_obj)
+    tracking_quality = cur_frame.compute_tracking_quality()
     quality_ok = tracking_quality >= MINIMUM_KEYFRAME_QUALITY_THRESHOLD
 
     # Decision logic
