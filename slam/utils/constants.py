@@ -21,7 +21,7 @@ MAX_SQUARED_REPROJECTION_ERROR = 2.0
 MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = 0.40
 
 # Window size for local bundle adjustment
-LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE = 4
+LOCAL_BUNDLE_ADJUSTMENT_WINDOW_SIZE = 1
 GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 15  # Interval for global BA
 
 # Bidirectional validation codes
@@ -65,7 +65,7 @@ MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT = 20
 OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS = 4  # Threshold for outlier points
 # Threshold for number of ovservations needed to consider a point as outlier
 OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS = 2
-LEAST_SQUARES_F_SCALE = 0.2  # Scale for least squares optimization
+LEAST_SQUARES_F_SCALE = 1.0  # Scale for least squares optimization
 
 MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT = 50
 OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS = 2

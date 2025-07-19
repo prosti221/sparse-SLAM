@@ -67,6 +67,18 @@ def extractRt(F):
     return ret
 
 
+def extractRtFromE(pts1, pts2, E, K):
+
+    # Extract rotation and translation
+    _, R, t, _ = cv.recoverPose(E, pts1, pts2, K)
+
+    ret = np.eye(4)
+    ret[:3, :3] = R
+    ret[:3, 3] = t.flatten()
+
+    return ret
+
+
 def construct_K(focal_x, focal_y, c_x, c_y):
 
     return np.array([[focal_x, 0, c_x],
@@ -129,11 +141,12 @@ def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
 def check_reprojection_error(point_idx, cur_frame, prev_frame, point_3d, max_error):
     match = cur_frame.matches[point_idx]
 
-    # TODO: Might need to do this with normalized coordinates
-    # Get normalized keypoints
+    # Pixel coordinates of the matched keypoints
     cur_2d = np.array(cur_frame.keypoints[match.queryIdx].pt)
     prev_2d = np.array(prev_frame.keypoints[match.trainIdx].pt)
 
+    # Project the 3D point to both frames
+    # Note: project_point returns pixel coordinates (u, v)
     cur_proj = cur_frame.project_point(point_3d)
     prev_proj = prev_frame.project_point(point_3d)
 
@@ -153,11 +166,10 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
         return np.array([])
 
     # Extract matched points
-    pts1 = np.array([frame1.keypoints[m.queryIdx].pt for m in frame1.matches])
-    pts2 = np.array([frame2.keypoints[m.trainIdx].pt for m in frame1.matches])
-
-    pts1 = normalize(pts1, frame1.Kinv)
-    pts2 = normalize(pts2, frame2.Kinv)
+    pts1 = np.array(
+        [frame1.kp_pts_norm[m.queryIdx] for m in frame1.matches])
+    pts2 = np.array(
+        [frame2.kp_pts_norm[m.trainIdx] for m in frame1.matches])
 
     # Get projection matrices
     P1 = np.linalg.inv(frame1.pose)[:3, :]

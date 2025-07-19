@@ -41,7 +41,7 @@ class BundleAdjustment:
 
         # Get observations (point_idx, frame_idx, 2d_point)
         observations = map_obj.get_observations(
-            local_keyframes, local_points, normalize_points=True)
+            local_keyframes, local_points, normalize_points=False)
 
         if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             warning_log(
@@ -81,7 +81,7 @@ class BundleAdjustment:
         points = map_obj.points
 
         observations = map_obj.get_observations(
-            keyframes, points, normalize_points=True)
+            keyframes, points, normalize_points=False)
 
         if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
             warning_log(
@@ -220,7 +220,7 @@ class BundleAdjustment:
             kf = keyframes_copy[kf_idx]
             point_3d = points_copy[point_idx].pt_3d
 
-            # Project 3D point to image
+            # Project 3D point to image pixel coordinates (u, v)
             projected_2d = kf.project_point(point_3d)
 
             if projected_2d is None:  # Point behind camera
@@ -228,11 +228,14 @@ class BundleAdjustment:
                 points[point_idx].update_reprojection_error(10.0)
             else:
                 # Compute reprojection error
-                error = projected_2d - kf.normalize_keypoint(observed_2d)
+                error = projected_2d - observed_2d
                 points[point_idx].update_reprojection_error(
                     np.linalg.norm(error)
                 )
                 residuals.extend(error)
+
+        debug_log(
+            LOG_TAG, f"Computed {len(residuals)//2} residuals for BA. Error norm: {np.linalg.norm(residuals):.6f}")
 
         return np.array(residuals)
 
