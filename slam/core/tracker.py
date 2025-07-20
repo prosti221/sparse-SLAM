@@ -6,7 +6,6 @@ from typing import List, Tuple
 
 from slam.utils.utils import *
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
-from slam.ba.bundle_adjustment import BundleAdjustment
 from slam.features.matcher import *
 from slam.core.point import Point
 from slam.utils.constants import *
@@ -51,14 +50,8 @@ class Tracker:
         self.prev_frame = self.cur_frame
         self.cur_frame = new_frame
 
-        # Get initial predicted pose
-        Rt = match_features_between_frames(
-            self.cur_frame, self.prev_frame, self.feature_extraction_method)
-        np.dot(self.prev_frame.pose, np.linalg.inv(Rt))
-        # self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
-
         # Optical flow gives mixed results, sometimes good, sometimes shit.
-        # self.cur_frame.pose = self._predict_pose_with_optical_flow()
+        self.cur_frame.pose = self._predict_pose_with_optical_flow()
 
         if should_initialize:
             self._initialize()
@@ -73,15 +66,16 @@ class Tracker:
             self._handle_keyframe_insertion()
 
         # Update the velocity based on the current and previous frame poses
-        """
         self.velocity = self.cur_frame.pose @ np.linalg.inv(
             self.prev_frame.pose)
-        """
 
         self.step += 1
         self.iterations_since_last_keyframe += 1
 
     def _initialize(self):
+        Rt = match_features_between_frames(
+            self.cur_frame, self.prev_frame, self.feature_extraction_method)
+        self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
 
         self.prev_keyframe = self.prev_frame
         self.cur_keyframe = self.cur_frame
@@ -92,15 +86,8 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _on_keyframe_inserted(self):
-        """ 
-        if (self.map.should_perform_global_bundle_adjustment(GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)):
-            self.bundle_adjustment.global_bundle_adjustment()
-        else:
-            self.bundle_adjustment.local_bundle_adjustment(
-                self.prev_keyframe.frame_id,
-                window_size=LOCAL_MAP_WINDOW_SIZE
-            )
-        """
+        self.map.optimize()
+
         triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
 
@@ -180,13 +167,13 @@ class Tracker:
                     best_dist = desc_dist
                     best_idx = i
 
-            if best_idx != -1 and best_dist < 50:
+            if best_idx != -1 and best_dist < 15:
                 repro_error = np.linalg.norm(
                     kp_coords[best_idx] - np.array([u_proj, v_proj]))
 
                 # TODO: Maybe we should allow a larger reprojection error here?
-                if repro_error > 4:
-                    continue
+                # if repro_error > 4:
+                #    continue
 
                 matched_3d.append(mp.pt_3d)
                 matched_2d.append(kp_coords[best_idx])
@@ -286,11 +273,9 @@ class Tracker:
 
         return point
 
-    # TODO: Revisit this to see if we can make it more robust
-    """
     def _predict_pose_with_optical_flow(self) -> np.ndarray:
         if self.prev_frame is None or self.cur_frame is None:
-            debug_log(LOG_TAG, "Missing frames for optical flow prediction.")
+            error_log(LOG_TAG, "Missing frames for optical flow prediction.")
             return np.eye(4)
 
         # Step 1: Get grayscale images
@@ -299,57 +284,69 @@ class Tracker:
 
         # Step 2: Get keypoints from previous frame
         if self.prev_frame.keypoints is None or len(self.prev_frame.keypoints) < 8:
-            debug_log(LOG_TAG, "Not enough keypoints for optical flow.")
+            warning_log(
+                LOG_TAG, f"Not enough keypoints: {len(self.prev_frame.keypoints) if self.prev_frame.keypoints else 0}")
             return self.velocity @ self.prev_frame.pose
 
-        prev_kps = np.array(
-            [kp.pt for kp in self.prev_frame.keypoints], dtype=np.float32)
+        # Ensure keypoints are in correct format (float32)
+        prev_kps = np.array(self.prev_frame.kp_pts, dtype=np.float32)
 
-        # Step 3: Compute optical flow (KLT)
-        next_kps, status, _ = cv.calcOpticalFlowPyrLK(
-            prev_img, cur_img, prev_kps, None)
+        next_kps, status, error = cv.calcOpticalFlowPyrLK(
+            prev_img, cur_img, prev_kps, None,
+        )
 
         if next_kps is None or status is None:
-            debug_log(LOG_TAG, "Optical flow failed.")
             return self.velocity @ self.prev_frame.pose
 
-        # Step 4: Filter valid matches
         status = status.flatten()
-        matched_prev = prev_kps[status == 1]
-        matched_next = next_kps[status == 1]
+        valid_mask = (status == 1)
+
+        # Additional filtering based on tracking error
+        if error is not None:
+            error = error.flatten()
+            error_threshold = np.median(error)
+            error_mask = error < error_threshold
+            # valid_mask = valid_mask & error_mask
+
+        matched_prev = prev_kps[valid_mask]
+        matched_next = next_kps[valid_mask]
+
+        debug_log(
+            LOG_TAG, f"Valid optical flow matches for RANSAC: {np.sum(valid_mask)}/{len(status)}")
+
+        if len(matched_prev) < 8:
+            warning_log(
+                LOG_TAG, f"Too few optical flow matches: {len(matched_prev)}")
+            return self.velocity @ self.prev_frame.pose
 
         matched_prev_norm = normalize(matched_prev, self.prev_frame.Kinv)
         matched_next_norm = normalize(matched_next, self.cur_frame.Kinv)
 
-        if len(matched_prev) < 8:
-            debug_log(LOG_TAG, "Too few optical flow matches.")
-            return self.velocity @ self.prev_frame.pose
-
-        # Step 5: Estimate essential matrix
         E, mask = cv.findEssentialMat(
             matched_next_norm, matched_prev_norm,
-            method=cv.RANSAC, prob=0.999, threshold=0.005
+            method=cv.RANSAC,
+            prob=0.999,
+            threshold=0.000005,
+            maxIters=1000
         )
 
         if E is None or mask is None:
-            debug_log(LOG_TAG, "Essential matrix estimation failed.")
+            warning_log(LOG_TAG, "Essential matrix estimation failed.")
             return self.velocity @ self.prev_frame.pose
 
+        # Step 7: Filter inliers
         inliers = mask.flatten() == 1
-        matched_prev_norm = matched_prev_norm[inliers]
-        matched_next_norm = matched_next_norm[inliers]
 
-        if len(matched_prev) < 5:
-            debug_log(
-                LOG_TAG, "Too few inliers after essential matrix estimation.")
+        debug_log(
+            LOG_TAG, f"RANSAC inliers: {np.sum(inliers)}/{len(matched_prev)} ({np.sum(inliers)/len(matched_prev)*100:.1f}%)")
+
+        if len(inliers) < 5:
+            warning_log(LOG_TAG, f"Too few inliers: {np.sum(inliers)}")
             return self.velocity @ self.prev_frame.pose
 
-        Rt = extractRt(E)
+        Rt = extractRtFromE(matched_next_norm,
+                            matched_prev_norm, E, self.cur_frame.Kinv)
 
         predicted_pose = Rt @ self.prev_frame.pose
 
-        debug_log(
-            LOG_TAG, f"Predicted pose using optical flow with {len(matched_prev)} inliers.")
-
         return predicted_pose
-    """

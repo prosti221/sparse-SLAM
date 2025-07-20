@@ -18,7 +18,7 @@ if __name__ == '__main__':
 
     global_map = Map()
     tracker = Tracker(
-        global_map, feature_extraction_method=ORB_EXTRACTOR_NAME)
+        global_map, feature_extraction_method=DNN_EXTRACTOR_NAME)
     renderer = Renderer(K)
 
     renderer.start()

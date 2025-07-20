@@ -108,6 +108,8 @@ class Renderer:
         self.ctrl.convert_from_pinhole_camera_parameters(
             self.camera_parameters, allow_arbitrary=True)
 
+        self.ctrl.set_constant_z_far(10000.0)
+
         self.camera_initialized = True
 
     def _construct_pose_geometry(self, keyframe):

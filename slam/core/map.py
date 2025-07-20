@@ -1,9 +1,19 @@
 from collections import defaultdict
 import numpy as np
 from slam.utils.logger import debug_log, error_log, warning_log
-from slam.utils.constants import TRACKING_QUALITY_WINDOW_SIZE, TRACKING_QUALITY_THRESHOLD
+from slam.utils.constants import (
+    OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS,
+    OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS,
+    OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS,
+    OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS,
+    TRACKING_QUALITY_WINDOW_SIZE,
+    TRACKING_QUALITY_THRESHOLD,
+    GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL,
+    LOCAL_MAP_WINDOW_SIZE
+)
 from slam.core.point import Point
 from slam.core.frame import Frame
+from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 from typing import List, Tuple, Set
 from uuid import UUID
 
@@ -28,6 +38,7 @@ class Map:
 
         # Tracking quality history
         self.tracking_quality_history: dict[UUID, float] = {}
+        self.g2o_optimizer = G2OBundleAdjustment(self)
 
     def add_points(self, points: List[Point]):
         new_points = []
@@ -66,6 +77,29 @@ class Map:
                 self._add_keyframe_to_point_covisibility(kf.frame_id, point)
 
         self.update_tracking_quality(kf.frame_id, kf.tracking_quality)
+
+    def optimize(self):
+        # Decide if we need to optimize globally
+        # TODO: Figure out better criterias for deciding this, maybe based on the current tracking quality?
+        success = False
+        perform_global_ba = self.should_perform_global_bundle_adjustment(
+            GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)
+        if (perform_global_ba):
+            success = self.g2o_optimizer.global_bundle_adjustment()
+        else:
+            success = self.g2o_optimizer.local_bundle_adjustment(
+                self.keyframes[-2].frame_id,
+                window_size=LOCAL_MAP_WINDOW_SIZE,
+                fix_points=False
+            )
+        if success:
+            debug_log(LOG_TAG, "BA was successful, pruning outlier points...")
+            self.prune_outlier_points(
+                outlier_threshold=OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS if perform_global_ba else OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS,
+                min_observations=OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS if perform_global_ba else OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS
+            )
+        else:
+            warning_log(LOG_TAG, "BA failed")
 
     def _add_point_to_covisibility_graph(self, point: Point):
         observing_kfs = point.get_observing_keyframes()
@@ -187,7 +221,7 @@ class Map:
 
         return observations
 
-    def remove_outlier_points(self, outlier_threshold: float = 3.0, min_observations: int = 3):
+    def prune_outlier_points(self, outlier_threshold: float = 3.0, min_observations: int = 3):
         removed_count = 0
 
         for idx in reversed(range(len(self.points))):

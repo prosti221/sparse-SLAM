@@ -63,15 +63,15 @@ class BundleAdjustment:
                 kf.compute_tracking_quality()
 
             # Remove outlier points after optimization
-            map_obj.remove_outlier_points(
+            map_obj.prune_outlier_points(
                 outlier_threshold=OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS,
                 min_observations=OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS
             )
 
             return True
-        else:
-            warning_log(LOG_TAG, "Local BA failed")
-            return False
+
+        warning_log(LOG_TAG, "Local BA failed")
+        return False
 
     def global_bundle_adjustment(self, map_obj: Map, max_keyframes: Optional[int] = None) -> bool:
         keyframes = map_obj.keyframes
@@ -101,13 +101,10 @@ class BundleAdjustment:
                 kf.optimization_iterations += 1
                 kf.compute_tracking_quality()
 
-            # Remove outlier points after global optimization
-            map_obj.remove_outlier_points(
-                outlier_threshold=OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS,
-                min_observations=OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS
-            )
-
             return True
+
+        warning_log(LOG_TAG, "Global BA failed")
+        return False
 
     def _optimize_bundle(
         self,
