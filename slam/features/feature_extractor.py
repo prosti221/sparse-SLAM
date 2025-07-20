@@ -32,8 +32,8 @@ class FeatureExtractor:
                 self.detector = SuperPointFrontend(
                     weights_path="weights/superpoint_v1.pth",
                     nms_dist=4,
-                    # conf_thresh=0.015,
-                    conf_thresh=0.000000015,
+                    conf_thresh=0.00000005,
+                    # conf_thresh=0.000000015,
                 )
                 self.extract_handler = self._extract_dnn
             case _:
@@ -68,9 +68,8 @@ class FeatureExtractor:
         return keypoints, descriptors
 
     def _extract_orb(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        gray = np.mean(img, axis=2).astype(np.uint8)
         pts = cv.goodFeaturesToTrack(
-            gray,
+            img,
             self.orb_config["n_pts"],
             qualityLevel=self.orb_config["quality_level"],
             minDistance=self.orb_config["min_distance"]

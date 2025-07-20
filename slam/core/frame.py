@@ -119,7 +119,12 @@ class Frame:
         return self.keypoints, self.descriptors
 
     def get_gray_image(self) -> np.ndarray:
-        return cv.cvtColor(self.image, cv.IMREAD_GRAYSCALE)
+        if len(self.image.shape) == 3:
+            if self.image.shape[2] == 4:  # RGBA
+                return cv.cvtColor(self.image, cv.COLOR_RGBA2GRAY)
+            elif self.image.shape[2] == 3:  # RGB
+                return cv.cvtColor(self.image, cv.COLOR_RGB2GRAY)
+        return self.image  # Already grayscale
 
     def set_features(self, keypoints: List[cv.KeyPoint], descriptors: np.ndarray) -> None:
         self.keypoints = keypoints

@@ -53,3 +53,9 @@ videos:
     path: ./videos/calibrated/calibrated8.mp4
     fx: 896.8715
     fy: 896.8715
+  synthetic:
+    path: ./videos/calibrated/synthetic.mp4
+    fx: 224.06641222710715
+    fy: 224.06641222710715
+    cx: 320.0
+    cy: 240.0

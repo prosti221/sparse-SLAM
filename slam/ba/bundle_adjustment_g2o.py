@@ -1,6 +1,6 @@
 import g2o
 import numpy as np
-from slam.core.map import Map
+# from slam.core.map import Map
 from slam.core.frame import Frame
 from slam.core.point import Point
 from typing import List, Tuple
@@ -13,11 +13,11 @@ LOG_TAG = 'g2oBA'
 
 
 class G2OBundleAdjustment:
-    def __init__(self, map: Map, verbose=False):
+    def __init__(self, map, verbose=False):
         self.verbose = verbose
-        self.map: Map = map
+        self.map = map
 
-    def local_bundle_adjustment(self, reference_frame_id: UUID, window_size: int = 5) -> bool:
+    def local_bundle_adjustment(self, reference_frame_id: UUID, window_size: int = 5, fix_points=True) -> bool:
         debug_log(
             LOG_TAG, f"Starting local BA with g2o around keyframe {reference_frame_id}")
 
@@ -39,7 +39,7 @@ class G2OBundleAdjustment:
                 LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
             return False
 
-        return self._optimize_with_g2o(local_keyframes, local_points, observations, fix_points=True)
+        return self._optimize_with_g2o(local_keyframes, local_points, observations, fix_points=fix_points)
 
     def global_bundle_adjustment(self) -> bool:
         debug_log(LOG_TAG, "Starting global BA with g2o")
@@ -94,10 +94,9 @@ class G2OBundleAdjustment:
                 frame_to_vertex[kf] = v_se3
 
             # Find the best point based on reprojection error
-            best_point_idx, lowest_point_error = 0, float("inf")
-            for i, point in enumerate(points):
-                if point.average_reprojection_error < lowest_point_error:
-                    best_point_idx, lowest_point_error = i, point.average_reprojection_error
+            n = 5
+            best_indices = sorted(
+                range(len(points)), key=lambda i: points[i].average_reprojection_error)[:n]
 
             # Add point vertices with unique IDs
             for i, point in enumerate(points):
@@ -106,7 +105,7 @@ class G2OBundleAdjustment:
                 v_point.set_estimate(point.pt_3d)
                 v_point.set_marginalized(True)
                 # Fix the best point
-                v_point.set_fixed(fix_points or i == best_point_idx)
+                v_point.set_fixed(fix_points or i in best_indices)
                 opt.add_vertex(v_point)
                 point_to_vertex[point] = v_point
 
@@ -197,7 +196,7 @@ class G2OBundleAdjustment:
             else:
                 error = np.linalg.norm(projected_point - pt_2d_observed)
 
-            # TODO: This is terrible, figure out how to unify quality updates.
+            # TODO: This is terrible, figure out how to unify quality updates and move the logic over to the map.
             point.update_reprojection_error(error)
             kf.compute_tracking_quality()
             self.map.update_tracking_quality(kf.frame_id, kf.tracking_quality)
