@@ -23,6 +23,12 @@ videos:
     fy: 525
     cx: 319.5
     cy: 239.5
+  kitti:
+    path: ./videos/calibrated/kitti.mp4
+    fx: 718.856
+    fy: 718.856
+    cx: 607.1928
+    cy: 185.2157
   calibrated1:
     path: ./videos/calibrated/calibrated1.mp4
     fx: 457.587

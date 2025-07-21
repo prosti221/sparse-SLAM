@@ -3,19 +3,21 @@ import numpy as np
 from slam.utils.utils import pt_obj_to_array
 from slam.utils.logger import debug_log, info_log, error_log, warning_log
 from slam.utils.constants import TRACKING_QUALITY_GRADIENT
+from slam.core.map import Map
 import cv2 as cv
 
 LOG_TAG = 'Renderer'
 
 
 class Renderer:
-    def __init__(self, K, width=1920, height=1080):
+    def __init__(self, map: Map, K, width=1920, height=1080):
         self.vis = o3d.visualization.VisualizerWithKeyCallback()
 
         self.width = width
         self.height = height
 
         self.K = K
+        self.map: Map = map
 
         self.point_cloud = o3d.geometry.PointCloud()
 
@@ -52,6 +54,10 @@ class Renderer:
     def is_paused(self):
         return self.paused
 
+    def update(self):
+        self.update_points(self.map.points)
+        self.update_poses(self.map.keyframes)
+
     def update_points(self, pts):
         if len(pts) == 0:
             error_log(LOG_TAG, "No points to render")
@@ -77,7 +83,13 @@ class Renderer:
     def update_poses(self, keyframes):
         if not self.camera_initialized:
             first_kf = keyframes[0]
-            self._initialize_camera(first_kf.get_pose().copy())
+            self._initialize_camera(first_kf.pose)
+
+        # Get current keyframe IDs from the map
+        current_keyframe_ids = {kf.frame_id for kf in keyframes}
+
+        # Remove poses that are no longer in the map
+        self._remove_deleted_poses(current_keyframe_ids)
 
         for kf in keyframes:
             if kf.frame_id not in self.poses:
@@ -113,7 +125,7 @@ class Renderer:
         self.camera_initialized = True
 
     def _construct_pose_geometry(self, keyframe):
-        pose = keyframe.get_pose()
+        pose = keyframe.pose
         R, t = pose[:3, :3], pose[:3, 3]
         points, lines = self._draw_camera_object(R, t)
 
@@ -130,7 +142,7 @@ class Renderer:
         return new_cam
 
     def _update_pose_geometry(self, keyframe):
-        pose = keyframe.get_pose()
+        pose = keyframe.pose
         R, t = pose[:3, :3], pose[:3, 3]
         points, lines = self._draw_camera_object(R, t)
 
@@ -190,3 +202,36 @@ class Renderer:
         rgb_pixel = cv.cvtColor(hsv_pixel, cv.COLOR_HSV2RGB)[0][0]
 
         return [float(c) / 255.0 for c in rgb_pixel]
+
+    def _remove_deleted_poses(self, current_keyframe_ids):
+        """Remove pose geometries for keyframes that are no longer in the map."""
+        poses_to_remove = []
+
+        for keyframe_id in self.poses.keys():
+            if keyframe_id not in current_keyframe_ids:
+                poses_to_remove.append(keyframe_id)
+
+        for keyframe_id in poses_to_remove:
+            debug_log(
+                LOG_TAG, f"Removing pose geometry for deleted frame {keyframe_id}")
+            pose_geometry = self.poses[keyframe_id][0]
+
+            # Remove from visualizer
+            self.vis.remove_geometry(pose_geometry, False)
+
+            # Remove from poses dictionary
+            del self.poses[keyframe_id]
+
+        if poses_to_remove:
+            debug_log(
+                LOG_TAG, f"Removed {len(poses_to_remove)} pose geometries")
+
+    def remove_pose_by_id(self, keyframe_id):
+        """Manually remove a specific pose geometry by keyframe ID."""
+        if keyframe_id in self.poses:
+            debug_log(
+                LOG_TAG, f"Manually removing pose geometry for frame {keyframe_id}")
+            pose_geometry = self.poses[keyframe_id][0]
+
+            # Remove from visualizer
+            self.vis.remove_geometry(pose_geometry, False)

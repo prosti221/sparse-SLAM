@@ -25,25 +25,22 @@ class Tracker:
         self.prev_frame: Frame = None
         self.map: Map = map
 
-        self.cur_keyframe: Frame = None
-        self.prev_keyframe: Frame = None
-
         self.velocity = np.eye(4)
         self.iterations_since_last_keyframe = 0
 
         self.bundle_adjustment = G2OBundleAdjustment(map)
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
 
-    def update(self, new_frame: Frame) -> None:
+    def update(self, new_frame: Frame) -> bool:
         # Extract features from the new frame
         new_kps, new_descs = self.feature_extractor.extract(
-            new_frame.get_gray_image())
+            new_frame.gray_image)
         new_frame.set_features(new_kps, new_descs)
 
         # If this is the first frame, initialize the current frame
         if not self.cur_frame:
             self.cur_frame = new_frame
-            return
+            return False
 
         # Check if this is during initialization
         should_initialize = self.prev_frame is None
@@ -72,16 +69,16 @@ class Tracker:
         self.step += 1
         self.iterations_since_last_keyframe += 1
 
+        return self.cur_frame.is_keyframe
+
     def _initialize(self):
         Rt = match_features_between_frames(
             self.cur_frame, self.prev_frame, self.feature_extraction_method)
-        self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
+        if Rt is not None:
+            self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
 
-        self.prev_keyframe = self.prev_frame
-        self.cur_keyframe = self.cur_frame
-
-        self.map.add_keyframe(self.prev_keyframe)
-        self.map.add_keyframe(self.cur_keyframe)
+        self.map.add_keyframe(self.prev_frame)
+        self.map.add_keyframe(self.cur_frame)
 
         self._on_keyframe_inserted()
 
@@ -93,7 +90,7 @@ class Tracker:
 
     def _handle_keyframe_insertion(self):
         should_insert, result = should_insert_keyframe(
-            self.map, self.cur_frame, self.cur_keyframe)
+            self.map, self.cur_frame, self.map.cur_keyframe)
 
         if not should_insert and self.iterations_since_last_keyframe < MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES:
             debug_log(
@@ -101,18 +98,19 @@ class Tracker:
             return
         debug_log(
             LOG_TAG, f"Inserting keyframe after {self.iterations_since_last_keyframe} iterations.")
-        self.prev_keyframe = self.cur_keyframe
-        self.cur_keyframe = self.cur_frame
+
+        self.map.add_keyframe(self.cur_frame)
+
         match_features_between_frames(
-            self.cur_keyframe, self.prev_keyframe, self.feature_extraction_method)
-        self.map.add_keyframe(self.cur_keyframe)
+            self.map.cur_keyframe, self.map.prev_keyframe, self.feature_extraction_method)
+
         self.iterations_since_last_keyframe = 0
         self._on_keyframe_inserted()
 
     def _project_visible_map_points(self) -> List[Tuple[Point, np.ndarray]]:
         projected_points = []
         local_keyframes = self.map.get_local_keyframes(
-            self.cur_keyframe.frame_id, LOCAL_MAP_WINDOW_SIZE)
+            self.map.cur_keyframe.frame_id, LOCAL_MAP_WINDOW_SIZE)
         local_map_points = self.map.get_local_points(local_keyframes)
 
         for mp in local_map_points:
@@ -136,7 +134,9 @@ class Tracker:
         _, descriptors = self.cur_frame.get_keypoints_descriptors()
         kp_coords = self.cur_frame.kp_pts
 
-        if len(kp_coords) == 0:
+        if kp_coords is None or len(kp_coords) == 0:
+            warning_log(
+                LOG_TAG, "No keypoints available for projection matching")
             return np.array([]), np.array([])
 
         tree = cKDTree(kp_coords)
@@ -171,10 +171,6 @@ class Tracker:
                 repro_error = np.linalg.norm(
                     kp_coords[best_idx] - np.array([u_proj, v_proj]))
 
-                # TODO: Maybe we should allow a larger reprojection error here?
-                # if repro_error > 4:
-                #    continue
-
                 matched_3d.append(mp.pt_3d)
                 matched_2d.append(kp_coords[best_idx])
 
@@ -191,23 +187,23 @@ class Tracker:
         return np.array(matched_3d), np.array(matched_2d)
 
     def _triangulate(self) -> List[Point]:
-        if not (self.cur_keyframe and self.prev_keyframe):
+        if not (self.map.cur_keyframe and self.map.prev_keyframe):
             warning_log(LOG_TAG, "Not enough keyframes to triangulate points.")
             return []
 
         # Filter out already observed matches from current frame
-        pre_filter_match_count = len(self.cur_frame.matches)
-        self.cur_frame.set_match_data([
-            m for m in self.cur_frame.matches
-            if m.queryIdx not in self.cur_frame.keypoint_to_point_map
+        pre_filter_match_count = len(self.map.cur_keyframe.matches)
+        self.map.cur_keyframe.set_match_data([
+            m for m in self.map.cur_keyframe.matches
+            if m.queryIdx not in self.map.cur_keyframe.keypoint_to_point_map
         ])
-        post_filter_match_count = len(self.cur_frame.matches)
+        post_filter_match_count = len(self.map.cur_keyframe.matches)
         debug_log(
             LOG_TAG, f"Removing duplicate points before triangulation. From {pre_filter_match_count} to {post_filter_match_count}")
 
         # Triangulate points
         points_4d = compute_triangulation(
-            self.cur_keyframe, self.prev_keyframe, use_optimization=True)
+            self.map.cur_keyframe, self.map.prev_keyframe, use_optimization=True)
 
         valid_points = points_4d[:, 3] != 0
         points_4d = points_4d[valid_points]
@@ -218,15 +214,18 @@ class Tracker:
 
         rejected_points = 0
         validation_results = defaultdict(lambda: 0)
+        # set_dynamic_triangulation_constraints(
+        #    self.map.cur_keyframe, self.map.prev_keyframe, points_4d[:, :3], valid_indices)
+
         for i, idx in enumerate(valid_indices):
-            if idx >= len(self.cur_keyframe.matches):
+            if idx >= len(self.map.cur_keyframe.matches):
                 error_log(LOG_TAG, f"Index {idx} out of bounds for matches.")
                 break
 
             point_4d = points_4d[i]
 
             point_validation_result = is_valid_triangulated_point(
-                idx, self.cur_keyframe, self.prev_keyframe, point_4d)
+                idx, self.map.cur_keyframe, self.map.prev_keyframe, point_4d)
 
             if (code := point_validation_result['validation_code']) != TRIANGULATION_VALIDATION_CODE["VALID"]:
                 rejected_points += 1
@@ -249,26 +248,27 @@ class Tracker:
         return points
 
     def _create_point_and_register_observations(self, point_4d: np.ndarray, point_idx: int) -> Point:
-        match = self.cur_keyframe.matches[point_idx]
+        match = self.map.cur_keyframe.matches[point_idx]
         point = Point(
             np.array(point_4d)[:3],
             self.cur_frame.get_color_value_for_keypoint(match.queryIdx),
-            self.cur_keyframe.get_keypoints_descriptors()[1][match.queryIdx]
+            self.map.cur_keyframe.get_keypoints_descriptors()[
+                1][match.queryIdx]
         )
         # Current keyframe observation
         kp_idx_cur = match.queryIdx
-        pt_2d_cur = self.cur_keyframe.keypoints[kp_idx_cur].pt
-        point.add_observation(self.cur_keyframe.frame_id,
+        pt_2d_cur = self.map.cur_keyframe.keypoints[kp_idx_cur].pt
+        point.add_observation(self.map.cur_keyframe.frame_id,
                               kp_idx_cur, pt_2d_cur)
-        self.cur_keyframe.add_point_observation(
+        self.map.cur_keyframe.add_point_observation(
             point, kp_idx_cur, pt_2d_cur)
 
         # Previous keyframe observation
         kp_idx_prev = match.trainIdx
-        pt_2d_prev = self.prev_keyframe.keypoints[kp_idx_prev].pt
-        point.add_observation(self.prev_keyframe.frame_id,
+        pt_2d_prev = self.map.prev_keyframe.keypoints[kp_idx_prev].pt
+        point.add_observation(self.map.prev_keyframe.frame_id,
                               kp_idx_prev, pt_2d_prev)
-        self.prev_keyframe.add_point_observation(
+        self.map.prev_keyframe.add_point_observation(
             point, kp_idx_prev, pt_2d_prev)
 
         return point
@@ -279,8 +279,8 @@ class Tracker:
             return np.eye(4)
 
         # Step 1: Get grayscale images
-        prev_img = self.prev_frame.get_gray_image()
-        cur_img = self.cur_frame.get_gray_image()
+        prev_img = self.prev_frame.gray_image
+        cur_img = self.cur_frame.gray_image
 
         # Step 2: Get keypoints from previous frame
         if self.prev_frame.keypoints is None or len(self.prev_frame.keypoints) < 8:

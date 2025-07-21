@@ -4,6 +4,7 @@ from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
 from slam.utils.logger import *
 from slam.utils.constants import *
+import slam.utils.constants
 
 LOG_TAG = 'Utils'
 
@@ -100,19 +101,19 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     # return cur_error <= max_error and prev_error <= max_error
     validation_code = TRIANGULATION_VALIDATION_CODE['VALID']
 
-    if cur_cam_coords[2] <= MIN_DEPTH or prev_cam_coords[2] <= MIN_DEPTH:
+    if cur_cam_coords[2] <= slam.utils.constants.MIN_DEPTH or prev_cam_coords[2] <= slam.utils.constants.MIN_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MIN_DEPTH_VIOLATION']
 
     # 2. Check depth bounds
-    if cur_cam_coords[2] > MAX_DEPTH or prev_cam_coords[2] > MAX_DEPTH:
+    if cur_cam_coords[2] > slam.utils.constants.MAX_DEPTH or prev_cam_coords[2] > slam.utils.constants.MAX_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
 
     # 3. Check parallax angle
-    if not check_parallax_angle(cur_frame, prev_frame, point_3d, MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD):
+    if not check_parallax_angle(cur_frame, prev_frame, point_3d, slam.utils.constants.MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD):
         validation_code = TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION']
 
     # 4. Check reprojection error
-    if cur_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR:
+    if cur_reprojection_error > slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_REPROJECTION_ERROR_VIOLATION']
 
     # 5. Check if point is well-conditioned (not at infinity)
@@ -129,8 +130,8 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
 
 def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
     # Get camera centers
-    cur_center = cur_frame.get_camera_center()
-    prev_center = prev_frame.get_camera_center()
+    cur_center = cur_frame.camera_center
+    prev_center = prev_frame.camera_center
 
     # Compute viewing rays
     ray1 = point_3d - cur_center
@@ -282,8 +283,8 @@ def optimize_triangulation(pt1, pt2, P1, P2, initial_guess, max_iterations=10):
 
 
 def compute_baseline_distance(frame1, frame2):
-    center1 = frame1.get_camera_center()
-    center2 = frame2.get_camera_center()
+    center1 = frame1.camera_center
+    center2 = frame2.camera_center
     return np.linalg.norm(center2 - center1)
 
 
@@ -313,8 +314,8 @@ def compute_average_parallax(cur_frame, prev_keyframe, map_obj):
 
 
 def compute_point_parallax(frame1, frame2, point_3d):
-    center1 = frame1.get_camera_center()
-    center2 = frame2.get_camera_center()
+    center1 = frame1.camera_center
+    center2 = frame2.camera_center
 
     # Rays from cameras to point
     ray1 = point_3d - center1
@@ -413,3 +414,88 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
         return True, "Quality criteria met"
     else:
         return False, "; ".join(reasons)
+
+# Testing
+
+
+def compute_bounds_mad(values, mad_multiplier=3.0):
+    median_value = np.median(values)
+    mad = np.median(np.abs(values - median_value))
+
+    mad_std = mad * 1.4826
+
+    min = median_value - mad_multiplier * mad_std
+    max = median_value + mad_multiplier * mad_std
+
+    return min, max
+
+
+def set_dynamic_triangulation_constraints(frame1, frame2, pts_3d, valid_indices):
+    # Compute parallax values for valid points
+    parallax_values = np.array([
+        compute_point_parallax(frame1, frame2, pts_3d[i])
+        for i in valid_indices
+    ])
+
+    # Set minimum parallax threshold (use a percentile or median-based approach)
+    parallax_lower_bound = max(0.3, np.percentile(
+        parallax_values, 5))  # 75th percentile
+    slam.utils.constants.MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = parallax_lower_bound
+
+    # Compute reprojection errors
+    errors = np.array([
+        get_reprojection_error(idx, frame1, frame2, pts_3d[i])
+        for i, idx in enumerate(valid_indices)
+    ])
+
+    # Set maximum reprojection error threshold
+    reprojection_error_lower_bound = np.percentile(errors.flatten(), 95)
+    slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR = min(
+        2.00, reprojection_error_lower_bound
+    )
+
+    # Extract depths for valid points only
+    valid_depths = np.array([pts_3d[i][2] for i in valid_indices])
+    # Filter out non-positive depths
+    valid_depths = valid_depths[valid_depths > 0]
+
+    if len(valid_depths) > 0:
+        min_depth, max_depth = compute_bounds_mad(valid_depths, 1.0)
+        slam.utils.constants.MIN_DEPTH = max(
+            0.0, min_depth)
+        slam.utils.constants.MAX_DEPTH = max_depth
+
+    debug_log(
+        LOG_TAG,
+        f"Dynamic triangulation constraints updated:\n"
+        f"  Parallax: min={slam.utils.constants.MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD:.3f}° "
+        f"(from {len(parallax_values)} points, 5th percentile: {np.percentile(parallax_values, 5):.3f}°)\n"
+        f"  Reprojection Error: max={slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR:.3f} "
+        f"(from {len(errors)} points, 95th percentile: {np.percentile(errors, 95):.3f}°)\n"
+        f"  Depth: min={slam.utils.constants.MIN_DEPTH:.3f}m, max={slam.utils.constants.MAX_DEPTH:.3f}m "
+        f"(from {len(valid_depths)} valid depths, MAD bounds)\n"
+        f"  Depth stats: median={np.median(valid_depths):.3f}m, "
+        f"std={np.std(valid_depths):.3f}m, range=[{np.min(valid_depths):.3f}, {np.max(valid_depths):.3f}]m"
+    )
+
+
+def visualize_matches(frame1, frame2, matches=None, save_path=None):
+    if matches is None:
+        matches = frame1.matches
+    if matches is None or len(matches) == 0:
+        return
+
+    img1 = frame1.image
+    img2 = frame2.image
+    kp1 = frame1.keypoints
+    kp2 = frame2.keypoints
+
+    img_matches = cv.drawMatches(
+        img1, kp1, img2, kp2, matches, None, flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+
+    if save_path:
+        cv.imwrite(save_path, img_matches)
+    else:
+        cv.imshow('Matches', img_matches)
+        cv.waitKey(0)
+        cv.destroyAllWindows()

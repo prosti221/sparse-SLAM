@@ -168,7 +168,7 @@ class BundleAdjustment:
         for i, kf in enumerate(keyframes):
             if i == 0:  # Keep first keyframe fixed as reference
                 continue
-            pose_6dof = kf.get_pose_6dof()
+            pose_6dof = kf.pose_6dof
             params.extend(pose_6dof)
 
         # Pack 3D points (3DOF each)
@@ -188,7 +188,7 @@ class BundleAdjustment:
             if i == 0:  # First keyframe is fixed
                 continue
             pose_6dof = x[idx:idx+6]
-            kf.set_pose_from_6dof(pose_6dof)
+            kf.pose_6dof = pose_6dof
             idx += 6
 
         # Unpack 3D points

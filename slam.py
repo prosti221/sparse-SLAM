@@ -11,20 +11,18 @@ import cv2 as cv
 LOG_TAG = 'Main'
 
 if __name__ == '__main__':
-    VIDEO = 'desk'
+    VIDEO = 'kitti'
     config = Parser('slam/config/config.yaml')
 
     cap, K = load_video(VIDEO, config)
 
     global_map = Map()
     tracker = Tracker(
-        global_map, feature_extraction_method=DNN_EXTRACTOR_NAME)
-    renderer = Renderer(K)
+        global_map, feature_extraction_method=ORB_EXTRACTOR_NAME)
+    renderer = Renderer(global_map, K)
 
     renderer.start()
 
-    prev_img = None
-    keyframe_count = 0
     while True:
         renderer.vis.poll_events()
         renderer.vis.update_renderer()
@@ -34,25 +32,18 @@ if __name__ == '__main__':
 
         ret, img = cap.read()
         if not ret:
-            error_log(LOG_TAG, "Can't receive frame (stream end?). Exiting ...")
+            error_log(LOG_TAG, "Can't receive frame (stream end?).")
             break
 
         frame = Frame(img, K)
 
         # Update state estimator with new features
-        tracker.update(frame)
+        is_new_keyframe = tracker.update(frame)
 
         # Render the point cloud and camera poses if a new keyframe is detected
-        if keyframe_count != len(global_map.keyframes):
-            keyframe_count = len(global_map.keyframes)
+        if is_new_keyframe:
             info_log(
-                LOG_TAG, f"Updating renderer with {len(global_map.points)} points and {len(global_map.keyframes)} keyframes ")
-            # Render point cloud and camera poses
-            renderer.update_points(global_map.points)
-            renderer.update_poses(global_map.keyframes)
-
-            info_log(
-                LOG_TAG, f"Map tracking quality is {global_map.get_avg_tracking_quality()}")
+                LOG_TAG, f"Updating renderer with {len(global_map.points)} points and {len(global_map.keyframes)} keyframes. Map tracking quality is: {global_map.avg_tracking_quality}")
+            renderer.update()
 
         cv.imshow('frame', img)
-        prev_img = img

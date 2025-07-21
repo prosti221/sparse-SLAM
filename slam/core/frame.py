@@ -26,7 +26,7 @@ class Frame:
         self.kp_pts_norm = None
         self.descriptors = None
 
-        self.pose = np.eye(4)
+        self._pose = np.eye(4)
 
         # Matching data
         self.matches = None
@@ -38,6 +38,8 @@ class Frame:
         # TODO: Remove this, probably not useful
         self.keypoint_to_point_map: Dict[int, UUID] = {}
 
+        self.is_keyframe = False
+
         # Track pose uncertainty and optimization status
         self.is_pose_optimized = False
         self.optimization_iterations = 0
@@ -45,12 +47,6 @@ class Frame:
         # Track keyframe quality metrics
         self.num_tracked_features = 0
         self.tracking_quality = 0.0
-
-    def get_camera_center(self):
-        # Camera center is -R^T * t
-        R = self.pose[:3, :3]
-        t = self.pose[:3, 3]
-        return -R.T @ t
 
     def get_color_value_for_keypoint(self, keypoint_idx):
         DEFAULT_COLOR = np.array([255, 255, 255], dtype=np.uint8)
@@ -76,32 +72,11 @@ class Frame:
                 LOG_TAG, f"Error getting color for keypoint {keypoint_idx}: {str(e)}")
             return DEFAULT_COLOR
 
-    def get_projection_matrix(self):
-        # P = K * [R|t] where [R|t] is world-to-camera transformation
-        world_to_cam = np.linalg.inv(self.pose)
-        return self.K @ world_to_cam[:3, :]
-
-    def get_observed_points(self):
-        return list(self.observed_points.keys())
-
     def get_point_observation(self, point_id):
         return self.observed_points.get(point_id, None)
 
     def get_keypoint_point_id(self, keypoint_idx):
         return self.keypoint_to_point_map.get(keypoint_idx, None)
-
-    def get_pose_6dof(self):
-        """Get pose as 6DOF vector [rx, ry, rz, tx, ty, tz]"""
-        R = self.pose[:3, :3]
-        t = self.pose[:3, 3]
-
-        # Convert rotation matrix to rotation vector
-        rvec, _ = cv.Rodrigues(R)
-
-        return np.concatenate([rvec.flatten(), t])
-
-    def get_pose(self):
-        return self.pose.copy()
 
     def get_keyframe_statistics(self):
         stats = {
@@ -118,19 +93,13 @@ class Frame:
     def get_keypoints_descriptors(self) -> Tuple[List[cv.KeyPoint], np.ndarray]:
         return self.keypoints, self.descriptors
 
-    def get_gray_image(self) -> np.ndarray:
-        if len(self.image.shape) == 3:
-            if self.image.shape[2] == 4:  # RGBA
-                return cv.cvtColor(self.image, cv.COLOR_RGBA2GRAY)
-            elif self.image.shape[2] == 3:  # RGB
-                return cv.cvtColor(self.image, cv.COLOR_RGB2GRAY)
-        return self.image  # Already grayscale
-
     def set_features(self, keypoints: List[cv.KeyPoint], descriptors: np.ndarray) -> None:
         self.keypoints = keypoints
         self.descriptors = descriptors
-        self.kp_pts = np.array([kp.pt for kp in keypoints], dtype=np.float32)
-        self.kp_pts_norm = normalize(self.kp_pts, self.Kinv)
+        if len(keypoints) > 0:
+            self.kp_pts = np.array(
+                [kp.pt for kp in keypoints], dtype=np.float32)
+            self.kp_pts_norm = normalize(self.kp_pts, self.Kinv)
 
     def set_match_data(self, matches: List[cv.DMatch]) -> None:
         self.matches = matches
@@ -210,17 +179,6 @@ class Frame:
 
         return np.linalg.norm(projected - self.normalize_keypoint(observed_2d))
 
-    def set_pose_from_6dof(self, pose_6dof: np.ndarray) -> None:
-        rvec = pose_6dof[:3]
-        t = pose_6dof[3:6]
-
-        # Convert rotation vector to rotation matrix
-        R, _ = cv.Rodrigues(rvec)
-
-        self.pose = np.eye(4)
-        self.pose[:3, :3] = R
-        self.pose[:3, 3] = t
-
     def compute_tracking_quality(self) -> float:
         if len(self.keypoints) == 0:
             return 0.0
@@ -249,3 +207,63 @@ class Frame:
             raise ValueError("Camera intrinsic matrix Kinv is not set.")
 
         return (self.Kinv @ np.array([pt_2d[0], pt_2d[1], 1.0])).astype(np.float32)[:2]
+
+    # Properties
+    @property
+    def camera_center(self):
+        # Camera center is -R^T * t
+        R = self.pose[:3, :3]
+        t = self.pose[:3, 3]
+
+        return -R.T @ t
+
+    @property
+    def projection_matrix(self):
+        # P = K * [R|t] where [R|t] is world-to-camera transformation
+        world_to_cam = np.linalg.inv(self.pose)
+
+        return self.K @ world_to_cam[:3, :]
+
+    @property
+    def observed_points_list(self):
+        return list(self.observed_points.keys())
+
+    @property
+    def pose(self):
+        return self._pose.copy()
+
+    @pose.setter
+    def pose(self, value):
+        self._pose = value
+
+    @property
+    def pose_6dof(self):
+        """Get pose as 6DOF vector [rx, ry, rz, tx, ty, tz]"""
+        R = self.pose[:3, :3]
+        t = self.pose[:3, 3]
+
+        # Convert rotation matrix to rotation vector
+        rvec, _ = cv.Rodrigues(R)
+
+        return np.concatenate([rvec.flatten(), t])
+
+    @pose_6dof.setter
+    def pose_6dof(self, pose_6dof: np.ndarray) -> None:
+        rvec = pose_6dof[:3]
+        t = pose_6dof[3:6]
+
+        # Convert rotation vector to rotation matrix
+        R, _ = cv.Rodrigues(rvec)
+
+        self.pose = np.eye(4)
+        self.pose[:3, :3] = R
+        self.pose[:3, 3] = t
+
+    @property
+    def gray_image(self) -> np.ndarray:
+        if len(self.image.shape) == 3:
+            if self.image.shape[2] == 4:  # RGBA
+                return cv.cvtColor(self.image.copy(), cv.COLOR_RGBA2GRAY)
+            elif self.image.shape[2] == 3:  # RGB
+                return cv.cvtColor(self.image.copy(), cv.COLOR_RGB2GRAY)
+        return self.image.copy()  # Already grayscale

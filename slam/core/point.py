@@ -29,9 +29,6 @@ class Point:
             del self.observations[frame_id]
             self.num_observations = len(self.observations)
 
-    def get_observing_keyframes(self) -> List[UUID]:
-        return list(self.observations.keys())
-
     def is_observed_by(self, frame_id: UUID) -> bool:
         return frame_id in self.observations
 
@@ -49,3 +46,7 @@ class Point:
         return (self.num_observations >= min_observations and
                 self.average_reprojection_error < max_reproj_error and
                 not self.is_outlier)
+
+    @property
+    def observing_keyframes(self) -> List[UUID]:
+        return list(self.observations.keys())
