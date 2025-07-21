@@ -6,7 +6,6 @@ from slam.utils.constants import (
     OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS,
     OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS,
     OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS,
-    TRACKING_QUALITY_WINDOW_SIZE,
     TRACKING_QUALITY_THRESHOLD,
     GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL,
     LOCAL_MAP_WINDOW_SIZE
@@ -64,6 +63,7 @@ class Map:
                 LOG_TAG, f"Keyframe {kf.frame_id} already exists. Skipping.")
             return
 
+        kf.is_keyframe = True
         self.keyframes.append(kf)
         self.keyframes_by_id[kf.frame_id] = kf
 
@@ -71,7 +71,7 @@ class Map:
         self.covisibility_graph[kf.frame_id] = defaultdict(int)
 
         # Update covisibility graph based on existing points observed by this keyframe
-        for point_id in kf.get_observed_points():
+        for point_id in kf.observed_points_list:
             if point_id in self.points_by_id:
                 point = self.points_by_id[point_id]
                 self._add_keyframe_to_point_covisibility(kf.frame_id, point)
@@ -88,8 +88,8 @@ class Map:
             success = self.g2o_optimizer.global_bundle_adjustment()
         else:
             success = self.g2o_optimizer.local_bundle_adjustment(
-                self.keyframes[-2].frame_id,
-                window_size=LOCAL_MAP_WINDOW_SIZE,
+                self.keyframes[-1].frame_id,
+                window_size=len(self.keyframes),
                 fix_points=False
             )
         if success:
@@ -102,7 +102,7 @@ class Map:
             warning_log(LOG_TAG, "BA failed")
 
     def _add_point_to_covisibility_graph(self, point: Point):
-        observing_kfs = point.get_observing_keyframes()
+        observing_kfs = point.observing_keyframes
 
         # Connect all pairs of keyframes that observe this point
         for i, kf1_id in enumerate(observing_kfs):
@@ -115,7 +115,7 @@ class Map:
                 self._invalidate_covisibility_cache(kf1_id, kf2_id)
 
     def _add_keyframe_to_point_covisibility(self, new_kf_id: UUID, point: Point):
-        observing_kfs = point.get_observing_keyframes()
+        observing_kfs = point.observing_keyframes
 
         for other_kf_id in observing_kfs:
             if other_kf_id != new_kf_id:
@@ -126,7 +126,7 @@ class Map:
                 self._invalidate_covisibility_cache(new_kf_id, other_kf_id)
 
     def _remove_point_from_covisibility_graph(self, point: Point):
-        observing_kfs = point.get_observing_keyframes()
+        observing_kfs = point.observing_keyframes
 
         # Remove connections between all pairs of keyframes that observe this point
         for i, kf1_id in enumerate(observing_kfs):
@@ -188,7 +188,7 @@ class Map:
 
         for point in self.points:
             # Check if point is observed by any local keyframe
-            observing_kfs = set(point.get_observing_keyframes())
+            observing_kfs = set(point.observing_keyframes)
             common_kfs = observing_kfs.intersection(local_kf_ids)
 
             if len(common_kfs) >= min_observations:
@@ -285,22 +285,10 @@ class Map:
         return self.points_by_id.get(point_id, None)
 
     def update_tracking_quality(self, keyframe_id: UUID, quality: float):
-        self.tracking_quality_history.setdefault(keyframe_id, 0)
         self.tracking_quality_history[keyframe_id] = quality
 
-        if len(self.tracking_quality_history) > TRACKING_QUALITY_WINDOW_SIZE:
-            self.tracking_quality_history.pop(
-                next(iter(self.tracking_quality_history)))
-
-    def get_avg_tracking_quality(self) -> float:
-        if not self.tracking_quality_history:
-            return 0.0
-
-        total_quality = sum(self.tracking_quality_history.values())
-        return total_quality / len(self.tracking_quality_history)
-
     def needs_recovery(self) -> bool:
-        return self.get_avg_tracking_quality() < TRACKING_QUALITY_THRESHOLD
+        return self.avg_tracking_quality < TRACKING_QUALITY_THRESHOLD
 
     def get_covisibility_keyframes(self, keyframe_id: UUID, min_shared_points: int = 15) -> List[Frame]:
         if keyframe_id not in self.covisibility_graph:
@@ -326,7 +314,120 @@ class Map:
             'total_points': len(self.points),
             'avg_observations_per_point': np.mean([p.num_observations for p in self.points]) if self.points else 0,
             'avg_covisibility_connections': np.mean([len(connections) for connections in self.covisibility_graph.values()]) if self.covisibility_graph else 0,
-            'avg_tracking_quality': self.get_avg_tracking_quality(),
+            'avg_tracking_quality': self.avg_tracking_quality,
             'needs_recovery': self.needs_recovery(),
         }
         return stats
+
+    def remove_keyframe_by_index(self, idx: int) -> bool:
+        """Remove a keyframe by its index in the keyframes list."""
+        if idx < 0 or idx >= len(self.keyframes):
+            error_log(LOG_TAG, f"Index {idx} out of range for keyframes list")
+            return False
+
+        keyframe = self.keyframes[idx]
+        return self._remove_keyframe(keyframe, idx)
+
+    def remove_keyframe_by_id(self, keyframe_id: UUID) -> bool:
+        """Remove a keyframe by its UUID."""
+        if keyframe_id not in self.keyframes_by_id:
+            error_log(LOG_TAG, f"Keyframe {keyframe_id} not found")
+            return False
+
+        keyframe = self.keyframes_by_id[keyframe_id]
+
+        # Find the index of this keyframe
+        try:
+            idx = self.keyframes.index(keyframe)
+        except ValueError:
+            error_log(
+                LOG_TAG, f"Keyframe {keyframe_id} not found in keyframes list")
+            return False
+
+        return self._remove_keyframe(keyframe, idx)
+
+    def _remove_keyframe(self, keyframe: Frame, idx: int) -> bool:
+        """Internal method to remove a keyframe and clean up all references."""
+        keyframe_id = keyframe.frame_id
+
+        # Remove observations of this keyframe from all points
+        points_to_remove = []
+        for point in self.points:
+            if keyframe_id in point.observations:
+                point.remove_observation(keyframe_id)
+                # If point has too few observations after removal, mark for deletion
+                if point.num_observations < 2:  # or whatever minimum threshold you use
+                    points_to_remove.append(point)
+
+        # Remove points that no longer have enough observations
+        removed_points_count = 0
+        for point in points_to_remove:
+            try:
+                point_idx = self.points.index(point)
+                if self.remove_point_by_index(point_idx):
+                    removed_points_count += 1
+            except ValueError:
+                # Point was already removed
+                continue
+
+        # Remove from covisibility graph
+        self._remove_keyframe_from_covisibility_graph(keyframe_id)
+
+        # Remove from keyframes list
+        del self.keyframes[idx]
+
+        # Remove from keyframes_by_id dictionary
+        if keyframe_id in self.keyframes_by_id:
+            del self.keyframes_by_id[keyframe_id]
+
+        # Remove from tracking quality history
+        if keyframe_id in self.tracking_quality_history:
+            del self.tracking_quality_history[keyframe_id]
+
+        debug_log(
+            LOG_TAG, f"Removed keyframe {keyframe_id} and {removed_points_count} associated points")
+        return True
+
+    def _remove_keyframe_from_covisibility_graph(self, keyframe_id: UUID):
+        """Remove a keyframe from the covisibility graph and clean up connections."""
+        if keyframe_id not in self.covisibility_graph:
+            return
+
+        # Get all keyframes connected to this one
+        connected_keyframes = list(self.covisibility_graph[keyframe_id].keys())
+
+        # Remove this keyframe from all other keyframes' connections
+        for other_kf_id in connected_keyframes:
+            if other_kf_id in self.covisibility_graph:
+                if keyframe_id in self.covisibility_graph[other_kf_id]:
+                    del self.covisibility_graph[other_kf_id][keyframe_id]
+
+            # Invalidate cache entries involving this keyframe
+            self._invalidate_covisibility_cache(keyframe_id, other_kf_id)
+
+        # Remove the keyframe's entry from the covisibility graph
+        del self.covisibility_graph[keyframe_id]
+
+    # Properties
+    @property
+    def cur_keyframe(self):
+        if len(self.keyframes) > 0:
+            return self.keyframes[-1]
+        return None
+
+    @property
+    def prev_keyframe(self):
+        if len(self.keyframes) > 1:
+            return self.keyframes[-2]
+        return None
+
+    @property
+    def avg_tracking_quality(self) -> float:
+        if not self.tracking_quality_history:
+            return 0.0
+
+        local_window_values = list(
+            self.tracking_quality_history.values())[-LOCAL_MAP_WINDOW_SIZE:]
+
+        total_quality = sum(local_window_values) / len(local_window_values)
+        return total_quality
