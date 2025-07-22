@@ -1,8 +1,9 @@
 import uuid
 import numpy as np
-from typing import List, Tuple, Mapping
+from typing import List, Tuple, Dict
 from uuid import UUID
 from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
+from slam.core.observation import Observation
 
 
 class Point:
@@ -14,14 +15,16 @@ class Point:
 
         # Track which keyframes observe this point
         # TODO: Refactor for a better structure, define an observation class
-        self.observations = {}  # {frame_id: (keypoint_idx, 2d_point)}
+
+        # {frame_id: Observation}
+        self.observations: Dict[UUID, Observation] = {}
 
         # Track quality metrics
         self.num_observations = 0
         self.average_reprojection_error = 0.0
 
-    def add_observation(self, frame_id: UUID, keypoint_idx: int, pt_2d: np.ndarray) -> None:
-        self.observations[frame_id] = (keypoint_idx, pt_2d)
+    def add_observation(self, observation: Observation) -> None:
+        self.observations[observation.frame_id] = observation
         self.num_observations = len(self.observations)
 
     def remove_observation(self, frame_id: UUID):
@@ -32,7 +35,7 @@ class Point:
     def is_observed_by(self, frame_id: UUID) -> bool:
         return frame_id in self.observations
 
-    def get_observation_in_keyframe(self, frame_id: UUID) -> Mapping[UUID, Tuple[int, np.ndarray]]:
+    def get_observation_in_keyframe(self, frame_id: UUID) -> Observation:
         return self.observations.get(frame_id, None)
 
     def update_reprojection_error(self, error: float) -> None:

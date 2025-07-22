@@ -5,15 +5,16 @@ from collections import defaultdict
 from typing import List, Tuple
 import matplotlib.pyplot as plt
 
-from slam.utils.utils import *
-from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
-from slam.features.matcher import *
 from slam.core.point import Point
-from slam.utils.constants import *
-from slam.utils.logger import *
-from slam.features.feature_extractor import FeatureExtractor
 from slam.core.frame import Frame
 from slam.core.map import Map
+from slam.core.observation import Observation
+from slam.utils.utils import *
+from slam.utils.constants import *
+from slam.utils.logger import *
+from slam.features.matcher import *
+from slam.features.feature_extractor import FeatureExtractor
+from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 
 LOG_TAG = 'Tracker'
 
@@ -52,11 +53,12 @@ class Tracker:
             self._initialize()
         else:
             # Optical flow gives mixed results, sometimes good, sometimes shit.
-            # Rt = match_features_between_frames(
-            #    self.cur_frame, self.prev_frame, self.feature_extraction_method)
-            # self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
+            Rt = match_features_between_frames(
+                self.cur_frame, self.prev_frame, self.feature_extraction_method)
+            self.cur_frame.pose = np.dot(
+                Rt, self.prev_frame.pose)
             # Match projected points from the map to the current frame
-            self.cur_frame.pose = self._predict_pose_with_optical_flow()
+            # self.cur_frame.pose = self._predict_pose_with_optical_flow()
             projected_points = self._project_visible_map_points()
 
             # Match the projected points with the current frame's keypoints
@@ -78,7 +80,8 @@ class Tracker:
         Rt = match_features_between_frames(
             self.cur_frame, self.prev_frame, self.feature_extraction_method)
         if Rt is not None:
-            self.cur_frame.pose = np.dot(Rt, self.prev_frame.pose)
+            self.cur_frame.pose = np.dot(
+                Rt, self.prev_frame.pose)
 
         self.map.add_keyframe(self.prev_frame)
         self.map.add_keyframe(self.cur_frame)
@@ -106,10 +109,7 @@ class Tracker:
             self.map.cur_keyframe.kp_unique_mask[match.queryIdx] = False
 
             self.map.cur_keyframe.add_point_observation(
-                point,
-                match.queryIdx,
-                self.map.cur_keyframe.kp_pts[match.queryIdx]
-            )
+                Observation(self.map.cur_keyframe, point, match.queryIdx))
 
         # Filter out matches that are already triangulated in the global map.
         pre_filter_length = len(self.map.cur_keyframe.matches)
@@ -207,13 +207,12 @@ class Tracker:
                 matches.append((mp, best_idx))
 
                 # Update observation relationships
-                pt_2d = kp_coords[best_idx]
+                observation = Observation(self.cur_frame, mp, best_idx)
 
-                mp.add_observation(self.cur_frame.frame_id, best_idx, pt_2d)
+                mp.add_observation(observation)
                 mp.update_reprojection_error(repro_error)
 
-                self.cur_frame.add_point_observation(
-                    mp, best_idx, pt_2d)
+                self.cur_frame.add_point_observation(observation)
                 self.cur_frame.kp_unique_mask[best_idx] = False
 
         debug_log(
@@ -280,21 +279,19 @@ class Tracker:
             self.map.cur_keyframe.get_keypoints_descriptors()[
                 1][match.queryIdx]
         )
+
         # Current keyframe observation
         kp_idx_cur = match.queryIdx
-        pt_2d_cur = self.map.cur_keyframe.keypoints[kp_idx_cur].pt
-        point.add_observation(self.map.cur_keyframe.frame_id,
-                              kp_idx_cur, pt_2d_cur)
-        self.map.cur_keyframe.add_point_observation(
-            point, kp_idx_cur, pt_2d_cur)
+        cur_frame_obs = Observation(self.map.cur_keyframe, point, kp_idx_cur)
+        point.add_observation(cur_frame_obs)
+        self.map.cur_keyframe.add_point_observation(cur_frame_obs)
 
         # Previous keyframe observation
         kp_idx_prev = match.trainIdx
-        pt_2d_prev = self.map.prev_keyframe.keypoints[kp_idx_prev].pt
-        point.add_observation(self.map.prev_keyframe.frame_id,
-                              kp_idx_prev, pt_2d_prev)
-        self.map.prev_keyframe.add_point_observation(
-            point, kp_idx_prev, pt_2d_prev)
+        prev_frame_obs = Observation(
+            self.map.prev_keyframe, point, kp_idx_prev)
+        point.add_observation(prev_frame_obs)
+        self.map.prev_keyframe.add_point_observation(prev_frame_obs)
 
         return point
 
@@ -331,7 +328,7 @@ class Tracker:
             error = error.flatten()
             error_threshold = np.median(error)
             error_mask = error < error_threshold
-            # valid_mask = valid_mask & error_mask
+            valid_mask = valid_mask & error_mask
 
         matched_prev = prev_kps[valid_mask]
         matched_next = next_kps[valid_mask]
@@ -352,7 +349,7 @@ class Tracker:
             method=cv.RANSAC,
             prob=0.999,
             threshold=0.0005,
-            maxIters=100
+            maxIters=1000
         )
 
         if E is None or mask is None:
@@ -375,70 +372,3 @@ class Tracker:
         predicted_pose = Rt @ self.prev_frame.pose
 
         return predicted_pose
-
-
-# TEMP
-
-
-    def _visualize_matches_matplotlib(self, other_frame_id, img1_rgb, img2_rgb, lines):
-        """Visualize matches between two frames using Matplotlib."""
-        fig, ax = plt.subplots(1, 2, figsize=(15, 5))
-
-        # Display images
-        ax[0].imshow(img1_rgb)
-        ax[0].set_title("Current Frame")
-        ax[1].imshow(img2_rgb)
-        ax[1].set_title(f"Frame {other_frame_id}")
-
-       # Draw match lines
-        for pt1, pt2 in lines:
-            # Keypoint in first image
-            ax[0].plot(pt1[0], pt1[1], 'ro', markersize=3)
-            ax[1].plot(pt2[0] - img1_rgb.shape[1], pt2[1], 'ro',
-                       markersize=3)  # Keypoint in second image
-            fig.add_artist(plt.Line2D(
-                (pt1[0], pt2[0]), (pt1[1], pt2[1]), color='yellow', linewidth=1))
-
-        plt.show()
-
-    def _visualize_projected_matches(self, other_frame, matches):
-        """Prepare images and match lines for Matplotlib visualization."""
-        img1 = self.cur_frame.image
-        img2 = other_frame.image
-        kp1 = self.cur_frame.keypoints
-        kp2 = other_frame.keypoints
-
-        # Convert images to RGB for Matplotlib
-        img1_rgb = cv.cvtColor(img1, cv.COLOR_BGR2RGB)
-        img2_rgb = cv.cvtColor(img2, cv.COLOR_BGR2RGB)
-
-        # Prepare match lines with offset for side-by-side display
-        lines = []
-        for m in matches:
-            pt1 = kp1[m.queryIdx].pt
-            pt2 = kp2[m.trainIdx].pt
-            lines.append((pt1, (pt2[0] + img1.shape[1], pt2[1])))
-
-        self._visualize_matches_matplotlib(
-            other_frame.frame_id, img1_rgb, img2_rgb, lines)
-
-        return img1_rgb, img2_rgb, lines
-
-    def visualize_projected_matches(self, newly_matched: List[Tuple[Point, int]]):
-        """Visualize matches between the current frame and other frames for newly matched points."""
-        frame_matches = defaultdict(list)
-
-        # Step 1 & 2: Build mapping from current frame to other frames with common observations
-        for mp, cur_kp_idx in newly_matched:
-            for other_frame_id, (other_kp_idx, _) in mp.observations.items():
-                if other_frame_id != self.cur_frame.frame_id and other_frame_id in self.map.keyframes_by_id:
-                    dmatch = cv.DMatch(cur_kp_idx, other_kp_idx, 0)
-                    frame_matches[other_frame_id].append(dmatch)
-
-        # Step 3 & 4: Visualize matches for the top N frames with the most matches
-        sorted_frames = sorted(frame_matches.items(),
-                               key=lambda x: len(x[1]), reverse=True)
-        N = 3  # Limit to top 3 frames for visualization
-        for other_frame_id, matches in sorted_frames[:N]:
-            other_frame = self.map.keyframes_by_id[other_frame_id]
-            self._visualize_projected_matches(other_frame, matches)

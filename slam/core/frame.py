@@ -6,6 +6,7 @@ from slam.utils.logger import debug_log, error_log, warning_log
 from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
 from slam.utils.utils import normalize
 from slam.core.point import Point
+from slam.core.observation import Observation
 from typing import List, Tuple, Dict
 
 
@@ -31,9 +32,7 @@ class Frame:
         # Matching data
         self.matches = None
 
-        # TODO: Could be refactored to use a shared observations structure
-        self.observed_points: Dict[UUID,
-                                   Tuple[int, np.ndarray, Point]] = {}
+        self.observed_points: Dict[UUID, Observation] = {}
 
         self.keypoint_to_point_map: Dict[Tuple[int, int], UUID] = {}
 
@@ -71,7 +70,7 @@ class Frame:
                 LOG_TAG, f"Error getting color for keypoint {keypoint_idx}: {str(e)}")
             return DEFAULT_COLOR
 
-    def get_point_observation(self, point_id):
+    def get_point_observation(self, point_id: UUID) -> Observation:
         return self.observed_points.get(point_id, None)
 
     def get_keypoint_point_id(self, keypoint_idx):
@@ -105,19 +104,14 @@ class Frame:
         self.matches = matches
         self.num_tracked_features = len(matches) if matches else 0
 
-    def add_point_observation(
-        self,
-        point: Point,
-        keypoint_idx: int,
-        pt_2d: np.ndarray
-    ) -> None:
-        self.observed_points[point.point_id] = (keypoint_idx, pt_2d, point)
-        self.keypoint_to_point_map[self.keypoints[keypoint_idx]
-                                   ] = point.point_id
+    def add_point_observation(self, observation: Observation) -> None:
+        self.observed_points[observation.point_id] = observation
+        self.keypoint_to_point_map[self.keypoints[observation.kp_idx]
+                                   ] = observation.kp_idx
 
     def remove_point_observation(self, point_id: UUID) -> None:
         if point_id in self.observed_points:
-            keypoint_idx, _ = self.observed_points[point_id]
+            keypoint_idx = self.observed_points[point_id].kp_idx
             del self.observed_points[point_id]
             if self.keypoints[keypoint_idx] in self.keypoint_to_point_map:
                 del self.keypoint_to_point_map[self.keypoints[keypoint_idx]]
@@ -190,9 +184,9 @@ class Frame:
             return 0.0
 
         high_quality_count = 0
-        for _, _, point in self.observed_points.values():
+        for observation in self.observed_points.values():
             # Check if point has good quality (multiple observations, low reprojection error)
-            if point.num_observations >= 2 and point.average_reprojection_error < MAX_SQUARED_REPROJECTION_ERROR:
+            if observation.point.num_observations >= 2 and observation.point.average_reprojection_error < MAX_SQUARED_REPROJECTION_ERROR:
                 high_quality_count += 1
 
         # Quality score combines visibility ratio and point quality
@@ -220,7 +214,6 @@ class Frame:
 
     @property
     def projection_matrix(self):
-        # P = K * [R|t] where [R|t] is world-to-camera transformation
         world_to_cam = np.linalg.inv(self.pose)
 
         return self.K @ world_to_cam[:3, :]
