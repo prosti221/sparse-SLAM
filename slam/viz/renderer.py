@@ -157,7 +157,7 @@ class Renderer:
 
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
 
-    def _draw_camera_object(self, R, t, size=0.8):
+    def _draw_camera_object(self, R, t, size=0.6):
         _w, _h, _cx, _cy, _f = self.width, self.height, self.K[0,
                                                                2], self.K[1, 2], self.K[0, 0]
         f = 1

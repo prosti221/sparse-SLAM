@@ -2,6 +2,7 @@ import uuid
 import numpy as np
 from typing import List, Tuple, Mapping
 from uuid import UUID
+from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
 
 
 class Point:
@@ -18,7 +19,6 @@ class Point:
         # Track quality metrics
         self.num_observations = 0
         self.average_reprojection_error = 0.0
-        self.is_outlier = False
 
     def add_observation(self, frame_id: UUID, keypoint_idx: int, pt_2d: np.ndarray) -> None:
         self.observations[frame_id] = (keypoint_idx, pt_2d)
@@ -42,11 +42,10 @@ class Point:
                 (self.num_observations - 1) + error
             ) / self.num_observations
 
-    def is_good_point(self, min_observations: int = 2, max_reproj_error: float = 2.0) -> bool:
-        return (self.num_observations >= min_observations and
-                self.average_reprojection_error < max_reproj_error and
-                not self.is_outlier)
-
     @property
     def observing_keyframes(self) -> List[UUID]:
         return list(self.observations.keys())
+
+    @property
+    def is_good(self) -> bool:
+        return self.average_reprojection_error < MAX_SQUARED_REPROJECTION_ERROR

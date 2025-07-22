@@ -39,7 +39,7 @@ class G2OBundleAdjustment:
                 LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
             return False
 
-        return self._optimize_with_g2o(local_keyframes, local_points, observations, fix_points=fix_points)
+        return self._optimize_with_g2o(local_keyframes, local_points, observations, fix_initial_poses=True, fix_points=fix_points)
 
     def global_bundle_adjustment(self) -> bool:
         debug_log(LOG_TAG, "Starting global BA with g2o")
@@ -53,10 +53,11 @@ class G2OBundleAdjustment:
                 LOG_TAG, f"Insufficient observations for global BA: {len(observations)}")
             return False
 
-        return self._optimize_with_g2o(keyframes, points, observations, fix_points=False)
+        return self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=False, fix_points=False)
 
     def _optimize_with_g2o(self, keyframes: List[Frame], points: List[Point],
                            observations: List[Tuple[int, int, np.ndarray]],
+                           fix_initial_poses: bool = False,
                            fix_points: bool = False) -> bool:
         try:
             # Create optimizer
@@ -80,7 +81,7 @@ class G2OBundleAdjustment:
             # Add keyframe vertices with unique IDs
             for i, kf in enumerate(keyframes):
                 # Use camera-to-world transformation directly
-                pose = np.linalg.inv(kf.pose.copy())
+                pose = np.linalg.inv(kf.pose)
                 R = pose[:3, :3]
                 t = pose[:3, 3]
                 se3 = g2o.SE3Quat(R, t)
@@ -88,24 +89,18 @@ class G2OBundleAdjustment:
                 v_se3 = g2o.VertexSE3Expmap()
                 v_se3.set_id(i)
                 v_se3.set_estimate(se3)
-                v_se3.set_fixed(i == 0)
+                v_se3.set_fixed(i <= 1 and fix_initial_poses)
 
                 opt.add_vertex(v_se3)
                 frame_to_vertex[kf] = v_se3
-
-            # Find the best point based on reprojection error
-            n = 5
-            best_indices = sorted(
-                range(len(points)), key=lambda i: points[i].average_reprojection_error)[:n]
 
             # Add point vertices with unique IDs
             for i, point in enumerate(points):
                 v_point = g2o.VertexPointXYZ()
                 v_point.set_id(len(keyframes) + i)
                 v_point.set_estimate(point.pt_3d)
+                v_point.set_fixed(fix_points)
                 v_point.set_marginalized(True)
-                # Fix the best point
-                v_point.set_fixed(fix_points or i in best_indices)
                 opt.add_vertex(v_point)
                 point_to_vertex[point] = v_point
 
@@ -139,7 +134,7 @@ class G2OBundleAdjustment:
 
             # Optimize with initialization
             opt.initialize_optimization()
-            opt.optimize(50)
+            opt.optimize(30)
 
             # Update keyframe poses
             for kf, vertex in frame_to_vertex.items():
@@ -192,7 +187,7 @@ class G2OBundleAdjustment:
 
             projected_point = kf.project_point(point.pt_3d)
             if projected_point is None:
-                error = 10  # Punish heavily if the point is being projected behind the camera
+                continue
             else:
                 error = np.linalg.norm(projected_point - pt_2d_observed)
 

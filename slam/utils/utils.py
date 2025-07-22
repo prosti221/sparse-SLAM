@@ -108,12 +108,20 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     if cur_cam_coords[2] > slam.utils.constants.MAX_DEPTH or prev_cam_coords[2] > slam.utils.constants.MAX_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
 
-    # 3. Check parallax angle
-    if not check_parallax_angle(cur_frame, prev_frame, point_3d, slam.utils.constants.MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD):
-        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION']
+    """
+    # 3. Check baseline between the two cameras
+    baseline_distance = compute_baseline_distance(cur_frame, prev_frame)
+    point_distance = np.linalg.norm(point_3d - cur_frame.camera_center)
+    # Baseline-to-distance ratio should be above minimum threshold
+    # This prevents triangulating very distant points with insufficient baseline
+    baseline_ratio = baseline_distance / max(point_distance, 1e-6)
+
+    if baseline_ratio < slam.utils.constants.MIN_BASELINE_RATIO:
+        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_BASELINE_VIOLATION']
+    """
 
     # 4. Check reprojection error
-    if cur_reprojection_error > slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR:
+    if cur_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_REPROJECTION_ERROR_VIOLATION']
 
     # 5. Check if point is well-conditioned (not at infinity)
@@ -126,28 +134,6 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     }
 
     return result
-
-
-def check_parallax_angle(cur_frame, prev_frame, point_3d, min_parallax_deg):
-    # Get camera centers
-    cur_center = cur_frame.camera_center
-    prev_center = prev_frame.camera_center
-
-    # Compute viewing rays
-    ray1 = point_3d - cur_center
-    ray2 = point_3d - prev_center
-
-    # Normalize rays
-    ray1_norm = ray1 / np.linalg.norm(ray1)
-    ray2_norm = ray2 / np.linalg.norm(ray2)
-
-    # Compute angle between rays
-    cos_angle = np.dot(ray1_norm, ray2_norm)
-    cos_angle = np.clip(cos_angle, -1.0, 1.0)
-
-    angle_deg = np.degrees(np.arccos(cos_angle))
-
-    return angle_deg >= min_parallax_deg
 
 
 def get_reprojection_error(point_idx, cur_frame, prev_frame, point_3d):
@@ -285,51 +271,8 @@ def optimize_triangulation(pt1, pt2, P1, P2, initial_guess, max_iterations=10):
 def compute_baseline_distance(frame1, frame2):
     center1 = frame1.camera_center
     center2 = frame2.camera_center
+
     return np.linalg.norm(center2 - center1)
-
-
-def compute_average_parallax(cur_frame, prev_keyframe, map_obj):
-    visible_points = []
-
-    # Get points visible in both frames
-    for point in map_obj.points:
-        if (cur_frame.frame_id in point.observations and
-                prev_keyframe.frame_id in point.observations):
-            visible_points.append(point)
-
-    if len(visible_points) < 10:
-        return 0.0
-
-    parallax_angles = []
-
-    for point in visible_points:
-        angle = compute_point_parallax(cur_frame, prev_keyframe, point.pt_3d)
-        if angle > 0:
-            parallax_angles.append(angle)
-
-    if len(parallax_angles) == 0:
-        return 0.0
-
-    return np.mean(parallax_angles)
-
-
-def compute_point_parallax(frame1, frame2, point_3d):
-    center1 = frame1.camera_center
-    center2 = frame2.camera_center
-
-    # Rays from cameras to point
-    ray1 = point_3d - center1
-    ray2 = point_3d - center2
-
-    # Normalize rays
-    ray1_norm = ray1 / np.linalg.norm(ray1)
-    ray2_norm = ray2 / np.linalg.norm(ray2)
-
-    # Compute angle
-    cos_angle = np.dot(ray1_norm, ray2_norm)
-    cos_angle = np.clip(cos_angle, -1.0, 1.0)
-
-    return np.degrees(np.arccos(cos_angle))
 
 
 def compute_new_points_ratio(cur_frame, map_obj):
@@ -363,16 +306,11 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
     baseline_distance = compute_baseline_distance(cur_frame, prev_keyframe)
     baseline_ok = MINIMUM_BASELINE_THRESHOLD <= baseline_distance
 
-    # 2. Check parallax constraints
-    avg_parallax = compute_average_parallax(
-        cur_frame, prev_keyframe, map_obj)
-    parallax_ok = avg_parallax >= MINIMUM_KEYFRAME_PARALLAX_THRESHOLD
-
-    # 3. Check new points ratio
+    # 2. Check new points ratio
     new_points_ratio = compute_new_points_ratio(cur_frame, map_obj)
     new_points_ok = new_points_ratio >= MINIMUM_NUMBER_OF_NEW_POINTS
 
-    # 4. Check tracking quality
+    # 3. Check tracking quality
     tracking_quality = cur_frame.compute_tracking_quality()
     quality_ok = tracking_quality >= MINIMUM_KEYFRAME_QUALITY_THRESHOLD
 
@@ -383,10 +321,6 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
         if baseline_distance < MINIMUM_BASELINE_THRESHOLD:
             reasons.append(
                 f"Baseline too small: {baseline_distance:.3f} < {MINIMUM_BASELINE_THRESHOLD}")
-    if not parallax_ok:
-        reasons.append(
-            f"Parallax too small: {avg_parallax:.2f}° < {MINIMUM_KEYFRAME_PARALLAX_THRESHOLD}°")
-
     if not new_points_ok:
         reasons.append(
             f"Not enough new points: {new_points_ratio:.2f} < {MINIMUM_NUMBER_OF_NEW_POINTS}")
@@ -396,7 +330,7 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
             f"Tracking quality too low: {tracking_quality:.2f} < {MINIMUM_KEYFRAME_QUALITY_THRESHOLD}")
 
     # Keyframe insertion criteria
-    critical_conditions = [baseline_ok, parallax_ok]
+    critical_conditions = [baseline_ok]
     quality_conditions = [new_points_ok, quality_ok]
 
     # Insert keyframe if:
@@ -408,7 +342,6 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
     if should_insert:
         debug_log(LOG_TAG, "Keyframe statistics: "
                   f"Baseline: {baseline_distance:.3f}, "
-                  f"Parallax: {avg_parallax:.2f}°, "
                   f"New Points Ratio: {new_points_ratio:.2f}, "
                   f"Tracking Quality: {tracking_quality:.2f}, ")
         return True, "Quality criteria met"
@@ -418,65 +351,53 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
 # Testing
 
 
-def compute_bounds_mad(values, mad_multiplier=3.0):
-    median_value = np.median(values)
-    mad = np.median(np.abs(values - median_value))
-
-    mad_std = mad * 1.4826
-
-    min = median_value - mad_multiplier * mad_std
-    max = median_value + mad_multiplier * mad_std
-
-    return min, max
-
-
-def set_dynamic_triangulation_constraints(frame1, frame2, pts_3d, valid_indices):
-    # Compute parallax values for valid points
-    parallax_values = np.array([
-        compute_point_parallax(frame1, frame2, pts_3d[i])
-        for i in valid_indices
-    ])
-
-    # Set minimum parallax threshold (use a percentile or median-based approach)
-    parallax_lower_bound = max(0.3, np.percentile(
-        parallax_values, 5))  # 75th percentile
-    slam.utils.constants.MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD = parallax_lower_bound
-
-    # Compute reprojection errors
-    errors = np.array([
-        get_reprojection_error(idx, frame1, frame2, pts_3d[i])
-        for i, idx in enumerate(valid_indices)
-    ])
-
-    # Set maximum reprojection error threshold
-    reprojection_error_lower_bound = np.percentile(errors.flatten(), 95)
-    slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR = min(
-        2.00, reprojection_error_lower_bound
-    )
-
+def set_dynamic_triangulation_depths(cur_frame, prev_frame, pts_3d, valid_indices):
     # Extract depths for valid points only
     valid_depths = np.array([pts_3d[i][2] for i in valid_indices])
     # Filter out non-positive depths
     valid_depths = valid_depths[valid_depths > 0]
-
     if len(valid_depths) > 0:
-        min_depth, max_depth = compute_bounds_mad(valid_depths, 1.0)
+        min_depth, max_depth = np.percentile(
+            valid_depths, 20), np.percentile(valid_depths, 75)
         slam.utils.constants.MIN_DEPTH = max(
             0.0, min_depth)
         slam.utils.constants.MAX_DEPTH = max_depth
 
-    debug_log(
-        LOG_TAG,
-        f"Dynamic triangulation constraints updated:\n"
-        f"  Parallax: min={slam.utils.constants.MINIMUM_TRIANGULATION_PARALLAX_THRESHOLD:.3f}° "
-        f"(from {len(parallax_values)} points, 5th percentile: {np.percentile(parallax_values, 5):.3f}°)\n"
-        f"  Reprojection Error: max={slam.utils.constants.MAX_SQUARED_REPROJECTION_ERROR:.3f} "
-        f"(from {len(errors)} points, 95th percentile: {np.percentile(errors, 95):.3f}°)\n"
-        f"  Depth: min={slam.utils.constants.MIN_DEPTH:.3f}m, max={slam.utils.constants.MAX_DEPTH:.3f}m "
-        f"(from {len(valid_depths)} valid depths, MAD bounds)\n"
-        f"  Depth stats: median={np.median(valid_depths):.3f}m, "
-        f"std={np.std(valid_depths):.3f}m, range=[{np.min(valid_depths):.3f}, {np.max(valid_depths):.3f}]m"
-    )
+        # 2. Update baseline ratio constraints (new functionality)
+    if len(valid_indices) > 10:  # Need sufficient samples for reliable statistics
+        baseline_distance = compute_baseline_distance(cur_frame, prev_frame)
+
+        # Compute baseline ratios for all valid points
+        baseline_ratios = []
+
+        for idx in valid_indices:
+            point_3d = pts_3d[idx][:3]
+            point_distance = np.linalg.norm(point_3d - cur_frame.camera_center)
+
+            if point_distance > 0:
+                baseline_ratio = baseline_distance / point_distance
+                baseline_ratios.append(baseline_ratio)
+
+        # Update baseline ratio threshold using MAD
+        if len(baseline_ratios) > 5:
+            baseline_ratios = np.array(baseline_ratios)
+            median_ratio = np.median(baseline_ratios)
+            # Set minimum baseline ratio as median - 2*MAD_STD, but with reasonable bounds
+            dynamic_min_ratio = np.percentile(baseline_ratios, 45)
+            slam.utils.constants.MIN_BASELINE_RATIO = max(
+                0.01,  # Absolute minimum (1:200 ratio)
+                min(dynamic_min_ratio, 0.1)  # Don't make it too restrictive
+            )
+
+        debug_log(
+            LOG_TAG,
+            f"Dynamic triangulation constraints updated:\n"
+            f"  Depth: min={slam.utils.constants.MIN_DEPTH:.3f}m, max={slam.utils.constants.MAX_DEPTH:.3f}m\n"
+            f"  Baseline ratio: min={slam.utils.constants.MIN_BASELINE_RATIO:.4f} "
+            f"(from {len(baseline_ratios)} ratios, median={median_ratio:.4f}, percentile={dynamic_min_ratio:.4f})\n"
+            f"  Stats: baseline_distance={baseline_distance:.3f}m, "
+            f"  depth_range=[{np.min(valid_depths):.3f}, {np.max(valid_depths):.3f}]m"
+        )
 
 
 def visualize_matches(frame1, frame2, matches=None, save_path=None):
