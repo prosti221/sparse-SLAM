@@ -221,7 +221,7 @@ class Frame:
     @property
     def projection_matrix(self):
         # P = K * [R|t] where [R|t] is world-to-camera transformation
-        world_to_cam = self.pose
+        world_to_cam = np.linalg.inv(self.pose)
 
         return self.K @ world_to_cam[:3, :]
 
