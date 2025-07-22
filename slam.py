@@ -11,14 +11,14 @@ import cv2 as cv
 LOG_TAG = 'Main'
 
 if __name__ == '__main__':
-    VIDEO = 'kitti'
+    VIDEO = 'desk'
     config = Parser('slam/config/config.yaml')
 
     cap, K = load_video(VIDEO, config)
 
     global_map = Map()
     tracker = Tracker(
-        global_map, feature_extraction_method=ORB_EXTRACTOR_NAME)
+        global_map, feature_extraction_method=AKAZE_EXTRACTOR_NAME)
     renderer = Renderer(global_map, K)
 
     renderer.start()

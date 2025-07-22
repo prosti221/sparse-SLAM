@@ -1,3 +1,7 @@
+# TODO: Add global config for logging and whatever else might be needed
+global:
+
+# TODO: Add attributes for feature extraction method and other stuff..
 videos:
   greece:
     path: ./videos/greece.mp4
@@ -19,6 +23,18 @@ videos:
     fx: 210
   desk:
     path: ./videos/vid3.mp4
+    fx: 525
+    fy: 525
+    cx: 319.5
+    cy: 239.5
+  desk_xyz:
+    path: ./videos/calibrated/desk_xyz.mp4
+    fx: 525
+    fy: 525
+    cx: 319.5
+    cy: 239.5
+  desk_rotation:
+    path: ./videos/calibrated/desk_rotation.mp4
     fx: 525
     fy: 525
     cx: 319.5
@@ -59,6 +75,18 @@ videos:
     path: ./videos/calibrated/calibrated8.mp4
     fx: 896.8715
     fy: 896.8715
+  calibrated9:
+    path: ./videos/calibrated/calibrated9.mp4
+    fx: 685.7207143511155
+    fy: 685.636463462675
+    cx: 631.3581379653094
+    cy: 512.418472292776
+  calibrated11:
+    path: ./videos/calibrated/calibrated11.mp4
+    fx: 685.7207143511155
+    fy: 685.636463462675
+    cx: 631.3581379653094
+    cy: 512.418472292776
   synthetic:
     path: ./videos/calibrated/synthetic.mp4
     fx: 224.06641222710715

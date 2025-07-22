@@ -19,11 +19,11 @@ class Frame:
         self.H, self.W = image.shape[:2]
 
         self.K = K
-        self.Kinv = np.linalg.inv(self.K)
 
         self.keypoints = None
         self.kp_pts = None
         self.kp_pts_norm = None
+        self.kp_unique_mask = None
         self.descriptors = None
 
         self._pose = np.eye(4)
@@ -35,8 +35,7 @@ class Frame:
         self.observed_points: Dict[UUID,
                                    Tuple[int, np.ndarray, Point]] = {}
 
-        # TODO: Remove this, probably not useful
-        self.keypoint_to_point_map: Dict[int, UUID] = {}
+        self.keypoint_to_point_map: Dict[Tuple[int, int], UUID] = {}
 
         self.is_keyframe = False
 
@@ -100,6 +99,7 @@ class Frame:
             self.kp_pts = np.array(
                 [kp.pt for kp in keypoints], dtype=np.float32)
             self.kp_pts_norm = normalize(self.kp_pts, self.Kinv)
+            self.kp_unique_mask = [True] * len(self.kp_pts)
 
     def set_match_data(self, matches: List[cv.DMatch]) -> None:
         self.matches = matches
@@ -112,14 +112,15 @@ class Frame:
         pt_2d: np.ndarray
     ) -> None:
         self.observed_points[point.point_id] = (keypoint_idx, pt_2d, point)
-        self.keypoint_to_point_map[keypoint_idx] = point.point_id
+        self.keypoint_to_point_map[self.keypoints[keypoint_idx]
+                                   ] = point.point_id
 
     def remove_point_observation(self, point_id: UUID) -> None:
         if point_id in self.observed_points:
             keypoint_idx, _ = self.observed_points[point_id]
             del self.observed_points[point_id]
-            if keypoint_idx in self.keypoint_to_point_map:
-                del self.keypoint_to_point_map[keypoint_idx]
+            if self.keypoints[keypoint_idx] in self.keypoint_to_point_map:
+                del self.keypoint_to_point_map[self.keypoints[keypoint_idx]]
 
     def world_to_camera(self, point_3d: np.ndarray) -> np.ndarray:
         # Convert to homogeneous coordinates
@@ -191,7 +192,7 @@ class Frame:
         high_quality_count = 0
         for _, _, point in self.observed_points.values():
             # Check if point has good quality (multiple observations, low reprojection error)
-            if point.num_observations >= 3 and point.average_reprojection_error < 1.0:
+            if point.num_observations >= 2 and point.average_reprojection_error < MAX_SQUARED_REPROJECTION_ERROR:
                 high_quality_count += 1
 
         # Quality score combines visibility ratio and point quality
@@ -220,7 +221,7 @@ class Frame:
     @property
     def projection_matrix(self):
         # P = K * [R|t] where [R|t] is world-to-camera transformation
-        world_to_cam = np.linalg.inv(self.pose)
+        world_to_cam = self.pose
 
         return self.K @ world_to_cam[:3, :]
 
@@ -239,8 +240,8 @@ class Frame:
     @property
     def pose_6dof(self):
         """Get pose as 6DOF vector [rx, ry, rz, tx, ty, tz]"""
-        R = self.pose[:3, :3]
-        t = self.pose[:3, 3]
+        R = self._pose[:3, :3]
+        t = self._pose[:3, 3]
 
         # Convert rotation matrix to rotation vector
         rvec, _ = cv.Rodrigues(R)
@@ -255,9 +256,9 @@ class Frame:
         # Convert rotation vector to rotation matrix
         R, _ = cv.Rodrigues(rvec)
 
-        self.pose = np.eye(4)
-        self.pose[:3, :3] = R
-        self.pose[:3, 3] = t
+        self._pose = np.eye(4)
+        self._pose[:3, :3] = R
+        self._pose[:3, 3] = t
 
     @property
     def gray_image(self) -> np.ndarray:
@@ -267,3 +268,7 @@ class Frame:
             elif self.image.shape[2] == 3:  # RGB
                 return cv.cvtColor(self.image.copy(), cv.COLOR_RGB2GRAY)
         return self.image.copy()  # Already grayscale
+
+    @property
+    def Kinv(self):
+        return np.linalg.inv(self.K)

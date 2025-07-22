@@ -1,15 +1,7 @@
 from collections import defaultdict
 import numpy as np
 from slam.utils.logger import debug_log, error_log, warning_log
-from slam.utils.constants import (
-    OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS,
-    OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS,
-    OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS,
-    OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS,
-    TRACKING_QUALITY_THRESHOLD,
-    GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL,
-    LOCAL_MAP_WINDOW_SIZE
-)
+from slam.utils.constants import *
 from slam.core.point import Point
 from slam.core.frame import Frame
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
@@ -94,10 +86,7 @@ class Map:
             )
         if success:
             debug_log(LOG_TAG, "BA was successful, pruning outlier points...")
-            self.prune_outlier_points(
-                outlier_threshold=OUTLIER_GLOBAL_ERROR_THRESHOLD_FOR_POINTS if perform_global_ba else OUTLIER_LOCAL_ERROR_THRESHOLD_FOR_POINTS,
-                min_observations=OUTLIER_GLOBAL_OBSERVATIONS_THRESHOLD_FOR_POINTS if perform_global_ba else OUTLIER_LOCAL_OBSERVATIONS_THRESHOLD_FOR_POINTS
-            )
+            self.prune_outlier_points()
         else:
             warning_log(LOG_TAG, "BA failed")
 
@@ -221,16 +210,31 @@ class Map:
 
         return observations
 
-    def prune_outlier_points(self, outlier_threshold: float = 3.0, min_observations: int = 3):
-        removed_count = 0
+    def prune_outlier_points(self):
+        local_keyframes = self.get_local_keyframes(
+            self.cur_keyframe.frame_id, LOCAL_MAP_WINDOW_SIZE)
+        local_kf_ids = {kf.frame_id for kf in local_keyframes}
 
+        redundant_points = bad_points = 0
         for idx in reversed(range(len(self.points))):
             point = self.points[idx]
-            if not point.is_good_point(min_observations, outlier_threshold):
-                if self.remove_point_by_index(idx):
-                    removed_count += 1
 
-        debug_log(LOG_TAG, f"Removed {removed_count} outlier points")
+            observing_kfs = set(point.observing_keyframes)
+            common_kfs = observing_kfs.intersection(local_kf_ids)
+
+            # Look for outdated points that have lost relevance
+            if len(common_kfs) == 0 and point.num_observations < MINIMUM_OBSERVATIONS_FOR_POINT:
+                if self.remove_point_by_index(idx):
+                    redundant_points += 1
+                    continue
+
+            # Look for bad points that have a low avg reprojection error
+            if not point.is_good:
+                if self.remove_point_by_index(idx):
+                    bad_points += 1
+
+        debug_log(
+            LOG_TAG, f"Removed {bad_points} bad points, and {redundant_points} redundant points")
 
     def remove_point_by_index(self, idx: int) -> bool:
         if idx < 0 or idx >= len(self.points):
