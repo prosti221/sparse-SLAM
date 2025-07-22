@@ -8,7 +8,7 @@ videos:
     fx: 270
   road:
     path: ./videos/road.mp4
-    fx: 300
+    fx: 525
   road_reverse:
     path: ./videos/road_reverse.mp4
     fx: 300
