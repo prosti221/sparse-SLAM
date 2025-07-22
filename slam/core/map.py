@@ -7,6 +7,7 @@ from slam.core.frame import Frame
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 from typing import List, Tuple, Set
 from uuid import UUID
+import matplotlib.pyplot as plt
 
 LOG_TAG = 'Map'
 
@@ -200,12 +201,12 @@ class Map:
         for point in local_points:
             point_idx = point_id_to_idx[point.point_id]
 
-            for kf_id, (keypoint_idx, pt_2d) in point.observations.items():
-                if kf_id in kf_id_to_idx:
-                    kf_idx = kf_id_to_idx[kf_id]
+            for frame_id, observation in point.observations.items():
+                if frame_id in kf_id_to_idx:
+                    kf_idx = kf_id_to_idx[frame_id]
                     if normalize_points:
                         pt_2d = self.keyframes[kf_idx].normalize_keypoint(
-                            pt_2d)
+                            observation.pt_2d)
                     observations.append((point_idx, kf_idx, pt_2d))
 
         return observations
