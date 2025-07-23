@@ -14,18 +14,13 @@ class Point:
         self.descriptor: np.ndarray = descriptor
 
         # Track which keyframes observe this point
-        # TODO: Refactor for a better structure, define an observation class
-
-        # {frame_id: Observation}
         self.observations: Dict[UUID, Observation] = {}
 
         # Track quality metrics
-        self.num_observations = 0
         self.average_reprojection_error = 0.0
 
     def add_observation(self, observation: Observation) -> None:
         self.observations[observation.frame_id] = observation
-        self.num_observations = len(self.observations)
 
     def remove_observation(self, frame_id: UUID):
         if frame_id in self.observations:
@@ -52,3 +47,7 @@ class Point:
     @property
     def is_good(self) -> bool:
         return self.average_reprojection_error < MAX_SQUARED_REPROJECTION_ERROR
+
+    @property
+    def num_observations(self) -> int:
+        return len(self.observations)

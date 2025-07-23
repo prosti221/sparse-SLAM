@@ -4,10 +4,10 @@ from slam.utils.logger import debug_log, error_log, warning_log
 from slam.utils.constants import *
 from slam.core.point import Point
 from slam.core.frame import Frame
+from slam.core.observation import Observation
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 from typing import List, Tuple, Set
 from uuid import UUID
-import matplotlib.pyplot as plt
 
 LOG_TAG = 'Map'
 
@@ -120,6 +120,9 @@ class Map:
 
         # Remove connections between all pairs of keyframes that observe this point
         for i, kf1_id in enumerate(observing_kfs):
+            # Remove point from kf observation
+            del self.keyframes_by_id[kf1_id].observed_points[point.point_id]
+
             for kf2_id in observing_kfs[i+1:]:
                 # Decrement connection strength
                 self.covisibility_graph[kf1_id][kf2_id] -= 1
@@ -186,30 +189,8 @@ class Map:
 
         return local_points
 
-    def get_observations(
-        self,
-        local_keyframes: List[Frame],
-        local_points: List[Point],
-        normalize_points=False
-    ) -> List[Tuple[int, int, np.ndarray]]:
-        observations = []
-
-        # Create index mappings
-        kf_id_to_idx = {kf.frame_id: i for i, kf in enumerate(local_keyframes)}
-        point_id_to_idx = {pt.point_id: i for i, pt in enumerate(local_points)}
-
-        for point in local_points:
-            point_idx = point_id_to_idx[point.point_id]
-
-            for frame_id, observation in point.observations.items():
-                if frame_id in kf_id_to_idx:
-                    kf_idx = kf_id_to_idx[frame_id]
-                    if normalize_points:
-                        pt_2d = self.keyframes[kf_idx].normalize_keypoint(
-                            observation.pt_2d)
-                    observations.append((point_idx, kf_idx, pt_2d))
-
-        return observations
+    def get_observations(self, local_keyframes: List[Frame]) -> List[Observation]:
+        return [obs for kf in local_keyframes for obs in kf.observed_points.values()]
 
     def prune_outlier_points(self):
         local_keyframes = self.get_local_keyframes(
@@ -312,17 +293,6 @@ class Map:
     def cleanup_covisibility_cache(self):
         self._covisibility_score_cache.clear()
         debug_log(LOG_TAG, "Cleaned up covisibility score cache")
-
-    def get_statistics(self) -> dict:
-        stats = {
-            'total_keyframes': len(self.keyframes),
-            'total_points': len(self.points),
-            'avg_observations_per_point': np.mean([p.num_observations for p in self.points]) if self.points else 0,
-            'avg_covisibility_connections': np.mean([len(connections) for connections in self.covisibility_graph.values()]) if self.covisibility_graph else 0,
-            'avg_tracking_quality': self.avg_tracking_quality,
-            'needs_recovery': self.needs_recovery(),
-        }
-        return stats
 
     def remove_keyframe_by_index(self, idx: int) -> bool:
         """Remove a keyframe by its index in the keyframes list."""

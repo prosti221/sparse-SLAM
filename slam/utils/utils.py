@@ -186,14 +186,14 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
     P2 = np.linalg.inv(frame2.pose)[:3, :]
 
     # points_4d_cv = cv.triangulatePoints(P1, P2, pts1.T, pts2.T).T
-    points_4d_cv = triangulate(P1, P2, pts1, pts2)
+    points_4d = triangulate(P1, P2, pts1, pts2)
 
-    if len(points_4d_cv) == 0:
+    if len(points_4d) == 0:
         warning_log(LOG_TAG,
                     "No valid points found in OpenCV triangulation")
 
     if not use_optimization:
-        return points_4d_cv
+        return points_4d
 
     points_4d_optimized = []
     optimized_points_count = 0
@@ -202,7 +202,7 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
         pt2 = pts2[i]
 
         # Use CV result as initial guess
-        initial_guess = points_4d_cv[i][:3] / points_4d_cv[i][3]
+        initial_guess = points_4d[i][:3] / points_4d[i][3]
 
         # Optimize using least squares
         result = optimize_triangulation(pt1, pt2, P1, P2, initial_guess)
@@ -213,7 +213,7 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
             optimized_points_count += 1
         else:
             # Fall back to OpenCV result
-            points_4d_optimized.append(points_4d_cv[i])
+            points_4d_optimized.append(points_4d[i])
 
     debug_log(
         LOG_TAG, f"Optimized {optimized_points_count} out of {len(pts1)} points")
