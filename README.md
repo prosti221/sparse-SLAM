@@ -1,6 +1,10 @@
 # Sparse SLAM
 ## Example showing progress so far
-![Example](examples/switzerland.gif)
+
+
+https://github.com/user-attachments/assets/bc4045f9-8710-4b8c-b80a-76e8555822d9
+
+
 ## Setup and run
 Install the required packages, ideally in a new environment:
 ```bash
