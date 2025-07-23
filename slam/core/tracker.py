@@ -3,7 +3,6 @@ import cv2 as cv
 from scipy.spatial import cKDTree
 from collections import defaultdict
 from typing import List, Tuple
-import matplotlib.pyplot as plt
 
 from slam.core.point import Point
 from slam.core.frame import Frame
@@ -86,7 +85,7 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _on_keyframe_inserted(self):
-        # self.map.optimize()
+        self.map.optimize()
 
         triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
