@@ -8,7 +8,7 @@ from slam.utils.logger import *
 from slam.utils.constants import *
 import cv2 as cv
 
-LOG_TAG = 'Main'
+LOG_TAG = 'Slam'
 
 # TODO: Add this as part of the global config
 RECORD_SESSION = True
@@ -25,9 +25,7 @@ if __name__ == '__main__':
     cap, K = load_video(config)
 
     global_map = Map()
-
     renderer = Renderer(global_map, K)
-
     tracker = Tracker(
         global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE)
 
@@ -36,22 +34,30 @@ if __name__ == '__main__':
     if RECORD_SESSION:
         renderer.start_recording_session()
 
-    while True:
-        renderer.vis.poll_events()
+    slam_in_progress = renderer_is_active = True
+    while slam_in_progress or renderer_is_active:
         renderer.vis.update_renderer()
+        if not renderer.vis.poll_events():
+            renderer_is_active = False
+            continue
 
-        if renderer.is_paused():
+        # Capture and write the current renderer frame if recording is enabled
+        if RECORD_SESSION:
+            renderer.capture_frame()
+
+        if renderer.is_paused() or not slam_in_progress:
+            cv.destroyAllWindows()
             continue  # Skip SLAM updates
 
         ret, img = cap.read()
         if not ret:
-            error_log(LOG_TAG, "Can't receive frame (stream end?).")
-            renderer.stop()
-            break
+            info_log(
+                LOG_TAG, f"SLAM processing finished with {len(global_map.points)} keyframes and {len(global_map.keyframes)} points in the map!")
+            slam_in_progress = False
+            continue
 
+        # Update state estimator with new frame
         frame = Frame(img, K)
-
-        # Update state estimator with new features
         is_new_keyframe = tracker.update(frame)
 
         # Render the point cloud and camera poses if a new keyframe is detected
@@ -61,7 +67,7 @@ if __name__ == '__main__':
             renderer.update()
 
         cv.imshow('frame', img)
-        # Save session data and stop the renderer
 
+    # Save session data and stop the renderer
     renderer.save_session_data()
     renderer.stop()

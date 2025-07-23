@@ -86,7 +86,7 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _on_keyframe_inserted(self):
-        self.map.optimize()
+        # self.map.optimize()
 
         triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
