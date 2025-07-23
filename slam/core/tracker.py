@@ -20,7 +20,7 @@ LOG_TAG = 'Tracker'
 
 
 class Tracker:
-    def __init__(self, map: Map, feature_extraction_method: str = ORB_EXTRACTOR_NAME):
+    def __init__(self, map: Map, feature_extraction_method: str = ORB_EXTRACTOR_NAME, enable_multiscale=False):
         self.feature_extraction_method = feature_extraction_method
         self.step = 0
         self.cur_frame: Frame = None
@@ -31,7 +31,9 @@ class Tracker:
         self.iterations_since_last_keyframe = 0
 
         self.bundle_adjustment = G2OBundleAdjustment(map)
+
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
+        self.feature_extractor.set_multiscale_enabled(enable_multiscale)
 
     def update(self, new_frame: Frame) -> bool:
         # Extract features from the new frame
@@ -68,8 +70,10 @@ class Tracker:
         self.iterations_since_last_keyframe += 1
 
         # Update the velocity based on the current and previous frame poses
-        self.velocity = self.cur_frame.pose @ np.linalg.inv(
-            self.prev_frame.pose)
+        self.velocity = np.linalg.inv(
+            self.prev_frame.pose) @ self.cur_frame.pose
+        # self.velocity = self.cur_frame.pose @ np.linalg.inv(
+        #    self.prev_frame.pose)
 
         return self.cur_frame.is_keyframe
 
@@ -114,7 +118,7 @@ class Tracker:
 
     def _handle_keyframe_insertion(self, observations: List[Observation]):
         should_insert, result = should_insert_keyframe(
-            self.map, self.cur_frame, self.map.cur_keyframe)
+            self.cur_frame, self.map.cur_keyframe)
 
         if not should_insert and self.iterations_since_last_keyframe < MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES:
             debug_log(
@@ -297,4 +301,5 @@ class Tracker:
         if Rt is None:
             return self.prev_frame.pose @ self.velocity
 
-        return np.dot(Rt, self.prev_frame.pose)
+        return self.prev_frame.pose @ Rt
+        # return Rt @ self.prev_frame.pose

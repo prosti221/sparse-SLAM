@@ -1,7 +1,17 @@
-# TODO: Add global config for logging and whatever else might be needed
-global:
+const_tag: &DNN_EXTRACTOR "DNN"
+const_tag: &ORB_EXTRACTOR "ORB"
+const_tag: &AKAZE_EXTRACTOR "AKAZE"
 
-# TODO: Add attributes for feature extraction method and other stuff..
+# Global config properties
+global:
+  load_video: "desk_xyz"
+  feature_extractor: *AKAZE_EXTRACTOR
+  enable_multiscale_features: true
+  record_session: true
+  enable_debug: true
+  enable_profiling: false # TODO: not yet implemented
+
+# Camera intrinsics for individual videos
 videos:
   greece:
     path: ./videos/greece.mp4

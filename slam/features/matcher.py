@@ -12,6 +12,7 @@ LOG_TAG = 'Matcher'
 def estimate_essential_matrix(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
     E, mask = cv.findEssentialMat(
         pts_f1_norm, pts_f2_norm,
+        np.eye(3),
         method=cv.RANSAC,
         prob=MATCHER_RANSAC_PROBABILITY,
         threshold=MATCHER_RANSAC_THRESHOLD
@@ -20,9 +21,9 @@ def estimate_essential_matrix(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) 
     return E, mask, inliers
 
 
-def estimate_homography(pts_f1: np.ndarray, pts_f2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
+def estimate_homography(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
     H, mask = cv.findHomography(
-        pts_f1, pts_f2,
+        pts_f1_norm, pts_f2_norm,
         method=cv.RANSAC,
         ransacReprojThreshold=MATCHER_RANSAC_THRESHOLD,
         confidence=MATCHER_RANSAC_PROBABILITY
@@ -31,19 +32,9 @@ def estimate_homography(pts_f1: np.ndarray, pts_f2: np.ndarray) -> Tuple[np.ndar
     return H, mask, inliers
 
 
-def homography_to_essential(H: np.ndarray, K1: np.ndarray, K2: np.ndarray) -> np.ndarray:
-    """Convert homography to essential matrix approximation"""
-    # This is a simplified approach - for more accurate conversion,
-    # you might want to decompose H into rotation and normal
-    K1_inv = np.linalg.inv(K1)
-    K2_inv = np.linalg.inv(K2)
-
-    # Approximate essential matrix from homography
-    # This assumes the scene is approximately planar
-    E_approx = K2.T @ H @ K1_inv
-
+def homography_to_essential(H_norm: np.ndarray) -> np.ndarray:
     # Ensure E has the proper essential matrix constraints
-    U, S, Vt = np.linalg.svd(E_approx)
+    U, S, Vt = np.linalg.svd(H_norm)
     # Essential matrix should have two equal singular values
     S_corrected = np.array([1, 1, 0])
     E_corrected = U @ np.diag(S_corrected) @ Vt
@@ -65,15 +56,16 @@ def evaluate_model_quality(mask: np.ndarray) -> float:
     return quality_score
 
 
-def select_best_model(pts_f1: np.ndarray, pts_f2: np.ndarray,
-                      pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray,
-                      K1: np.ndarray, K2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, str]:
+def select_best_model(
+    pts_f1_norm: np.ndarray,
+    pts_f2_norm: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, str]:
     # Estimate Essential Matrix
     E, E_mask, E_inliers = estimate_essential_matrix(pts_f1_norm, pts_f2_norm)
     E_quality = evaluate_model_quality(E_mask)
 
     # Estimate Homography
-    H, H_mask, H_inliers = estimate_homography(pts_f1, pts_f2)
+    H, H_mask, H_inliers = estimate_homography(pts_f1_norm, pts_f2_norm)
     H_quality = evaluate_model_quality(H_mask)
 
     debug_log(
@@ -83,14 +75,13 @@ def select_best_model(pts_f1: np.ndarray, pts_f2: np.ndarray,
 
     # Additional heuristics for model selection
     # If homography quality is much higher, scene might be planar
-    scene_planarity_threshold = 0.8
 
-    if H_quality > E_quality * scene_planarity_threshold and H_inliers > E_inliers:
+    if H_quality > E_quality * 1.3 and H_inliers > E_inliers:
         # Homography fits better - likely planar scene
         debug_log(LOG_TAG, "Selected Homography model (planar scene detected)")
 
         # Convert homography to essential matrix for pose estimation
-        E_from_H = homography_to_essential(H, K1, K2)
+        E_from_H = homography_to_essential(H)
         return E_from_H, H_mask, "homography"
     else:
         # Essential matrix fits better - general 3D scene
@@ -134,17 +125,12 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
 
         # Select best model between Essential Matrix and Homography
         E, mask, selected_model = select_best_model(
-            pts_f1, pts_f2, pts_f1_norm, pts_f2_norm, frame1.K, frame2.K)
+            pts_f1_norm, pts_f2_norm)
 
         filtered_matches = [m for i, m in enumerate(
             good_matches) if mask[i] == 1]
 
-        pts_f1_filtered = np.array(
-            [f1_kp[m.queryIdx].pt for m in filtered_matches])
-        pts_f2_filtered = np.array(
-            [f2_kp[m.trainIdx].pt for m in filtered_matches])
-
-        Rt = extractRtFromE(pts_f1_filtered, pts_f2_filtered, E, frame1.K)
+        Rt = extractRt(E)
 
         debug_log(
             LOG_TAG,

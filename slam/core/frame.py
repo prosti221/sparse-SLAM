@@ -42,8 +42,6 @@ class Frame:
         self.is_pose_optimized = False
         self.optimization_iterations = 0
 
-        # Track keyframe quality metrics
-        self.num_tracked_features = 0
         self.tracking_quality = 0.0
 
     def get_color_value_for_keypoint(self, keypoint_idx):
@@ -90,7 +88,6 @@ class Frame:
 
     def set_match_data(self, matches: List[cv.DMatch]) -> None:
         self.matches = matches
-        self.num_tracked_features = len(matches) if matches else 0
 
     def add_point_observation(self, observation: Observation) -> None:
         self.observed_points[observation.point_id] = observation
@@ -255,6 +252,9 @@ class Frame:
         return np.linalg.inv(self.K)
 
     @property
+    def num_tracked_features(self):
+        return sum([int(self.kp_unique_mask[m.queryIdx]) for m in self.matches])
+
     def statistics(self):
         stats = {
             'frame_id': self.frame_id,

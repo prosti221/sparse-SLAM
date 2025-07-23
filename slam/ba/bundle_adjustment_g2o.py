@@ -40,7 +40,7 @@ class G2OBundleAdjustment:
                 LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
             return False
         else:
-            warning_log(
+            debug_log(
                 LOG_TAG, f"Using : {len(observations)} observations for BA optimization")
 
         return self._optimize_with_g2o(local_keyframes, local_points, observations, fix_initial_poses=True, fix_points=fix_points)

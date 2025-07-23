@@ -21,20 +21,32 @@ class Parser:
         """
         if prop not in self.config['videos'][key]:
             warning_log(
-                LOG_TAG, f"Prop '{prop}' not found for video '{key}'. Using default value: {default}")
+                LOG_TAG, f"Property '{prop}' not found for video '{key}'. Using default value: {default}")
             return default
 
         return self.config['videos'][key][prop]
 
+    def get_global_config_property(self, prop, default=None):
+        if prop not in self.config['global']:
+            warning_log(
+                LOG_TAG, f"Property '{prop}' not found in global config. Using default value: {default}")
+            return default
+
+        return self.config['global'][prop]
+
     def __str__(self):
         ret = ""
-        for video_name in self.config['videos']:
-            ret += f"\nVideo: {video_name}"
-            ret += f"\nPath: {self.config['videos'][video_name]['path']}"
-            ret += f"\nCamera intrinsics:"
-            ret += f"\n  Fx: {self.get_video_property(video_name, 'fx', default='undefined')}"
-            ret += f"\n  Fy: {self.get_video_property(video_name, 'fy', default='undefined')}"
-            ret += f"\n  Cx: {self.get_video_property(video_name, 'cx', default='undefined')}"
-            ret += f"\n  Cy: {self.get_video_property(video_name, 'cy', default='undefined')}"
-            ret += "\n"
+        video_tag = self.get_global_config_property('load_video')
+
+        ret += f"\nVideo: {video_tag}"
+        ret += f"\nPath: {self.config['videos'][video_tag]['path']}"
+        ret += f"\nFeature extractor: {self.get_global_config_property('feature_extractor', default='undefined')}"
+        ret += f"\nEnable multiscale features: {self.get_global_config_property('enable_multiscale_features', default='undefined')}"
+        ret += f"\nCamera intrinsics:"
+        ret += f"\n  Fx: {self.get_video_property(video_tag, 'fx', default='undefined')}"
+        ret += f"\n  Fy: {self.get_video_property(video_tag, 'fy', default='undefined')}"
+        ret += f"\n  Cx: {self.get_video_property(video_tag, 'cx', default='undefined')}"
+        ret += f"\n  Cy: {self.get_video_property(video_tag, 'cy', default='undefined')}"
+        ret += "\n"
+
         return ret
