@@ -9,15 +9,17 @@ import slam.utils.constants
 LOG_TAG = 'Utils'
 
 
-def load_video(video_name, config):
-    VIDEO_PATH = config.get_video_property(video_name, 'path')
+def load_video(config):
+    video_tag = config.get_global_config_property("load_video")
+    VIDEO_PATH = config.get_video_property(video_tag, 'path')
+
     cap = cap = cv.VideoCapture(VIDEO_PATH)
     W = cap.get(cv.CAP_PROP_FRAME_WIDTH)
     H = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
-    Fx = config.get_video_property(video_name, 'fx', default=0)
-    Fy = config.get_video_property(video_name, 'fy', default=Fx)
-    Cx = config.get_video_property(video_name, 'cx', default=W//2)
-    Cy = config.get_video_property(video_name, 'cy', default=H//2)
+    Fx = config.get_video_property(video_tag, 'fx', default=0)
+    Fy = config.get_video_property(video_tag, 'fy', default=Fx)
+    Cx = config.get_video_property(video_tag, 'cx', default=W//2)
+    Cy = config.get_video_property(video_tag, 'cy', default=H//2)
     K = construct_K(Fx, Fy, Cx, Cy)
 
     info_log(LOG_TAG, f"Loaded video: {VIDEO_PATH} with properties:\n"
@@ -275,40 +277,22 @@ def compute_baseline_distance(frame1, frame2):
     return np.linalg.norm(center2 - center1)
 
 
-def compute_new_points_ratio(cur_frame, map_obj):
+def compute_new_points_ratio(cur_frame):
     if len(cur_frame.keypoints) == 0:
         return 0.0
 
-    # Count how many keypoints in current frame are matched to existing map points
-    matched_count = 0
-
-    # Check if cur_frame has a point_observations attribute
-    if hasattr(cur_frame, 'point_observations'):
-        matched_count = len(cur_frame.point_observations)
-    else:
-        # Fallback: count from map perspective but more carefully
-        matched_keypoint_indices = set()
-        for point in map_obj.points:
-            if cur_frame.frame_id in point.observations:
-                # Get the keypoint index for this observation
-                obs_data = point.observations[cur_frame.frame_id]
-                if isinstance(obs_data, tuple) and len(obs_data) >= 2:
-                    kp_idx = obs_data[0]  # Assuming (kp_idx, pt_2d) format
-                    matched_keypoint_indices.add(kp_idx)
-        matched_count = len(matched_keypoint_indices)
-
-    new_points_count = len(cur_frame.keypoints) - matched_count
-    return max(0.0, new_points_count / len(cur_frame.keypoints))
+    # We compute the ratio of non-observed matched points vs total matches with prev-frame
+    return cur_frame.num_tracked_features / len(cur_frame.matches)
 
 
-def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
+def should_insert_keyframe(cur_frame, prev_keyframe):
     # 1. Check baseline constraints
     baseline_distance = compute_baseline_distance(cur_frame, prev_keyframe)
     baseline_ok = MINIMUM_BASELINE_THRESHOLD <= baseline_distance
 
     # 2. Check new points ratio
-    new_points_ratio = compute_new_points_ratio(cur_frame, map_obj)
-    new_points_ok = new_points_ratio >= MINIMUM_NUMBER_OF_NEW_POINTS
+    new_points_ratio = compute_new_points_ratio(cur_frame)
+    new_points_ok = new_points_ratio >= MINIMUM_NEW_POINTS_RATIO
 
     # 3. Check tracking quality
     tracking_quality = cur_frame.compute_tracking_quality()
@@ -323,7 +307,7 @@ def should_insert_keyframe(map_obj, cur_frame, prev_keyframe):
                 f"Baseline too small: {baseline_distance:.3f} < {MINIMUM_BASELINE_THRESHOLD}")
     if not new_points_ok:
         reasons.append(
-            f"Not enough new points: {new_points_ratio:.2f} < {MINIMUM_NUMBER_OF_NEW_POINTS}")
+            f"Not enough new points: {new_points_ratio:.2f} < {MINIMUM_NEW_POINTS_RATIO}")
 
     if not quality_ok:
         reasons.append(

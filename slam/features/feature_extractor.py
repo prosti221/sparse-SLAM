@@ -36,7 +36,7 @@ DEFAULT_AKAZE_CONFIG = {
 DEFAULT_DNN_CONFIG = {
     'pyramid_levels': 4,          # Fewer levels for DNN to manage computation
     'scale_factor': 1.3,          # Scale factor for DNN multiscale
-    'multiscale_enabled': False,  # Enable/disable multiscale extraction
+    'multiscale_enabled': True,  # Enable/disable multiscale extraction
     'scales': [1.0, 0.8, 0.6, 1.2],  # Custom scales for DNN
     'weights_path': "weights/superpoint_v1.pth",
     'nms_dist': 4,

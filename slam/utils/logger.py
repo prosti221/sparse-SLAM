@@ -7,11 +7,10 @@ import colorama
 colorama.init(autoreset=True)
 
 # === Config ===
-# TODO: Make this configurable via environment variables or a config file
 DEBUG = True
 
+# TODO: Make this configurable via environment variables or a config file
 DEBUG_TAG_FILTER = ["Parser", "Renderer"]
-
 SEVERITY_FILTER = ["info", "error", "warning"]
 
 MSG_TYPE_TO_COLOR = {

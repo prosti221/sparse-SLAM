@@ -2,6 +2,12 @@
 __pycache__/
 *.py[cod]
 
+output/
+videos/
+slam/depth_estimation/
+slam/external/
+weights/
+
 # macOS system files
 .DS_Store
 

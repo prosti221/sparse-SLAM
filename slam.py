@@ -10,20 +10,32 @@ import cv2 as cv
 
 LOG_TAG = 'Main'
 
-if __name__ == '__main__':
-    VIDEO = 'desk_xyz'
-    config = Parser('slam/config/config.yaml')
+# TODO: Add this as part of the global config
+RECORD_SESSION = True
 
-    cap, K = load_video(VIDEO, config)
+if __name__ == '__main__':
+    config = Parser('slam/config/config.yaml')
+    info_log(LOG_TAG, f"Starting SLAM with parameters: {config}")
+
+    FEATURE_EXTRACTOR = config.get_global_config_property("feature_extractor")
+    RECORD_SESSION = config.get_global_config_property("record_session")
+    ENABLE_MULTISCALE = config.get_global_config_property(
+        "enable_multiscale_features")
+
+    cap, K = load_video(config)
 
     global_map = Map()
-    tracker = Tracker(
-        global_map, feature_extraction_method=AKAZE_EXTRACTOR_NAME)
+
     renderer = Renderer(global_map, K)
 
+    tracker = Tracker(
+        global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE)
+
     renderer.start()
-    start_frame = 95
-    c = 0
+
+    if RECORD_SESSION:
+        renderer.start_recording_session()
+
     while True:
         renderer.vis.poll_events()
         renderer.vis.update_renderer()
@@ -34,11 +46,8 @@ if __name__ == '__main__':
         ret, img = cap.read()
         if not ret:
             error_log(LOG_TAG, "Can't receive frame (stream end?).")
+            renderer.stop()
             break
-
-        if c < start_frame:
-            c += 1
-            continue
 
         frame = Frame(img, K)
 
@@ -52,3 +61,7 @@ if __name__ == '__main__':
             renderer.update()
 
         cv.imshow('frame', img)
+        # Save session data and stop the renderer
+
+    renderer.save_session_data()
+    renderer.stop()

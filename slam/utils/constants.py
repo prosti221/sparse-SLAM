@@ -5,13 +5,13 @@ PNP_REPROJECTION_ERROR = 8.0  # Reprojection error for PnP RANSAC
 PNP_MINIMUM_INLIERS = 6  # Minimum inliers for PnP
 
 ### KEYFRAME SELECTION CONSTANTS ###
-MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 5
+MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 2
 MINIMUM_BASELINE_THRESHOLD = 4.0  # Minimum translation for new keyframe
 # Minimum scene coverage for new keyframe
 MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.01  # Minimum quality for new keyframe
 # Minimum number of new points for keyframe selection
-MINIMUM_NUMBER_OF_NEW_POINTS = 0.4
+MINIMUM_NEW_POINTS_RATIO = 0.4
 
 # Triangulation constants
 MIN_DEPTH = 0.0  # Minimum depth for valid points
@@ -20,7 +20,7 @@ MIN_BASELINE_RATIO = 0.04
 MAX_SQUARED_REPROJECTION_ERROR = 2.0
 
 # Window size for local bundle adjustment
-LOCAL_MAP_WINDOW_SIZE = 7
+LOCAL_MAP_WINDOW_SIZE = 4
 GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 10  # Interval for global BA
 # Minimum number of observations a point needs for it to not be pruned
 MINIMUM_OBSERVATIONS_FOR_POINT = 3

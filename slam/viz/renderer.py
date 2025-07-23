@@ -1,10 +1,14 @@
 import open3d as o3d
 import numpy as np
+import cv2 as cv
+import json
+import os
+from datetime import datetime
+
 from slam.utils.utils import pt_obj_to_array
 from slam.utils.logger import debug_log, info_log, error_log, warning_log
 from slam.utils.constants import TRACKING_QUALITY_GRADIENT
 from slam.core.map import Map
-import cv2 as cv
 
 LOG_TAG = 'Renderer'
 
@@ -35,6 +39,22 @@ class Renderer:
 
         self.paused = False
 
+        # Save/load attributes
+        self.session_data = {
+            'points': [],
+            'poses': {},
+            'camera_params': None,
+            'timestamp': None
+        }
+
+        # Video recording attributes
+        self.recording = False
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_path = f"output/sessions/{self.timestamp}"
+        self.video_writer = None
+        self.video_filename = None
+        self.frame_count = 0
+
     def start(self):
         info_log(LOG_TAG, "Starting Open3D visualizer")
         self.vis.create_window(
@@ -47,8 +67,13 @@ class Renderer:
         # Register spacebar (ASCII 32) to toggle pause
         self.vis.register_key_callback(32, self._toggle_pause)
 
+        # Create session output folder
+        os.makedirs(self.output_path, exist_ok=True)
+
     def stop(self):
         info_log(LOG_TAG, "Stopping Open3D visualizer")
+        if self.recording:
+            self._stop_recording()
         self.vis.destroy_window()
 
     def is_paused(self):
@@ -57,6 +82,10 @@ class Renderer:
     def update(self):
         self.update_points(self.map.points)
         self.update_poses(self.map.keyframes)
+
+        # Capture frame if recording
+        if self.recording and not self.paused:
+            self._capture_frame()
 
     def update_points(self, pts):
         if len(pts) == 0:
@@ -79,6 +108,12 @@ class Renderer:
         self.vis.update_renderer()
 
         debug_log(LOG_TAG, f"Rendering point cloud with {len(pts)} points")
+
+        # Store points for session saving
+        self.session_data['points'] = {
+            'positions': pts_array.tolist(),
+            'colors': colors.tolist()
+        }
 
     def update_poses(self, keyframes):
         if not self.camera_initialized:
@@ -104,6 +139,14 @@ class Renderer:
                 self._update_pose_geometry(kf)
             else:
                 continue
+
+        # Store pose data for session saving
+        self.session_data['poses'][kf.frame_id.int] = {
+            'pose': kf.pose.tolist(),
+            'tracking_quality': kf.tracking_quality,
+            'optimization_iterations': kf.optimization_iterations
+        }
+
         self.vis.poll_events()
         self.vis.update_renderer()
 
@@ -133,10 +176,8 @@ class Renderer:
         new_cam.points = points
         new_cam.lines = lines
 
-        # Set color to green
-        quality_color = self._get_tracking_quality_color(
-            keyframe.tracking_quality)
-        colors = np.tile(quality_color, (len(lines), 1))
+        # Set current frame color to cyan
+        colors = np.tile(np.array([0, 255, 255]), (len(lines), 1))
         new_cam.colors = o3d.utility.Vector3dVector(colors)
 
         return new_cam
@@ -227,7 +268,6 @@ class Renderer:
                 LOG_TAG, f"Removed {len(poses_to_remove)} pose geometries")
 
     def remove_pose_by_id(self, keyframe_id):
-        """Manually remove a specific pose geometry by keyframe ID."""
         if keyframe_id in self.poses:
             debug_log(
                 LOG_TAG, f"Manually removing pose geometry for frame {keyframe_id}")
@@ -235,3 +275,94 @@ class Renderer:
 
             # Remove from visualizer
             self.vis.remove_geometry(pose_geometry, False)
+
+    # ======= Utility methods used for output data management =======
+    def start_recording_session(self, filename=None):
+        if filename:
+            self.video_filename = filename
+            if not filename.endswith('.mp4'):
+                self.video_filename += '.mp4'
+        else:
+            self.video_filename = os.path.join(
+                self.output_path, f"slam_session_{self.timestamp}.mp4")
+
+        self._start_recording()
+
+    def save_session_data(self):
+        # Save session metadata
+        self.session_data['timestamp'] = self.timestamp
+        self.session_data['camera_params'] = {
+            'K': self.K.tolist(),
+            'width': self.width,
+            'height': self.height
+        }
+
+        filename = f"slam_session_{self.timestamp}"
+
+        # Save as JSON for metadata and poses
+        json_filename = os.path.join(self.output_path, f"{filename}.json")
+        with open(json_filename, 'w') as f:
+            json.dump(self.session_data, f, indent=2)
+
+        # Save point cloud as PLY file
+        ply_filename = os.path.join(self.output_path, f"{filename}.ply")
+        if len(self.point_cloud.points) > 0:
+            o3d.io.write_point_cloud(ply_filename, self.point_cloud)
+            info_log(LOG_TAG, f"Saved point cloud to {ply_filename}")
+
+        info_log(
+            LOG_TAG, f"Session saved: {json_filename}, {ply_filename}")
+
+    def get_recording_status(self):
+        return {
+            'recording': self.recording,
+            'filename': self.video_filename,
+            'frame_count': self.frame_count
+        }
+
+    def _toggle_recording(self):
+        if not self.recording:
+            self._start_recording()
+        else:
+            self._stop_recording()
+        return False
+
+    def _save_session(self):
+        self.save_session_data()
+        return False
+
+    def _start_recording(self):
+        fourcc = cv.VideoWriter_fourcc(*'mp4v')
+        self.video_writer = cv.VideoWriter(
+            self.video_filename, fourcc, 5.0, (self.width, self.height))
+
+        self.recording = True
+        self.frame_count = 0
+        info_log(LOG_TAG, f"Started recording to {self.video_filename}")
+
+    def _stop_recording(self):
+        if self.video_writer:
+            self.video_writer.release()
+            self.video_writer = None
+
+        self.recording = False
+        info_log(
+            LOG_TAG, f"Stopped recording. Saved {self.frame_count} frames to {self.video_filename}")
+        self.frame_count = 0
+
+    def _capture_frame(self):
+        if not self.video_writer or not self.video_writer.isOpened():
+            error_log(LOG_TAG, "Video writer not available")
+            return
+
+        # Capture screen from Open3D visualizer
+        img = self.vis.capture_screen_float_buffer(False)
+        img = np.asarray(img)
+        img = (img * 255).astype(np.uint8)
+
+        # Convert RGB to BGR for OpenCV
+        img_bgr = cv.cvtColor(img, cv.COLOR_RGB2BGR)
+
+        # Write frame to video
+        self.video_writer.write(img_bgr)
+        self.frame_count += 1
