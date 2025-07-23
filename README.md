@@ -1,8 +1,8 @@
 # Sparse SLAM
 ## Example showing progress so far
 
+![slam_dnn_example-ezgif com-video-to-gif-converter](https://github.com/user-attachments/assets/e56bfca0-cea0-48bd-aa13-43f70d82df3e)
 
-https://github.com/user-attachments/assets/bc4045f9-8710-4b8c-b80a-76e8555822d9
 
 
 ## Setup and run
