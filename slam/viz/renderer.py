@@ -83,10 +83,6 @@ class Renderer:
         self.update_points(self.map.points)
         self.update_poses(self.map.keyframes)
 
-        # Capture frame if recording
-        if self.recording and not self.paused:
-            self._capture_frame()
-
     def update_points(self, pts):
         if len(pts) == 0:
             error_log(LOG_TAG, "No points to render")
@@ -334,7 +330,7 @@ class Renderer:
     def _start_recording(self):
         fourcc = cv.VideoWriter_fourcc(*'mp4v')
         self.video_writer = cv.VideoWriter(
-            self.video_filename, fourcc, 5.0, (self.width, self.height))
+            self.video_filename, fourcc, 30.0, (self.width, self.height))
 
         self.recording = True
         self.frame_count = 0
@@ -350,7 +346,7 @@ class Renderer:
             LOG_TAG, f"Stopped recording. Saved {self.frame_count} frames to {self.video_filename}")
         self.frame_count = 0
 
-    def _capture_frame(self):
+    def capture_frame(self):
         if not self.video_writer or not self.video_writer.isOpened():
             error_log(LOG_TAG, "Video writer not available")
             return
