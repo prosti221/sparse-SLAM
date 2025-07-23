@@ -11,7 +11,7 @@ import cv2 as cv
 LOG_TAG = 'Main'
 
 if __name__ == '__main__':
-    VIDEO = 'kitti'
+    VIDEO = 'desk_xyz'
     config = Parser('slam/config/config.yaml')
 
     cap, K = load_video(VIDEO, config)
@@ -22,7 +22,8 @@ if __name__ == '__main__':
     renderer = Renderer(global_map, K)
 
     renderer.start()
-
+    start_frame = 95
+    c = 0
     while True:
         renderer.vis.poll_events()
         renderer.vis.update_renderer()
@@ -34,6 +35,10 @@ if __name__ == '__main__':
         if not ret:
             error_log(LOG_TAG, "Can't receive frame (stream end?).")
             break
+
+        if c < start_frame:
+            c += 1
+            continue
 
         frame = Frame(img, K)
 

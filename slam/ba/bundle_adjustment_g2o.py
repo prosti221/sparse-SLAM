@@ -3,6 +3,7 @@ import numpy as np
 # from slam.core.map import Map
 from slam.core.frame import Frame
 from slam.core.point import Point
+from slam.core.observation import Observation
 from typing import List, Tuple
 from slam.utils.logger import *
 from slam.utils.constants import *
@@ -23,6 +24,7 @@ class G2OBundleAdjustment:
 
         local_keyframes = self.map.get_local_keyframes(
             reference_frame_id, window_size)
+        # local_keyframes = self.map.keyframes[-window_size:]
         local_points = self.map.get_local_points(
             local_keyframes, min_observations=2)
 
@@ -31,13 +33,15 @@ class G2OBundleAdjustment:
                 LOG_TAG, f"Insufficient data for BA: {len(local_keyframes)} keyframes, {len(local_points)} points")
             return False
 
-        observations = self.map.get_observations(
-            local_keyframes, local_points, normalize_points=True)
+        observations = self.map.get_observations(local_keyframes)
 
         if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             warning_log(
                 LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
             return False
+        else:
+            warning_log(
+                LOG_TAG, f"Using : {len(observations)} observations for BA optimization")
 
         return self._optimize_with_g2o(local_keyframes, local_points, observations, fix_initial_poses=True, fix_points=fix_points)
 
@@ -45,8 +49,7 @@ class G2OBundleAdjustment:
         debug_log(LOG_TAG, "Starting global BA with g2o")
         keyframes = self.map.keyframes
         points = self.map.points
-        observations = self.map.get_observations(
-            keyframes, points, normalize_points=True)
+        observations = self.map.get_observations(keyframes)
 
         if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
             warning_log(
@@ -56,7 +59,7 @@ class G2OBundleAdjustment:
         return self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=False, fix_points=False)
 
     def _optimize_with_g2o(self, keyframes: List[Frame], points: List[Point],
-                           observations: List[Tuple[int, int, np.ndarray]],
+                           observations: List[Observation],
                            fix_initial_poses: bool = False,
                            fix_points: bool = False) -> bool:
         try:
@@ -105,22 +108,17 @@ class G2OBundleAdjustment:
                 point_to_vertex[point] = v_point
 
             edge_count = 0
-            for point_idx, kf_idx, pt_2d in observations:
-                if kf_idx >= len(keyframes) or point_idx >= len(points):
-                    continue
-
-                kf = keyframes[kf_idx]
-                point = points[point_idx]
-
-                if kf not in frame_to_vertex or point not in point_to_vertex:
+            for obs in observations:
+                if obs.frame not in frame_to_vertex or obs.point not in point_to_vertex:
                     continue
 
                 edge = g2o.EdgeProjectXYZ2UV()
                 edge.set_parameter_id(0, 0)  # camera parameter
-                edge.set_vertex(0, point_to_vertex[point])  # point
-                edge.set_vertex(1, frame_to_vertex[kf])     # camera pose
+                edge.set_vertex(0, point_to_vertex[obs.point])  # point
+                # camera pose
+                edge.set_vertex(1, frame_to_vertex[obs.frame])
                 edge.set_information(np.eye(2))
-                edge.set_measurement(pt_2d)
+                edge.set_measurement(obs.pt_2d_norm)
                 edge.set_robust_kernel(robust_kernel)
                 opt.add_edge(edge)
                 edge_count += 1
@@ -163,7 +161,7 @@ class G2OBundleAdjustment:
                     point.pt_3d = new_pt
 
             # Update the point reprojection errors in all observed keyframes after optimization
-            self.recompute_point_errors(keyframes, points, observations)
+            self.recompute_point_errors(observations)
             return True
 
         except Exception as e:
@@ -174,24 +172,17 @@ class G2OBundleAdjustment:
 
     def recompute_point_errors(
         self,
-        keyframes: List[Frame],
-        points: List[Point],
-        observations: List[Tuple[int, int, np.ndarray]]
+        observations: List[Observation]
     ) -> None:
-        for point_idx, kf_idx, pt_2d_observed in observations:
-            if kf_idx >= len(keyframes) or point_idx >= len(points):
-                continue
-
-            kf = keyframes[kf_idx]
-            point = points[point_idx]
-
-            projected_point = kf.project_point(point.pt_3d)
+        for obs in observations:
+            projected_point = obs.frame.project_point(obs.pt_3d)
             if projected_point is None:
                 continue
             else:
-                error = np.linalg.norm(projected_point - pt_2d_observed)
+                error = np.linalg.norm(projected_point - obs.pt_2d_norm)
 
             # TODO: This is terrible, figure out how to unify quality updates and move the logic over to the map.
-            point.update_reprojection_error(error)
-            kf.compute_tracking_quality()
-            self.map.update_tracking_quality(kf.frame_id, kf.tracking_quality)
+            obs.point.update_reprojection_error(error)
+            obs.frame.compute_tracking_quality()
+            self.map.update_tracking_quality(
+                obs.frame_id, obs.frame.tracking_quality)

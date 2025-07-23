@@ -76,18 +76,6 @@ class Frame:
     def get_keypoint_point_id(self, keypoint_idx):
         return self.keypoint_to_point_map.get(keypoint_idx, None)
 
-    def get_keyframe_statistics(self):
-        stats = {
-            'frame_id': self.frame_id,
-            'num_keypoints': len(self.keypoints) if self.keypoints else 0,
-            'num_matches': len(self.matches) if self.matches else 0,
-            'num_observed_points': len(self.observed_points),
-            'tracking_quality': self.tracking_quality,
-            'is_pose_optimized': self.is_pose_optimized,
-            'optimization_iterations': self.optimization_iterations
-        }
-        return stats
-
     def get_keypoints_descriptors(self) -> Tuple[List[cv.KeyPoint], np.ndarray]:
         return self.keypoints, self.descriptors
 
@@ -265,3 +253,16 @@ class Frame:
     @property
     def Kinv(self):
         return np.linalg.inv(self.K)
+
+    @property
+    def statistics(self):
+        stats = {
+            'frame_id': self.frame_id,
+            'num_keypoints': len(self.keypoints) if self.keypoints else 0,
+            'num_matches': len(self.matches) if self.matches else 0,
+            'num_observed_points': len(self.observed_points),
+            'tracking_quality': self.tracking_quality,
+            'is_pose_optimized': self.is_pose_optimized,
+            'optimization_iterations': self.optimization_iterations
+        }
+        return stats

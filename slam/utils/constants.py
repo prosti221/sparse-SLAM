@@ -5,8 +5,8 @@ PNP_REPROJECTION_ERROR = 8.0  # Reprojection error for PnP RANSAC
 PNP_MINIMUM_INLIERS = 6  # Minimum inliers for PnP
 
 ### KEYFRAME SELECTION CONSTANTS ###
-MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 1
-MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe
+MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 5
+MINIMUM_BASELINE_THRESHOLD = 4.0  # Minimum translation for new keyframe
 # Minimum scene coverage for new keyframe
 MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.01  # Minimum quality for new keyframe
