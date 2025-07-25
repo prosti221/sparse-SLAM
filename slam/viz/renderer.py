@@ -25,7 +25,7 @@ class Renderer:
 
         self.point_cloud = o3d.geometry.PointCloud()
 
-        # {keyframe_id: (pose_geometry, optimization_iterations)}
+        # {keyframe_id: (pose_geometry, tracking_quality)}
         self.poses = {}
 
         self.ctrl = None
@@ -127,10 +127,10 @@ class Renderer:
                 debug_log(LOG_TAG, f"Adding new pose for frame {kf.frame_id}")
                 new_pose_geometry = self._construct_pose_geometry(kf)
                 self.poses[kf.frame_id] = [
-                    new_pose_geometry, kf.optimization_iterations
+                    new_pose_geometry, kf.tracking_quality
                 ]
                 self.vis.add_geometry(new_pose_geometry, False)
-            elif kf.is_pose_optimized and kf.optimization_iterations > self.poses[kf.frame_id][1]:
+            elif self.poses[kf.frame_id][1] != kf.tracking_quality:
                 debug_log(LOG_TAG, f"Updating pose for frame {kf.frame_id}")
                 self._update_pose_geometry(kf)
             else:
@@ -140,7 +140,6 @@ class Renderer:
         self.session_data['poses'][kf.frame_id.int] = {
             'pose': kf.pose.tolist(),
             'tracking_quality': kf.tracking_quality,
-            'optimization_iterations': kf.optimization_iterations
         }
 
         self.vis.poll_events()
@@ -190,7 +189,7 @@ class Renderer:
         colors = np.tile(quality_color, (len(lines), 1))
         self.poses[keyframe.frame_id][0].colors = o3d.utility.Vector3dVector(
             colors)
-        self.poses[keyframe.frame_id][1] = keyframe.optimization_iterations
+        self.poses[keyframe.frame_id][1] = keyframe.tracking_quality
 
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
 

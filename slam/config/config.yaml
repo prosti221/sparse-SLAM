@@ -7,6 +7,7 @@ global:
   load_video: "desk_xyz"
   feature_extractor: *AKAZE_EXTRACTOR
   enable_multiscale_features: true
+  enable_ba: true 
   record_session: true
   enable_debug: true
   enable_profiling: false # TODO: not yet implemented

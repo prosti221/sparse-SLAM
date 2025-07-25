@@ -20,6 +20,10 @@ class Observation():
         return np.array(self.frame.keypoints[self.kp_idx].pt)
 
     @property
+    def keypoint(self):
+        return self.frame.keypoints[self.kp_idx]
+
+    @property
     def pt_2d_norm(self):
         return np.array(self.frame.kp_pts_norm[self.kp_idx])
 

@@ -35,7 +35,7 @@ class BundleAdjustment:
         local_keyframes = self.map.get_local_keyframes(
             reference_frame_id, window_size)
         local_points = self.map.get_local_points(
-            local_keyframes, min_observations=2)
+            local_keyframes)
 
         if len(local_keyframes) < MINIMUM_LOCAL_KEYFRAMES or len(local_points) < MINIMUM_LOCAL_POINTS:
             warning_log(
@@ -262,7 +262,4 @@ class BundleAdjustment:
             else:
                 error = np.linalg.norm(projected_point - pt_2d_observed)
 
-            # TODO: This is terrible, figure out how to unify quality updates and move the logic over to the map.
             point.update_reprojection_error(error)
-            kf.compute_tracking_quality()
-            self.map.update_tracking_quality(kf.frame_id, kf.tracking_quality)

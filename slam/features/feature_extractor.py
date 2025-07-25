@@ -15,7 +15,7 @@ DEFAULT_ORB_CONFIG = {
     'pyramid_levels': 8,          # Number of pyramid levels for multiscale
     'scale_factor': 1.2,          # Scale factor between pyramid levels
     'edge_threshold': 31,         # Edge threshold for ORB
-    'multiscale_enabled': False,   # Enable/disable multiscale extraction
+    'multiscale_enabled': True,   # Enable/disable multiscale extraction
     'first_level': 0,             # First pyramid level
     'wta_k': 2,                   # WTA_K parameter for ORB
     'patch_size': 31              # Patch size for ORB
@@ -41,6 +41,7 @@ DEFAULT_DNN_CONFIG = {
     'weights_path': "weights/superpoint_v1.pth",
     'nms_dist': 4,
     'conf_thresh': 0.000000005
+    # 'conf_thresh': 0.0005
 }
 
 
