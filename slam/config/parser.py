@@ -42,11 +42,11 @@ class Parser:
         ret += f"\nPath: {self.config['videos'][video_tag]['path']}"
         ret += f"\nFeature extractor: {self.get_global_config_property('feature_extractor', default='undefined')}"
         ret += f"\nEnable multiscale features: {self.get_global_config_property('enable_multiscale_features', default='undefined')}"
+        ret += f"\nEnable bundle adjustment: {self.get_global_config_property('enable_ba', default='undefined')}"
         ret += f"\nCamera intrinsics:"
         ret += f"\n  Fx: {self.get_video_property(video_tag, 'fx', default='undefined')}"
         ret += f"\n  Fy: {self.get_video_property(video_tag, 'fy', default='undefined')}"
         ret += f"\n  Cx: {self.get_video_property(video_tag, 'cx', default='undefined')}"
         ret += f"\n  Cy: {self.get_video_property(video_tag, 'cy', default='undefined')}"
-        ret += "\n"
 
         return ret

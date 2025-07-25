@@ -21,11 +21,13 @@ class Point:
 
     def add_observation(self, observation: Observation) -> None:
         self.observations[observation.frame_id] = observation
+        self._update_observing_keyframe_quality()
 
     def remove_observation(self, frame_id: UUID):
         if frame_id in self.observations:
             del self.observations[frame_id]
             self.num_observations = len(self.observations)
+        self._update_observing_keyframe_quality()
 
     def is_observed_by(self, frame_id: UUID) -> bool:
         return frame_id in self.observations
@@ -39,6 +41,11 @@ class Point:
                 self.average_reprojection_error *
                 (self.num_observations - 1) + error
             ) / self.num_observations
+        self._update_observing_keyframe_quality()
+
+    def _update_observing_keyframe_quality(self):
+        for obs in self.observations.values():
+            obs.frame.tracking_quality_needs_update = True
 
     @property
     def observing_keyframes(self) -> List[UUID]:

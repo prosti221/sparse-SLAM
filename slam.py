@@ -21,13 +21,15 @@ if __name__ == '__main__':
     RECORD_SESSION = config.get_global_config_property("record_session")
     ENABLE_MULTISCALE = config.get_global_config_property(
         "enable_multiscale_features")
+    ENABLE_BA = config.get_global_config_property(
+        "enable_ba")
 
     cap, K = load_video(config)
 
     global_map = Map()
     renderer = Renderer(global_map, K)
     tracker = Tracker(
-        global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE)
+        global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
 
     renderer.start()
 

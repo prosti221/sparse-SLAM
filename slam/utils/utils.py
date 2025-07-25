@@ -4,7 +4,6 @@ from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
 from slam.utils.logger import *
 from slam.utils.constants import *
-import slam.utils.constants
 
 LOG_TAG = 'Utils'
 
@@ -103,24 +102,12 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     # return cur_error <= max_error and prev_error <= max_error
     validation_code = TRIANGULATION_VALIDATION_CODE['VALID']
 
-    if cur_cam_coords[2] <= slam.utils.constants.MIN_DEPTH or prev_cam_coords[2] <= slam.utils.constants.MIN_DEPTH:
+    if cur_cam_coords[2] <= MIN_DEPTH or prev_cam_coords[2] <= MIN_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MIN_DEPTH_VIOLATION']
 
     # 2. Check depth bounds
-    if cur_cam_coords[2] > slam.utils.constants.MAX_DEPTH or prev_cam_coords[2] > slam.utils.constants.MAX_DEPTH:
+    if cur_cam_coords[2] > MAX_DEPTH or prev_cam_coords[2] > MAX_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
-
-    """
-    # 3. Check baseline between the two cameras
-    baseline_distance = compute_baseline_distance(cur_frame, prev_frame)
-    point_distance = np.linalg.norm(point_3d - cur_frame.camera_center)
-    # Baseline-to-distance ratio should be above minimum threshold
-    # This prevents triangulating very distant points with insufficient baseline
-    baseline_ratio = baseline_distance / max(point_distance, 1e-6)
-
-    if baseline_ratio < slam.utils.constants.MIN_BASELINE_RATIO:
-        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_BASELINE_VIOLATION']
-    """
 
     # 4. Check reprojection error
     if cur_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR:
@@ -172,7 +159,7 @@ def triangulate(pose1, pose2, pts1, pts2):
     return ret
 
 
-def compute_triangulation(frame1, frame2, use_optimization=True):
+def compute_triangulation(frame1, frame2, use_optimization=False):
     if not frame1.matches or len(frame1.matches) == 0:
         warning_log(LOG_TAG, "No matches found for triangulation")
         return np.array([])
@@ -187,7 +174,6 @@ def compute_triangulation(frame1, frame2, use_optimization=True):
     P1 = np.linalg.inv(frame1.pose)[:3, :]
     P2 = np.linalg.inv(frame2.pose)[:3, :]
 
-    # points_4d_cv = cv.triangulatePoints(P1, P2, pts1.T, pts2.T).T
     points_4d = triangulate(P1, P2, pts1, pts2)
 
     if len(points_4d) == 0:
@@ -295,8 +281,7 @@ def should_insert_keyframe(cur_frame, prev_keyframe):
     new_points_ok = new_points_ratio >= MINIMUM_NEW_POINTS_RATIO
 
     # 3. Check tracking quality
-    tracking_quality = cur_frame.compute_tracking_quality()
-    quality_ok = tracking_quality >= MINIMUM_KEYFRAME_QUALITY_THRESHOLD
+    quality_ok = cur_frame.tracking_quality >= MINIMUM_KEYFRAME_QUALITY_THRESHOLD
 
     # Decision logic
     reasons = []
@@ -311,7 +296,7 @@ def should_insert_keyframe(cur_frame, prev_keyframe):
 
     if not quality_ok:
         reasons.append(
-            f"Tracking quality too low: {tracking_quality:.2f} < {MINIMUM_KEYFRAME_QUALITY_THRESHOLD}")
+            f"Tracking quality too low: {cur_frame.tracking_quality:.2f} < {MINIMUM_KEYFRAME_QUALITY_THRESHOLD}")
 
     # Keyframe insertion criteria
     critical_conditions = [baseline_ok]
@@ -327,61 +312,10 @@ def should_insert_keyframe(cur_frame, prev_keyframe):
         debug_log(LOG_TAG, "Keyframe statistics: "
                   f"Baseline: {baseline_distance:.3f}, "
                   f"New Points Ratio: {new_points_ratio:.2f}, "
-                  f"Tracking Quality: {tracking_quality:.2f}, ")
+                  f"Tracking Quality: {cur_frame.tracking_quality:.2f}, ")
         return True, "Quality criteria met"
     else:
         return False, "; ".join(reasons)
-
-# Testing
-
-
-def set_dynamic_triangulation_depths(cur_frame, prev_frame, pts_3d, valid_indices):
-    # Extract depths for valid points only
-    valid_depths = np.array([pts_3d[i][2] for i in valid_indices])
-    # Filter out non-positive depths
-    valid_depths = valid_depths[valid_depths > 0]
-    if len(valid_depths) > 0:
-        min_depth, max_depth = np.percentile(
-            valid_depths, 20), np.percentile(valid_depths, 75)
-        slam.utils.constants.MIN_DEPTH = max(
-            0.0, min_depth)
-        slam.utils.constants.MAX_DEPTH = max_depth
-
-        # 2. Update baseline ratio constraints (new functionality)
-    if len(valid_indices) > 10:  # Need sufficient samples for reliable statistics
-        baseline_distance = compute_baseline_distance(cur_frame, prev_frame)
-
-        # Compute baseline ratios for all valid points
-        baseline_ratios = []
-
-        for idx in valid_indices:
-            point_3d = pts_3d[idx][:3]
-            point_distance = np.linalg.norm(point_3d - cur_frame.camera_center)
-
-            if point_distance > 0:
-                baseline_ratio = baseline_distance / point_distance
-                baseline_ratios.append(baseline_ratio)
-
-        # Update baseline ratio threshold using MAD
-        if len(baseline_ratios) > 5:
-            baseline_ratios = np.array(baseline_ratios)
-            median_ratio = np.median(baseline_ratios)
-            # Set minimum baseline ratio as median - 2*MAD_STD, but with reasonable bounds
-            dynamic_min_ratio = np.percentile(baseline_ratios, 45)
-            slam.utils.constants.MIN_BASELINE_RATIO = max(
-                0.01,  # Absolute minimum (1:200 ratio)
-                min(dynamic_min_ratio, 0.1)  # Don't make it too restrictive
-            )
-
-        debug_log(
-            LOG_TAG,
-            f"Dynamic triangulation constraints updated:\n"
-            f"  Depth: min={slam.utils.constants.MIN_DEPTH:.3f}m, max={slam.utils.constants.MAX_DEPTH:.3f}m\n"
-            f"  Baseline ratio: min={slam.utils.constants.MIN_BASELINE_RATIO:.4f} "
-            f"(from {len(baseline_ratios)} ratios, median={median_ratio:.4f}, percentile={dynamic_min_ratio:.4f})\n"
-            f"  Stats: baseline_distance={baseline_distance:.3f}m, "
-            f"  depth_range=[{np.min(valid_depths):.3f}, {np.max(valid_depths):.3f}]m"
-        )
 
 
 def visualize_matches(frame1, frame2, matches=None, save_path=None):

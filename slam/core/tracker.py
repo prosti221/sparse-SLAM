@@ -13,13 +13,12 @@ from slam.utils.constants import *
 from slam.utils.logger import *
 from slam.features.matcher import *
 from slam.features.feature_extractor import FeatureExtractor
-from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 
 LOG_TAG = 'Tracker'
 
 
 class Tracker:
-    def __init__(self, map: Map, feature_extraction_method: str = ORB_EXTRACTOR_NAME, enable_multiscale=False):
+    def __init__(self, map: Map, feature_extraction_method: str = ORB_EXTRACTOR_NAME, enable_multiscale=False, enable_ba=True):
         self.feature_extraction_method = feature_extraction_method
         self.step = 0
         self.cur_frame: Frame = None
@@ -29,7 +28,7 @@ class Tracker:
         self.velocity = np.eye(4)
         self.iterations_since_last_keyframe = 0
 
-        self.bundle_adjustment = G2OBundleAdjustment(map)
+        self.enable_ba = enable_ba
 
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
         self.feature_extractor.set_multiscale_enabled(enable_multiscale)
@@ -67,12 +66,11 @@ class Tracker:
 
         self.step += 1
         self.iterations_since_last_keyframe += 1
+        self.map.update_tracking_quality()
 
         # Update the velocity based on the current and previous frame poses
         self.velocity = np.linalg.inv(
             self.prev_frame.pose) @ self.cur_frame.pose
-        # self.velocity = self.cur_frame.pose @ np.linalg.inv(
-        #    self.prev_frame.pose)
 
         return self.cur_frame.is_keyframe
 
@@ -85,35 +83,35 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _on_keyframe_inserted(self):
-        self.map.optimize()
+        self.map.optimize(self.enable_ba)
 
         triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
 
     def _filter_duplicate_keypoints(self):
         for match in self.cur_frame.matches:
-            prev_keyframe_kp = self.map.prev_keyframe.keypoints[match.trainIdx]
-            if prev_keyframe_kp not in self.map.prev_keyframe.keypoint_to_point_map:
+            cur_keyframe_kp = self.map.cur_keyframe.keypoints[match.trainIdx]
+            if cur_keyframe_kp not in self.map.cur_keyframe.keypoint_to_point_map:
                 continue
 
-            point_id = self.map.prev_keyframe.keypoint_to_point_map[prev_keyframe_kp]
-            point = self.map.get_point_by_id(point_id)
+            point = self.map.cur_keyframe.get_point_by_keypoint(
+                cur_keyframe_kp)
 
             if point is None:
                 continue
 
-            self.map.cur_keyframe.kp_unique_mask[match.queryIdx] = False
+            self.cur_frame.kp_unique_mask[match.queryIdx] = False
 
-            self.map.cur_keyframe.add_point_observation(
-                Observation(self.map.cur_keyframe, point, match.queryIdx))
+            self.cur_frame.add_point_observation(
+                Observation(self.cur_frame, point, match.queryIdx))
 
         # Filter out matches that are already triangulated in the global map.
-        pre_filter_length = len(self.map.cur_keyframe.matches)
-        self.map.cur_keyframe.matches = [
-            m for m in self.map.cur_keyframe.matches if self.map.cur_keyframe.kp_unique_mask[m.queryIdx]]
+        pre_filter_length = len(self.cur_frame.matches)
+        self.cur_frame.matches = [
+            m for m in self.cur_frame.matches if self.cur_frame.kp_unique_mask[m.queryIdx]]
 
         debug_log(
-            LOG_TAG, f"Removing duplicate points before triangulation. From {pre_filter_length} to {len(self.map.cur_keyframe.matches)}")
+            LOG_TAG, f"Removing duplicate points before triangulation. From {pre_filter_length} to {len(self.cur_frame.matches)}")
 
     def _handle_keyframe_insertion(self, observations: List[Observation]):
         should_insert, result = should_insert_keyframe(
@@ -131,13 +129,15 @@ class Tracker:
             obs.point.add_observation(obs)
             self.cur_frame.add_point_observation(obs)
 
-        self.map.add_keyframe(self.cur_frame)
-
+        # Match features between current frame and previous keyframe
         match_features_between_frames(
-            self.map.cur_keyframe, self.map.prev_keyframe, self.feature_extraction_method)
+            self.cur_frame, self.map.cur_keyframe, self.feature_extraction_method)
 
         # We filter out matches that have already been triangulated.
         self._filter_duplicate_keypoints()
+
+        # Promote current frame to keyframe
+        self.map.add_keyframe(self.cur_frame)
 
         self.iterations_since_last_keyframe = 0
         self._on_keyframe_inserted()
@@ -148,7 +148,7 @@ class Tracker:
             self.map.cur_keyframe.frame_id, LOCAL_MAP_WINDOW_SIZE)
         local_map_points = self.map.get_local_points(local_keyframes)
 
-        for mp in local_map_points:
+        for mp in self.map.points:
             pt_3d = mp.pt_3d
             # Project the 3D point to the current frame as pixel image coordinates (u, v)
             projected_point = self.cur_frame.project_point(
@@ -162,7 +162,7 @@ class Tracker:
 
     def _match_projected_points(
         self, projected_points: List[Tuple[Point, np.ndarray]],
-        dist_thresh: int = 50
+        dist_thresh: int = 5
     ) -> List[Observation]:
         observations = []
         _, descriptors = self.cur_frame.get_keypoints_descriptors()
@@ -201,17 +201,14 @@ class Tracker:
                     best_dist = desc_dist
                     best_idx = i
 
-            if best_idx != -1 and best_dist < 30:
+            if best_idx != -1 and best_dist < 40:
                 repro_error = np.linalg.norm(
                     kp_coords[best_idx] - np.array([u_proj, v_proj]))
 
                 # Update observation relationships
                 observation = Observation(self.cur_frame, mp, best_idx)
-
                 observations.append(observation)
-
                 mp.update_reprojection_error(repro_error)
-
                 self.cur_frame.kp_unique_mask[best_idx] = False
 
         debug_log(
@@ -226,7 +223,7 @@ class Tracker:
 
         # Triangulate points
         points_4d = compute_triangulation(
-            self.map.cur_keyframe, self.map.prev_keyframe, use_optimization=True)
+            self.map.cur_keyframe, self.map.prev_keyframe, use_optimization=False)
 
         valid_points = points_4d[:, 3] != 0
         points_4d = points_4d[valid_points]
@@ -237,8 +234,6 @@ class Tracker:
 
         rejected_points = 0
         validation_results = defaultdict(lambda: 0)
-        # set_dynamic_triangulation_depths(
-        #    self.map.cur_keyframe, self.map.prev_keyframe, points_4d[:, :3], valid_indices)
 
         for i, idx in enumerate(valid_indices):
             if idx >= len(self.map.cur_keyframe.matches):
@@ -276,7 +271,7 @@ class Tracker:
             np.array(point_4d)[:3],
             self.cur_frame.get_color_value_for_keypoint(match.queryIdx),
             self.map.cur_keyframe.get_keypoints_descriptors()[
-                1][match.queryIdx]
+                1][match.queryIdx],
         )
 
         # Current keyframe observation
@@ -300,5 +295,4 @@ class Tracker:
         if Rt is None:
             return self.prev_frame.pose @ self.velocity
 
-        return self.prev_frame.pose @ Rt
-        # return Rt @ self.prev_frame.pose
+        return Rt @ self.prev_frame.pose

@@ -1,4 +1,7 @@
 from collections import defaultdict
+from itertools import dropwhile, islice
+from typing import List, Tuple, Set
+from uuid import UUID
 import numpy as np
 from slam.utils.logger import debug_log, error_log, warning_log
 from slam.utils.constants import *
@@ -6,8 +9,6 @@ from slam.core.point import Point
 from slam.core.frame import Frame
 from slam.core.observation import Observation
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
-from typing import List, Tuple, Set
-from uuid import UUID
 
 LOG_TAG = 'Map'
 
@@ -69,27 +70,31 @@ class Map:
                 point = self.points_by_id[point_id]
                 self._add_keyframe_to_point_covisibility(kf.frame_id, point)
 
-        self.update_tracking_quality(kf.frame_id, kf.tracking_quality)
+        # self.update_tracking_quality(kf.frame_id, kf.tracking_quality)
 
-    def optimize(self):
+    def optimize(self, enable_ba=True):
         # Decide if we need to optimize globally
         # TODO: Figure out better criterias for deciding this, maybe based on the current tracking quality?
-        success = False
-        perform_global_ba = self.should_perform_global_bundle_adjustment(
-            GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)
-        if (perform_global_ba):
-            success = self.g2o_optimizer.global_bundle_adjustment()
-        else:
-            success = self.g2o_optimizer.local_bundle_adjustment(
-                self.keyframes[-1].frame_id,
-                window_size=len(self.keyframes),
-                fix_points=False
-            )
-        if success:
-            debug_log(LOG_TAG, "BA was successful, pruning outlier points...")
-            self.prune_outlier_points()
-        else:
-            warning_log(LOG_TAG, "BA failed")
+        if enable_ba:
+            success = False
+            perform_global_ba = self.should_perform_global_bundle_adjustment(
+                GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)
+            if perform_global_ba:
+                success = self.g2o_optimizer.global_bundle_adjustment()
+            else:
+                success = self.g2o_optimizer.local_bundle_adjustment(
+                    self.keyframes[-1].frame_id,
+                    window_size=LOCAL_MAP_WINDOW_SIZE,
+                    fix_points=len(self.keyframes) > LOCAL_MAP_WINDOW_SIZE
+                )
+
+            if success:
+                debug_log(
+                    LOG_TAG, "BA was successful, pruning outlier points...")
+            else:
+                warning_log(LOG_TAG, "BA failed")
+
+        self.prune_outlier_points()
 
     def _add_point_to_covisibility_graph(self, point: Point):
         observing_kfs = point.observing_keyframes
@@ -152,8 +157,14 @@ class Map:
                 LOG_TAG, f"Reference keyframe {reference_frame_id} not found")
             return []
 
+        return self.keyframes[-window_size:]
+        """
         # Get covisible keyframes directly from the graph
         covisible_kfs = self.covisibility_graph[reference_frame_id]
+        if len(covisible_kfs) == 0:
+            error_log(
+                LOG_TAG, f"No covisible frames, returning the last N frames in the local window")
+            return self.keyframes[-window_size:]
 
         # Sort by covisibility strength (number of shared observations)
         keyframe_scores = []
@@ -174,8 +185,14 @@ class Map:
             local_keyframes.append(ref_kf)
 
         return local_keyframes
+        """
 
-    def get_local_points(self, local_keyframes: List[Frame], min_observations: int = 2) -> List[Point]:
+    def get_local_points(self, local_keyframes: List[Frame]) -> List[Point]:
+        local_points = set()
+        for kf in local_keyframes:
+            for obs in kf.observed_points.values():
+                local_points.add(obs.point)
+        """
         local_kf_ids = {kf.frame_id for kf in local_keyframes}
         local_points = []
 
@@ -186,7 +203,7 @@ class Map:
 
             if len(common_kfs) >= min_observations:
                 local_points.append(point)
-
+        """
         return local_points
 
     def get_observations(self, local_keyframes: List[Frame]) -> List[Observation]:
@@ -270,8 +287,9 @@ class Map:
     def get_point_by_id(self, point_id: UUID) -> Point:
         return self.points_by_id.get(point_id, None)
 
-    def update_tracking_quality(self, keyframe_id: UUID, quality: float):
-        self.tracking_quality_history[keyframe_id] = quality
+    def update_tracking_quality(self):
+        self.tracking_quality_history = {
+            kf_id: kf.tracking_quality for kf_id, kf in self.keyframes_by_id.items()}
 
     def needs_recovery(self) -> bool:
         return self.avg_tracking_quality < TRACKING_QUALITY_THRESHOLD

@@ -34,15 +34,12 @@ class Frame:
 
         self.observed_points: Dict[UUID, Observation] = {}
 
-        self.keypoint_to_point_map: Dict[Tuple[int, int], UUID] = {}
+        self.keypoint_to_point_map: Dict[Tuple[int, int], Point] = {}
 
         self.is_keyframe = False
 
-        # Track pose uncertainty and optimization status
-        self.is_pose_optimized = False
-        self.optimization_iterations = 0
-
-        self.tracking_quality = 0.0
+        self._tracking_quality = 0.0
+        self.tracking_quality_needs_update = False
 
     def get_color_value_for_keypoint(self, keypoint_idx):
         DEFAULT_COLOR = np.array([255, 255, 255], dtype=np.uint8)
@@ -71,7 +68,7 @@ class Frame:
     def get_point_observation(self, point_id: UUID) -> Observation:
         return self.observed_points.get(point_id, None)
 
-    def get_keypoint_point_id(self, keypoint_idx):
+    def get_point_by_keypoint(self, keypoint_idx):
         return self.keypoint_to_point_map.get(keypoint_idx, None)
 
     def get_keypoints_descriptors(self) -> Tuple[List[cv.KeyPoint], np.ndarray]:
@@ -91,8 +88,7 @@ class Frame:
 
     def add_point_observation(self, observation: Observation) -> None:
         self.observed_points[observation.point_id] = observation
-        self.keypoint_to_point_map[self.keypoints[observation.kp_idx]
-                                   ] = observation.kp_idx
+        self.keypoint_to_point_map[observation.keypoint] = observation.point
 
     def remove_point_observation(self, point_id: UUID) -> None:
         if point_id in self.observed_points:
@@ -178,9 +174,8 @@ class Frame:
         visibility_ratio = visible_count / len(self.keypoints)
         quality_ratio = high_quality_count / visible_count if visible_count > 0 else 0.0
 
-        self.tracking_quality = 0.7 * visibility_ratio + 0.3 * quality_ratio
-
-        return self.tracking_quality
+        self._tracking_quality = 0.7 * visibility_ratio + 0.3 * quality_ratio
+        self.tracking_quality_needs_update = False
 
     def normalize_keypoint(self, pt_2d: np.ndarray) -> np.ndarray:
         if self.Kinv is None:
@@ -189,6 +184,13 @@ class Frame:
         return (self.Kinv @ np.array([pt_2d[0], pt_2d[1], 1.0])).astype(np.float32)[:2]
 
     # Properties
+    @property
+    def tracking_quality(self):
+        if (self.tracking_quality_needs_update):
+            self.compute_tracking_quality()
+
+        return self._tracking_quality
+
     @property
     def camera_center(self):
         # Camera center is -R^T * t
@@ -262,7 +264,5 @@ class Frame:
             'num_matches': len(self.matches) if self.matches else 0,
             'num_observed_points': len(self.observed_points),
             'tracking_quality': self.tracking_quality,
-            'is_pose_optimized': self.is_pose_optimized,
-            'optimization_iterations': self.optimization_iterations
         }
         return stats

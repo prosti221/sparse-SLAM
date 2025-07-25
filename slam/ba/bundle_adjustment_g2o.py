@@ -24,16 +24,10 @@ class G2OBundleAdjustment:
 
         local_keyframes = self.map.get_local_keyframes(
             reference_frame_id, window_size)
-        # local_keyframes = self.map.keyframes[-window_size:]
-        local_points = self.map.get_local_points(
-            local_keyframes, min_observations=2)
-
-        if len(local_keyframes) < MINIMUM_LOCAL_KEYFRAMES or len(local_points) < MINIMUM_LOCAL_POINTS:
-            warning_log(
-                LOG_TAG, f"Insufficient data for BA: {len(local_keyframes)} keyframes, {len(local_points)} points")
-            return False
-
         observations = self.map.get_observations(local_keyframes)
+
+        keyframes = self.map.keyframes
+        points = self.map.points
 
         if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             warning_log(
@@ -43,7 +37,7 @@ class G2OBundleAdjustment:
             debug_log(
                 LOG_TAG, f"Using : {len(observations)} observations for BA optimization")
 
-        return self._optimize_with_g2o(local_keyframes, local_points, observations, fix_initial_poses=True, fix_points=fix_points)
+        return self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=True, fix_points=fix_points)
 
     def global_bundle_adjustment(self) -> bool:
         debug_log(LOG_TAG, "Starting global BA with g2o")
@@ -65,11 +59,22 @@ class G2OBundleAdjustment:
         try:
             # Create optimizer
             opt = g2o.SparseOptimizer()
-            solver = g2o.BlockSolverSE3(g2o.LinearSolverCSparseSE3())
+            solver = g2o.BlockSolverSE3(g2o.LinearSolverEigenSE3())
             solver = g2o.OptimizationAlgorithmLevenberg(solver)
+
+            terminate = g2o.SparseOptimizerTerminateAction()
+            terminate.set_gain_threshold(1e-6)
             opt.set_algorithm(solver)
 
             # Add normalized camera parameters
+            """
+            camera_params = self._extract_camera_params()
+            cam = g2o.CameraParameters(
+                camera_params['fx'],
+                (camera_params['cx'], camera_params['cy']),
+                0
+            )
+            """
             cam = g2o.CameraParameters(1.0, (0.0, 0.0), 0)
             cam.set_id(0)
             opt.add_parameter(cam)
@@ -90,19 +95,24 @@ class G2OBundleAdjustment:
                 se3 = g2o.SE3Quat(R, t)
 
                 v_se3 = g2o.VertexSE3Expmap()
-                v_se3.set_id(i)
+                v_se3.set_id(i * 2)
                 v_se3.set_estimate(se3)
-                v_se3.set_fixed(i <= 1 and fix_initial_poses)
+                v_se3.set_fixed(i == 0 and fix_initial_poses)
 
                 opt.add_vertex(v_se3)
                 frame_to_vertex[kf] = v_se3
 
+            # Find the best point based on reprojection error
+            n = 5
+            best_indices = sorted(
+                range(len(points)), key=lambda i: points[i].average_reprojection_error, reverse=False)[:n]
+
             # Add point vertices with unique IDs
             for i, point in enumerate(points):
                 v_point = g2o.VertexPointXYZ()
-                v_point.set_id(len(keyframes) + i)
+                v_point.set_id(i * 2 + 1)
                 v_point.set_estimate(point.pt_3d)
-                v_point.set_fixed(fix_points)
+                v_point.set_fixed(fix_points or i in best_indices)
                 v_point.set_marginalized(True)
                 opt.add_vertex(v_point)
                 point_to_vertex[point] = v_point
@@ -132,7 +142,7 @@ class G2OBundleAdjustment:
 
             # Optimize with initialization
             opt.initialize_optimization()
-            opt.optimize(30)
+            opt.optimize(50)
 
             # Update keyframe poses
             for kf, vertex in frame_to_vertex.items():
@@ -147,21 +157,18 @@ class G2OBundleAdjustment:
 
                 # Update frame pose
                 kf.pose = np.linalg.inv(new_pose)
-                kf.is_pose_optimized = True
-                kf.optimization_iterations += 1
 
             # Update 3D points if they were optimized
             if not fix_points:
                 for point, vertex in point_to_vertex.items():
                     # Get updated point position
                     new_pt = np.array(vertex.estimate())
-                    # point.update_reprojection_error(...)
 
                     # Update point in map
                     point.pt_3d = new_pt
 
             # Update the point reprojection errors in all observed keyframes after optimization
-            self.recompute_point_errors(observations)
+            self._recompute_point_errors(observations)
             return True
 
         except Exception as e:
@@ -170,7 +177,7 @@ class G2OBundleAdjustment:
             error_log(LOG_TAG, traceback.format_exc())
             return False
 
-    def recompute_point_errors(
+    def _recompute_point_errors(
         self,
         observations: List[Observation]
     ) -> None:
@@ -181,8 +188,23 @@ class G2OBundleAdjustment:
             else:
                 error = np.linalg.norm(projected_point - obs.pt_2d_norm)
 
-            # TODO: This is terrible, figure out how to unify quality updates and move the logic over to the map.
             obs.point.update_reprojection_error(error)
-            obs.frame.compute_tracking_quality()
-            self.map.update_tracking_quality(
-                obs.frame_id, obs.frame.tracking_quality)
+
+    def _extract_camera_params(self):
+        if self.map.cur_keyframe is None or not hasattr(self.map.cur_keyframe, 'K'):
+            raise ValueError(
+                "Current keyframe or camera matrix K not available")
+
+        K = self.map.cur_keyframe.K
+        fx = K[0, 0]
+        fy = K[1, 1]
+        cx = K[0, 2]
+        cy = K[1, 2]
+
+        return {
+            'fx': fx,
+            'fy': fy,
+            'cx': cx,
+            'cy': cy,
+            'K': K
+        }
