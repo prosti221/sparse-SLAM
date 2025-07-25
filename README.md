@@ -1,6 +1,6 @@
 ## Monocular VSLAM: Feature-Based Monocular Visual SLAM
 ### Overview
-This is a monocular visual SLAM system that builds a sparse 3D map of the environment using feature-based techniques. The system tracks camera motion and reconstructs environmental features using only visual input from a single camera. Generates tons of good keypoints and its able to produce fairly dense maps, but its quite costly to run.
+This is a monocular visual SLAM system that builds a sparse 3D map of the environment using feature-based techniques. The system tracks camera motion and reconstructs environmental features using only visual input from a single camera.
 ### Key Features
 - Real-time camera tracking using feature matching and pose estimation
 - Sparse 3D reconstruction of environmental features
@@ -10,7 +10,7 @@ This is a monocular visual SLAM system that builds a sparse 3D map of the enviro
 - Visualization using Open3D
 
 ### Example run on [TUM rgbd](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download) dataset (fr1/xyz)
-This is using the SuperPoint feature extractor.
+This is using the SuperPoint feature extractor. Generates tons of good keypoints and its able to produce fairly dense maps, but its quite costly to run.
 
 https://github.com/user-attachments/assets/cb612c58-9a4e-4216-81dc-7656cf5de836
 
