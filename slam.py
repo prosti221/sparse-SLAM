@@ -27,7 +27,8 @@ if __name__ == '__main__':
         "enable_ba")
 
     cap, K = load_video(config)
-    W, H = cap.get(cv.CAP_PROP_FRAME_WIDTH), cap.get(cv.CAP_PROP_FRAME_HEIGHT)
+    W, H = int(cap.get(cv.CAP_PROP_FRAME_WIDTH)), int(
+        cap.get(cv.CAP_PROP_FRAME_HEIGHT))
     global_map = Map()
     renderer = Renderer(
         global_map,
@@ -59,7 +60,7 @@ if __name__ == '__main__':
 
         # Capture and write the current renderer frame if recording is enabled
         if RECORD_SESSION:
-            renderer.capture_frame(complement_frame=prev_img)
+            renderer.capture_frame(complement_frame=prev_img.copy())
 
         # Check if we are in a paused state or if slam is not running
         if renderer.is_paused() or not slam_in_progress:

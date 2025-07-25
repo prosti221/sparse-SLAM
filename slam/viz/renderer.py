@@ -17,8 +17,8 @@ class Renderer:
     def __init__(self, map: Map, K, W=1920, H=1080):
         self.vis = o3d.visualization.VisualizerWithKeyCallback()
 
-        self.W = W
-        self.H = H
+        self.W = int(W)
+        self.H = int(H)
 
         self.K = K
         self.map: Map = map
@@ -33,7 +33,7 @@ class Renderer:
         self.camera_initialized = False
 
         self.pinhole = o3d.camera.PinholeCameraIntrinsic(
-            W, H, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
+            self.W, self.H, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
         self.camera_parameters = o3d.camera.PinholeCameraParameters()
         self.camera_parameters.intrinsic = self.pinhole
 
@@ -353,10 +353,10 @@ class Renderer:
             LOG_TAG, f"Stopped recording. Saved {self.frame_count} frames to {self.video_filename}")
         self.frame_count = 0
 
-    def capture_frame(self, complement_frame):
+    def capture_frame(self, complement_frame=None):
         if self.frame_count == 0:
-            scale = 2 if complement_frame else 1
-            W, H = (self.W * scale, self.H * scale)
+            scale = 2 if complement_frame is not None else 1
+            W, H = (self.W * scale, self.H)
             fourcc = cv.VideoWriter_fourcc(*'mp4v')
             self.video_writer = cv.VideoWriter(
                 self.video_filename, fourcc, 30.0, (W, H))
@@ -364,12 +364,10 @@ class Renderer:
         # Capture screen from Open3D visualizer
         renderer_frame = self.vis.capture_screen_float_buffer(False)
         renderer_frame = np.asarray(renderer_frame)
-        save_img = np.concatenate([complement_frame, renderer_frame], axis=0)
-        save_img = (save_img * 255).astype(np.uint8)
-
-        # Convert RGB to BGR for OpenCV
-        img_bgr = cv.cvtColor(save_img, cv.COLOR_RGB2BGR)
+        renderer_frame = (renderer_frame * 255).astype(np.uint8)
+        renderer_frame = cv.cvtColor(renderer_frame, cv.COLOR_RGB2BGR)
+        save_img = np.concatenate([complement_frame, renderer_frame], axis=1)
 
         # Write frame to video
-        self.video_writer.write(img_bgr)
+        self.video_writer.write(save_img)
         self.frame_count += 1
