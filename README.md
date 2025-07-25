@@ -57,7 +57,7 @@ videos:
 
 ## Future TODOs
 - Add loop closure detection
-- Improve keyframe selection criteria
+- Improve keyframe selection criteria. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.
 - Add tooling for profiling
 - Improve efficiency, its barely usable for real-time purposes currently.
 - Add tooling for ground truth comparison for benchmarking
