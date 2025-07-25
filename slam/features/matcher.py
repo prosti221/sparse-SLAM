@@ -64,6 +64,9 @@ def select_best_model(
     E, E_mask, E_inliers = estimate_essential_matrix(pts_f1_norm, pts_f2_norm)
     E_quality = evaluate_model_quality(E_mask)
 
+    # Disabling model selection until I figure out why the Homogrophy is so shit for planar scenes    return E, E_mask, "essential"
+    return E, E_mask, "essential"
+
     # Estimate Homography
     H, H_mask, H_inliers = estimate_homography(pts_f1_norm, pts_f2_norm)
     H_quality = evaluate_model_quality(H_mask)

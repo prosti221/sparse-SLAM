@@ -12,19 +12,19 @@ DEFAULT_ORB_CONFIG = {
     'n_pts': ORB_NUMBER_OF_POINTS,
     'quality_level': ORB_QUALITY_LEVEL,
     'min_distance': ORB_MIN_DISTANCE,
-    'pyramid_levels': 8,          # Number of pyramid levels for multiscale
-    'scale_factor': 1.2,          # Scale factor between pyramid levels
-    'edge_threshold': 31,         # Edge threshold for ORB
-    'multiscale_enabled': True,   # Enable/disable multiscale extraction
-    'first_level': 0,             # First pyramid level
-    'wta_k': 2,                   # WTA_K parameter for ORB
-    'patch_size': 31              # Patch size for ORB
+    'pyramid_levels': 8,
+    'scale_factor': 1.3,
+    'edge_threshold': 22,
+    'multiscale_enabled': True,
+    'first_level': 0,
+    'wta_k': 2,
+    'patch_size': 21
 }
 
 DEFAULT_AKAZE_CONFIG = {
-    'pyramid_levels': 6,          # AKAZE works well with fewer levels
-    'scale_factor': 1.4,          # Slightly larger scale factor for AKAZE
-    'multiscale_enabled': True,   # Enable/disable multiscale extraction
+    'pyramid_levels': 6,
+    'scale_factor': 1.4,
+    'multiscale_enabled': True,
     'descriptor_type': cv.AKAZE_DESCRIPTOR_MLDB,
     'descriptor_size': 0,
     'descriptor_channels': 3,
@@ -34,14 +34,14 @@ DEFAULT_AKAZE_CONFIG = {
 }
 
 DEFAULT_DNN_CONFIG = {
-    'pyramid_levels': 4,          # Fewer levels for DNN to manage computation
-    'scale_factor': 1.3,          # Scale factor for DNN multiscale
-    'multiscale_enabled': True,  # Enable/disable multiscale extraction
-    'scales': [1.0, 0.8, 0.6, 1.2],  # Custom scales for DNN
+    'pyramid_levels': 4,
+    'scale_factor': 1.3,
+    'multiscale_enabled': False,
+    'scales': [1.0, 0.8, 0.6, 1.2],
     'weights_path': "weights/superpoint_v1.pth",
     'nms_dist': 4,
+    # 'conf_thresh': 0.000000005
     'conf_thresh': 0.000000005
-    # 'conf_thresh': 0.0005
 }
 
 
@@ -513,7 +513,9 @@ class FeatureExtractor:
         elif self.feature_extraction_method == "A-KAZE":
             self.extract_handler = self._extract_akaze_multiscale if enabled else self._extract_akaze_single_scale
         elif self.feature_extraction_method == "DNN":
-            self.extract_handler = self._extract_dnn_multiscale if enabled else self._extract_dnn_single_scale
+            # self.extract_handler = self._extract_dnn_multiscale if enabled else self._extract_dnn_single_scale
+            # Setting to single scale for now given how slow this extractor is...
+            self.extract_handler = self._extract_dnn_single_scale
 
         debug_log(
             LOG_TAG, f"Multiscale extraction {'enabled' if enabled else 'disabled'} for {self.feature_extraction_method}")

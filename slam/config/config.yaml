@@ -4,11 +4,12 @@ const_tag: &AKAZE_EXTRACTOR "AKAZE"
 
 # Global config properties
 global:
-  load_video: "desk_xyz"
+  load_video: "nyc-turn"
   feature_extractor: *AKAZE_EXTRACTOR
-  enable_multiscale_features: true
-  enable_ba: true 
+  enable_multiscale_features: True
+  enable_ba: true
   record_session: true
+  display_capture: false
   enable_debug: true
   enable_profiling: false # TODO: not yet implemented
 
@@ -17,12 +18,18 @@ videos:
   greece:
     path: ./videos/greece.mp4
     fx: 270
+  nyc-linear:
+    path: ./videos/nyc.mp4
+    fx: 660 #660 406
+  nyc-turn:
+    path: ./videos/nyc2.mp4
+    fx: 663 #660 406
   road:
     path: ./videos/road.mp4
     fx: 525
   road_reverse:
     path: ./videos/road_reverse.mp4
-    fx: 300
+    fx: 525
   drone:
     path: ./videos/drone.mp4
     fx: 660

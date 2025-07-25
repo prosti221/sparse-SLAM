@@ -21,6 +21,7 @@ class Point:
 
     def add_observation(self, observation: Observation) -> None:
         self.observations[observation.frame_id] = observation
+        observation.frame.add_point_observation(observation)
         self._update_observing_keyframe_quality()
 
     def remove_observation(self, frame_id: UUID):

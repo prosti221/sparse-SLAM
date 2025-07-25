@@ -14,11 +14,11 @@ LOG_TAG = 'Renderer'
 
 
 class Renderer:
-    def __init__(self, map: Map, K, width=1920, height=1080):
+    def __init__(self, map: Map, K, W=1920, H=1080):
         self.vis = o3d.visualization.VisualizerWithKeyCallback()
 
-        self.width = width
-        self.height = height
+        self.W = W
+        self.H = H
 
         self.K = K
         self.map: Map = map
@@ -33,11 +33,12 @@ class Renderer:
         self.camera_initialized = False
 
         self.pinhole = o3d.camera.PinholeCameraIntrinsic(
-            width, height, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
+            W, H, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
         self.camera_parameters = o3d.camera.PinholeCameraParameters()
         self.camera_parameters.intrinsic = self.pinhole
 
         self.paused = False
+        self.quit_requested = False  # Add quit flag
 
         # Save/load attributes
         self.session_data = {
@@ -58,7 +59,7 @@ class Renderer:
     def start(self):
         info_log(LOG_TAG, "Starting Open3D visualizer")
         self.vis.create_window(
-            window_name="SLAM", width=self.width, height=self.height)
+            window_name="SLAM", width=self.W, height=self.H)
         self.vis.get_render_option().background_color = [0.0, 0.0, 0.0]
         self.ctrl = self.vis.get_view_control()
         self.ctrl.convert_from_pinhole_camera_parameters(
@@ -66,6 +67,9 @@ class Renderer:
 
         # Register spacebar (ASCII 32) to toggle pause
         self.vis.register_key_callback(32, self._toggle_pause)
+
+        # Register 'q' key (ASCII 113) to quit
+        self.vis.register_key_callback(113, self._request_quit)
 
         # Create session output folder
         os.makedirs(self.output_path, exist_ok=True)
@@ -78,6 +82,9 @@ class Renderer:
 
     def is_paused(self):
         return self.paused
+
+    def should_quit(self):
+        return self.quit_requested
 
     def update(self):
         self.update_points(self.map.points)
@@ -150,6 +157,11 @@ class Renderer:
         info_log(LOG_TAG, "Paused" if self.paused else "Resumed")
         return False
 
+    def _request_quit(self, vis):
+        self.quit_requested = True
+        info_log(LOG_TAG, "Ending slam session...")
+        return False
+
     def _initialize_camera(self, pose):
         debug_log(LOG_TAG, "Initializing camera parameters")
         R = pose[:3, :3]
@@ -193,9 +205,9 @@ class Renderer:
 
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
 
-    def _draw_camera_object(self, R, t, size=0.6):
-        _w, _h, _cx, _cy, _f = self.width, self.height, self.K[0,
-                                                               2], self.K[1, 2], self.K[0, 0]
+    def _draw_camera_object(self, R, t, size=1.0):
+        _w, _h, _cx, _cy, _f = self.W, self.H, self.K[0,
+                                                      2], self.K[1, 2], self.K[0, 0]
         f = 1
         w = _w/_f
         h = _h/_f
@@ -288,8 +300,8 @@ class Renderer:
         self.session_data['timestamp'] = self.timestamp
         self.session_data['camera_params'] = {
             'K': self.K.tolist(),
-            'width': self.width,
-            'height': self.height
+            'width': self.W,
+            'height': self.H
         }
 
         filename = f"slam_session_{self.timestamp}"
@@ -327,10 +339,6 @@ class Renderer:
         return False
 
     def _start_recording(self):
-        fourcc = cv.VideoWriter_fourcc(*'mp4v')
-        self.video_writer = cv.VideoWriter(
-            self.video_filename, fourcc, 30.0, (self.width, self.height))
-
         self.recording = True
         self.frame_count = 0
         info_log(LOG_TAG, f"Started recording to {self.video_filename}")
@@ -345,18 +353,22 @@ class Renderer:
             LOG_TAG, f"Stopped recording. Saved {self.frame_count} frames to {self.video_filename}")
         self.frame_count = 0
 
-    def capture_frame(self):
-        if not self.video_writer or not self.video_writer.isOpened():
-            error_log(LOG_TAG, "Video writer not available")
-            return
+    def capture_frame(self, complement_frame):
+        if self.frame_count == 0:
+            scale = 2 if complement_frame else 1
+            W, H = (self.W * scale, self.H * scale)
+            fourcc = cv.VideoWriter_fourcc(*'mp4v')
+            self.video_writer = cv.VideoWriter(
+                self.video_filename, fourcc, 30.0, (W, H))
 
         # Capture screen from Open3D visualizer
-        img = self.vis.capture_screen_float_buffer(False)
-        img = np.asarray(img)
-        img = (img * 255).astype(np.uint8)
+        renderer_frame = self.vis.capture_screen_float_buffer(False)
+        renderer_frame = np.asarray(renderer_frame)
+        save_img = np.concatenate([complement_frame, renderer_frame], axis=0)
+        save_img = (save_img * 255).astype(np.uint8)
 
         # Convert RGB to BGR for OpenCV
-        img_bgr = cv.cvtColor(img, cv.COLOR_RGB2BGR)
+        img_bgr = cv.cvtColor(save_img, cv.COLOR_RGB2BGR)
 
         # Write frame to video
         self.video_writer.write(img_bgr)
