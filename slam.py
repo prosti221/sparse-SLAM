@@ -84,7 +84,8 @@ if __name__ == '__main__':
                 LOG_TAG, f"Updating renderer with {len(global_map.points)} points and {len(global_map.keyframes)} keyframes. Map tracking quality is: {global_map.avg_tracking_quality}")
             renderer.update()
 
-        # cv.imshow('frame', img)
+        if DISPLAY_CAPTURE:
+            cv.imshow('frame', img)
         prev_img = img
 
     # Save session data and stop the renderer
