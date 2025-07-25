@@ -1,6 +1,6 @@
 ## Monocular VSLAM: Feature-Based Monocular Visual SLAM
 ### Overview
-This is a monocular visual SLAM system that builds a sparse 3D map of the environment using feature-based techniques. The system tracks camera motion and reconstructs environmental features using only visual input from a single camera.
+This is a monocular visual SLAM system that builds a sparse 3D map of the environment using feature-based techniques. The system tracks camera motion and reconstructs environmental features using only visual input from a single camera. Generates tons of good keypoints and its able to produce fairly dense maps, but its quite costly to run.
 ### Key Features
 - Real-time camera tracking using feature matching and pose estimation
 - Sparse 3D reconstruction of environmental features
