@@ -17,17 +17,24 @@ if __name__ == '__main__':
     config = Parser('slam/config/config.yaml')
     info_log(LOG_TAG, f"Starting SLAM with parameters: {config}")
 
+    # TODO: Move these flags as part of the config parser?
     FEATURE_EXTRACTOR = config.get_global_config_property("feature_extractor")
     RECORD_SESSION = config.get_global_config_property("record_session")
+    DISPLAY_CAPTURE = config.get_global_config_property("display_capture")
     ENABLE_MULTISCALE = config.get_global_config_property(
         "enable_multiscale_features")
     ENABLE_BA = config.get_global_config_property(
         "enable_ba")
 
     cap, K = load_video(config)
-
+    W, H = cap.get(cv.CAP_PROP_FRAME_WIDTH), cap.get(cv.CAP_PROP_FRAME_HEIGHT)
     global_map = Map()
-    renderer = Renderer(global_map, K)
+    renderer = Renderer(
+        global_map,
+        K,
+        W=W,
+        H=H
+    )
     tracker = Tracker(
         global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
 
@@ -37,20 +44,29 @@ if __name__ == '__main__':
         renderer.start_recording_session()
 
     slam_in_progress = renderer_is_active = True
+    prev_img = np.zeros((H, W, 3), dtype=np.uint8)
     while slam_in_progress or renderer_is_active:
         renderer.vis.update_renderer()
         if not renderer.vis.poll_events():
             renderer_is_active = False
+            slam_in_progress = False
             continue
+
+        # Check if quit was requested
+        if renderer.should_quit():
+            slam_in_progress = renderer_is_active = False
+            break
 
         # Capture and write the current renderer frame if recording is enabled
         if RECORD_SESSION:
-            renderer.capture_frame()
+            renderer.capture_frame(complement_frame=prev_img)
 
+        # Check if we are in a paused state or if slam is not running
         if renderer.is_paused() or not slam_in_progress:
             cv.destroyAllWindows()
             continue  # Skip SLAM updates
 
+        # Get the next image
         ret, img = cap.read()
         if not ret:
             info_log(
@@ -68,8 +84,10 @@ if __name__ == '__main__':
                 LOG_TAG, f"Updating renderer with {len(global_map.points)} points and {len(global_map.keyframes)} keyframes. Map tracking quality is: {global_map.avg_tracking_quality}")
             renderer.update()
 
-        cv.imshow('frame', img)
+        # cv.imshow('frame', img)
+        prev_img = img
 
     # Save session data and stop the renderer
+    cv.destroyAllWindows()
     renderer.save_session_data()
     renderer.stop()

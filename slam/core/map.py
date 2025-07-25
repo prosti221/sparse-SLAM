@@ -70,11 +70,10 @@ class Map:
                 point = self.points_by_id[point_id]
                 self._add_keyframe_to_point_covisibility(kf.frame_id, point)
 
-        # self.update_tracking_quality(kf.frame_id, kf.tracking_quality)
-
     def optimize(self, enable_ba=True):
-        # Decide if we need to optimize globally
-        # TODO: Figure out better criterias for deciding this, maybe based on the current tracking quality?
+        # First refine the current keyframe pose with PnP
+        self.g2o_optimizer.refine_pose_pnp()
+
         if enable_ba:
             success = False
             perform_global_ba = self.should_perform_global_bundle_adjustment(
@@ -85,7 +84,7 @@ class Map:
                 success = self.g2o_optimizer.local_bundle_adjustment(
                     self.keyframes[-1].frame_id,
                     window_size=LOCAL_MAP_WINDOW_SIZE,
-                    fix_points=len(self.keyframes) > LOCAL_MAP_WINDOW_SIZE
+                    fix_points=False
                 )
 
             if success:
@@ -279,6 +278,7 @@ class Map:
         return shared_count
 
     def should_perform_global_bundle_adjustment(self, interval: int) -> bool:
+        # return len(self.keyframes) % interval == 0 or self.avg_tracking_quality < 0.45
         return len(self.keyframes) % interval == 0
 
     def get_keyframe_by_id(self, frame_id: UUID) -> Frame:

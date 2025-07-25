@@ -127,7 +127,6 @@ class Tracker:
         # Update the observations retrieved from matching by projection
         for obs in observations:
             obs.point.add_observation(obs)
-            self.cur_frame.add_point_observation(obs)
 
         # Match features between current frame and previous keyframe
         match_features_between_frames(
@@ -144,9 +143,6 @@ class Tracker:
 
     def _project_visible_map_points(self) -> List[Tuple[Point, np.ndarray]]:
         projected_points = []
-        local_keyframes = self.map.get_local_keyframes(
-            self.map.cur_keyframe.frame_id, LOCAL_MAP_WINDOW_SIZE)
-        local_map_points = self.map.get_local_points(local_keyframes)
 
         for mp in self.map.points:
             pt_3d = mp.pt_3d
@@ -278,20 +274,22 @@ class Tracker:
         kp_idx_cur = match.queryIdx
         cur_frame_obs = Observation(self.map.cur_keyframe, point, kp_idx_cur)
         point.add_observation(cur_frame_obs)
-        self.map.cur_keyframe.add_point_observation(cur_frame_obs)
 
         # Previous keyframe observation
         kp_idx_prev = match.trainIdx
         prev_frame_obs = Observation(
             self.map.prev_keyframe, point, kp_idx_prev)
         point.add_observation(prev_frame_obs)
-        self.map.prev_keyframe.add_point_observation(prev_frame_obs)
 
         return point
 
-    def _get_next_pose_estimate(self):
+    def _get_next_pose_estimate(self, use_kinematic_model=False):
+        if use_kinematic_model:
+            return self.prev_frame.pose @ self.velocity
+
         Rt = match_features_between_frames(
             self.cur_frame, self.prev_frame, self.feature_extraction_method)
+
         if Rt is None:
             return self.prev_frame.pose @ self.velocity
 

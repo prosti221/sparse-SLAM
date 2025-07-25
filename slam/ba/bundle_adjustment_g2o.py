@@ -1,6 +1,5 @@
 import g2o
 import numpy as np
-# from slam.core.map import Map
 from slam.core.frame import Frame
 from slam.core.point import Point
 from slam.core.observation import Observation
@@ -9,6 +8,7 @@ from slam.utils.logger import *
 from slam.utils.constants import *
 from uuid import UUID
 from typing import List, Optional, Tuple, List, Dict
+import cv2 as cv
 
 LOG_TAG = 'g2oBA'
 
@@ -17,6 +17,60 @@ class G2OBundleAdjustment:
     def __init__(self, map, verbose=False):
         self.verbose = verbose
         self.map = map
+
+    def refine_pose_pnp(self):
+        points_3d = []
+        points_2d = []
+
+        for obs in self.map.cur_keyframe.observed_points.values():
+            points_3d.append(obs.pt_3d)
+            points_2d.append(obs.pt_2d_norm)
+
+        if len(points_3d) < 4:
+            warning_log(
+                LOG_TAG, f"Not enough points for pose refinement ({len(points_3d)} provided).")
+            return False, 0
+
+        points_3d = np.array(points_3d, dtype=np.float32)
+        points_2d = np.array(points_2d, dtype=np.float32)
+
+        # Initial pose guess from current frame pose
+        R_init = self.map.cur_keyframe.pose[:3, :3]
+        t_init = self.map.cur_keyframe.pose[:3, 3]
+
+        # Convert R_init to rvec_init using Rodrigues
+        rvec_init, _ = cv.Rodrigues(R_init)
+        # Ensure rvec_init and t_init have the correct shape and type
+        rvec_init = np.array(rvec_init, dtype=np.float32).reshape(3, 1)
+        t_init = np.array(t_init, dtype=np.float32).reshape(3, 1)
+
+        success, rvec, tvec = cv.solvePnP(
+            points_3d,
+            points_2d,
+            np.eye(3),
+            distCoeffs=np.zeros(5),
+            rvec=rvec_init,
+            tvec=t_init,
+            useExtrinsicGuess=True,
+            flags=cv.SOLVEPNP_ITERATIVE
+        )
+        inliers = np.arange(len(points_3d)).reshape(-1, 1)
+
+        if not success or len(inliers) < PNP_MINIMUM_INLIERS:
+            warning_log(
+                LOG_TAG, f"PnP failed or not enough inliers: {len(inliers)}")
+            return False, len(inliers)
+
+        # Update frame pose
+        R_refined, _ = cv.Rodrigues(rvec)
+        pose = np.eye(4)
+        pose[:3, :3] = R_refined
+        pose[:3, 3] = tvec.flatten()
+        self.map.cur_keyframe.pose = np.linalg.inv(pose)
+
+        debug_log(LOG_TAG, f"Pose refined with {len(inliers)} inliers.")
+
+        return True, len(inliers)
 
     def local_bundle_adjustment(self, reference_frame_id: UUID, window_size: int = 5, fix_points=True) -> bool:
         debug_log(
@@ -142,7 +196,7 @@ class G2OBundleAdjustment:
 
             # Optimize with initialization
             opt.initialize_optimization()
-            opt.optimize(50)
+            opt.optimize(30)
 
             # Update keyframe poses
             for kf, vertex in frame_to_vertex.items():
