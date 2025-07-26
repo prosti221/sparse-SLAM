@@ -11,7 +11,8 @@ This is a monocular visual SLAM system that builds a sparse 3D map of the enviro
 
 ### Example run using A-KAZE for feature extraction:
 
-https://github.com/user-attachments/assets/e99f6e96-15d2-4b83-950e-0044565be3b0
+https://github.com/user-attachments/assets/ff7c8afa-c63a-49e7-aa66-5c6ffd1ad6b9
+
 
 
 ### Example run using SuperPoint on [TUM rgbd](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download) dataset (fr1/xyz)
