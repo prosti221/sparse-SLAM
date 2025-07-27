@@ -30,6 +30,11 @@ pip install -r requirements.txt
 
 The weights for SuperPoint are already provided in the repo.
 
+## Custom keybindings for the renderer
+- Press "q" to quit the application and store the session data
+- Press "t" to toggle for automatic camera tracking
+- Press "space" to pause/un-pause the SLAM process
+
 ## Configuration
 Modify slam/config/config.yaml to customize:
 ```yaml
