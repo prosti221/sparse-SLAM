@@ -69,7 +69,7 @@ videos:
 ## Future TODOs
 - Add loop closure detection
 - Add relocalization strategy for when we lose track
-- Improve keyframe selection criteria. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.
+- Improve keyframe selection logic. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.
 - Figure out how to run the renderer in a separate thread. Due to GLFW limitations, the open3d renderer needs to run on the main thread. A way around this could be to run the SLAM pipeline in a separate worker thread instead, and let the renderer use the main thread.
 - Add tooling for profiling
 - Improve efficiency.
