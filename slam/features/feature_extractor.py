@@ -41,7 +41,7 @@ DEFAULT_DNN_CONFIG = {
     'weights_path': "weights/superpoint_v1.pth",
     'nms_dist': 4,
     # 'conf_thresh': 0.000000005
-    'conf_thresh': 0.000000005
+    'conf_thresh': 0.0005
 }
 
 
@@ -506,11 +506,10 @@ class FeatureExtractor:
         method = self.feature_extraction_method.lower().replace('-', '_')
         config = getattr(self, f"{method}_config")
         config['multiscale_enabled'] = enabled
-
         # Update extraction handler
         if self.feature_extraction_method == "ORB":
             self.extract_handler = self._extract_orb_multiscale if enabled else self._extract_orb_single_scale
-        elif self.feature_extraction_method == "A-KAZE":
+        elif self.feature_extraction_method == "AKAZE":
             self.extract_handler = self._extract_akaze_multiscale if enabled else self._extract_akaze_single_scale
         elif self.feature_extraction_method == "DNN":
             # self.extract_handler = self._extract_dnn_multiscale if enabled else self._extract_dnn_single_scale

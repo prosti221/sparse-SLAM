@@ -40,6 +40,10 @@ class Renderer:
         self.paused = False
         self.quit_requested = False  # Add quit flag
 
+        # Camera tracking attributes
+        self.tracking_enabled = False
+        self.last_tracked_frame = None
+
         # Save/load attributes
         self.session_data = {
             'points': [],
@@ -61,15 +65,20 @@ class Renderer:
         self.vis.create_window(
             window_name="SLAM", width=self.W, height=self.H)
         self.vis.get_render_option().background_color = [0.0, 0.0, 0.0]
+
         self.ctrl = self.vis.get_view_control()
         self.ctrl.convert_from_pinhole_camera_parameters(
             self.camera_parameters, allow_arbitrary=True)
+        self.ctrl.set_constant_z_far(10000.0)
 
         # Register spacebar (ASCII 32) to toggle pause
         self.vis.register_key_callback(32, self._toggle_pause)
 
         # Register 'q' key (ASCII 113) to quit
         self.vis.register_key_callback(113, self._request_quit)
+
+        # Register 't' key (ASCII 116) to toggle camera tracking
+        self.vis.register_key_callback(84, self._toggle_tracking)
 
         # Create session output folder
         os.makedirs(self.output_path, exist_ok=True)
@@ -119,10 +128,6 @@ class Renderer:
         }
 
     def update_poses(self, keyframes):
-        if not self.camera_initialized:
-            first_kf = keyframes[0]
-            self._initialize_camera(first_kf.pose)
-
         # Get current keyframe IDs from the map
         current_keyframe_ids = {kf.frame_id for kf in keyframes}
 
@@ -149,6 +154,12 @@ class Renderer:
             'tracking_quality': kf.tracking_quality,
         }
 
+        # Update camera tracking if enabled
+        self.last_tracked_frame = keyframes[-1]
+        if self.tracking_enabled or not self.camera_initialized:
+            self.camera_initialized = True
+            self._update_camera_tracking()
+
         self.vis.poll_events()
         self.vis.update_renderer()
 
@@ -157,22 +168,21 @@ class Renderer:
         info_log(LOG_TAG, "Paused" if self.paused else "Resumed")
         return False
 
+    def _toggle_tracking(self, vis):
+        self.tracking_enabled = not self.tracking_enabled
+        status = "enabled" if self.tracking_enabled else "disabled"
+        info_log(LOG_TAG, f"Camera tracking {status}")
+
+        if not self.tracking_enabled:
+            # Reset tracking state when disabled
+            self.last_tracked_frame = None
+
+        return False
+
     def _request_quit(self, vis):
         self.quit_requested = True
         info_log(LOG_TAG, "Ending slam session...")
         return False
-
-    def _initialize_camera(self, pose):
-        debug_log(LOG_TAG, "Initializing camera parameters")
-        R = pose[:3, :3]
-        pose[:3, 3] += 20 * R[:, 2]
-        self.camera_parameters.extrinsic = pose
-        self.ctrl.convert_from_pinhole_camera_parameters(
-            self.camera_parameters, allow_arbitrary=True)
-
-        self.ctrl.set_constant_z_far(10000.0)
-
-        self.camera_initialized = True
 
     def _construct_pose_geometry(self, keyframe):
         pose = keyframe.pose
@@ -186,6 +196,8 @@ class Renderer:
         # Set current frame color to cyan
         colors = np.tile(np.array([0, 255, 255]), (len(lines), 1))
         new_cam.colors = o3d.utility.Vector3dVector(colors)
+
+        self.last_tracked_frame = keyframe
 
         return new_cam
 
@@ -204,6 +216,43 @@ class Renderer:
         self.poses[keyframe.frame_id][1] = keyframe.tracking_quality
 
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
+
+    def _update_camera_tracking(self):
+        # Get the pose of the most recent keyframe
+        tracked_pose = np.linalg.inv(self.last_tracked_frame.pose)
+        tracked_position = tracked_pose[:3, 3]
+
+        # Project position to ground plane (assuming y is up)
+        ground_position = tracked_position.copy()
+        ground_position[1] = 0  # Project to ground
+
+        # Fixed top-down camera setup
+        camera_height = 20  # Fixed height above ground
+        tilt_angle = np.radians(25)
+
+        # Camera position
+        # TODO: This way of positioning the cmaera is a bit unreliable due to scale drift...
+        camera_position = ground_position + \
+            np.array([0, camera_height, 60])  # Slightly behind
+
+        # Fixed orientation (looking down and slightly forward)
+        cos_a = np.cos(tilt_angle)
+        sin_a = np.sin(tilt_angle)
+
+        R_topdown = np.array([
+            [1,     0,      0],
+            [0, cos_a, -sin_a],
+            [0, sin_a,  cos_a]
+        ])
+
+        # Create camera pose
+        camera_pose = np.eye(4)
+        camera_pose[:3, :3] = R_topdown
+        camera_pose[:3, 3] = camera_position
+
+        self.camera_parameters.extrinsic = camera_pose
+        self.ctrl.convert_from_pinhole_camera_parameters(
+            self.camera_parameters, allow_arbitrary=True)
 
     def _draw_camera_object(self, R, t, size=1.0):
         _w, _h, _cx, _cy, _f = self.W, self.H, self.K[0,
