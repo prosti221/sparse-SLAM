@@ -6,7 +6,7 @@ PNP_MINIMUM_INLIERS = 10  # Minimum inliers for PnP
 
 ### KEYFRAME SELECTION CONSTANTS ###
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 5
-MINIMUM_BASELINE_THRESHOLD = 1.7  # Minimum translation for new keyframe
+MINIMUM_BASELINE_THRESHOLD = 2.5  # Minimum translation for new keyframe
 # Minimum scene coverage for new keyframe
 MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.01  # Minimum quality for new keyframe
@@ -21,7 +21,7 @@ MAX_SQUARED_REPROJECTION_ERROR = 1.0
 
 # Window size for local bundle adjustment
 LOCAL_MAP_WINDOW_SIZE = 2
-GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 12  # Interval for global BA
+GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 9  # Interval for global BA
 # Minimum number of observations a point needs for it to not be pruned
 MINIMUM_OBSERVATIONS_FOR_POINT = 3
 
