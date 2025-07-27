@@ -63,6 +63,7 @@ videos:
 
 ## Future TODOs
 - Add loop closure detection
+- Add relocalization strategy for when we lose track
 - Improve keyframe selection criteria. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.
 - Add tooling for profiling
 - Improve efficiency, its barely usable for real-time purposes currently.
