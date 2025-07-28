@@ -157,52 +157,12 @@ class Map:
             return []
 
         return self.keyframes[-window_size:]
-        """
-        # Get covisible keyframes directly from the graph
-        covisible_kfs = self.covisibility_graph[reference_frame_id]
-        if len(covisible_kfs) == 0:
-            error_log(
-                LOG_TAG, f"No covisible frames, returning the last N frames in the local window")
-            return self.keyframes[-window_size:]
-
-        # Sort by covisibility strength (number of shared observations)
-        keyframe_scores = []
-        ref_kf = self.keyframes_by_id[reference_frame_id]
-
-        for kf_id, shared_count in covisible_kfs.items():
-            if kf_id in self.keyframes_by_id:
-                kf = self.keyframes_by_id[kf_id]
-                # Use the shared count directly instead of recomputing
-                keyframe_scores.append((shared_count, kf))
-
-        # Sort by score (descending) and take top window_size
-        keyframe_scores.sort(key=lambda x: x[0], reverse=True)
-        local_keyframes = [kf for _, kf in keyframe_scores[:window_size]]
-
-        # Always include reference keyframe
-        if ref_kf not in local_keyframes:
-            local_keyframes.append(ref_kf)
-
-        return local_keyframes
-        """
 
     def get_local_points(self, local_keyframes: List[Frame]) -> List[Point]:
         local_points = set()
         for kf in local_keyframes:
             for obs in kf.observed_points.values():
                 local_points.add(obs.point)
-        """
-        local_kf_ids = {kf.frame_id for kf in local_keyframes}
-        local_points = []
-
-        for point in self.points:
-            # Check if point is observed by any local keyframe
-            observing_kfs = set(point.observing_keyframes)
-            common_kfs = observing_kfs.intersection(local_kf_ids)
-
-            if len(common_kfs) >= min_observations:
-                local_points.append(point)
-        """
         return local_points
 
     def get_observations(self, local_keyframes: List[Frame]) -> List[Observation]:
