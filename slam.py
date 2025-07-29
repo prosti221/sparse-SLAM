@@ -49,7 +49,6 @@ if __name__ == '__main__':
             slam_in_progress = False
             continue
 
-        # Check if quit was requested
         if renderer.should_quit():
             slam_in_progress = renderer_is_active = False
             break
@@ -58,12 +57,10 @@ if __name__ == '__main__':
         if RECORD_SESSION:
             renderer.capture_frame(complement_frame=prev_img.copy())
 
-        # Check if we are in a paused state or if slam is not running
         if renderer.is_paused() or not slam_in_progress:
             cv.destroyAllWindows()
             continue  # Skip SLAM updates
 
-        # Get the next image
         ret, img = cap.read()
         if not ret:
             info_log(
@@ -71,11 +68,9 @@ if __name__ == '__main__':
             slam_in_progress = False
             continue
 
-        # Update state estimator with new frame
         frame = Frame(img, K)
         is_new_keyframe = tracker.update(frame)
 
-        # Render the point cloud and camera poses if a new keyframe is detected
         if is_new_keyframe:
             info_log(
                 LOG_TAG, f"Updating renderer with {len(global_map.points)} points and {len(global_map.keyframes)} keyframes. Map tracking quality is: {global_map.avg_tracking_quality}")
@@ -85,7 +80,6 @@ if __name__ == '__main__':
             cv.imshow('frame', img)
         prev_img = img
 
-    # Save session data
     cv.destroyAllWindows()
     renderer.save_session_data()
     renderer.stop()
