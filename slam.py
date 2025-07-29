@@ -85,7 +85,7 @@ if __name__ == '__main__':
             cv.imshow('frame', img)
         prev_img = img
 
-    # Save session data and stop the renderer
+    # Save session data
     cv.destroyAllWindows()
     renderer.save_session_data()
     renderer.stop()
