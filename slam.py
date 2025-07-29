@@ -14,7 +14,6 @@ if __name__ == '__main__':
     config = Parser('slam/config/config.yaml')
     info_log(LOG_TAG, f"Starting SLAM with parameters: {config}")
 
-    # TODO: Move these flags as part of the config parser?
     FEATURE_EXTRACTOR = config.get_global_config_property("feature_extractor")
     RECORD_SESSION = config.get_global_config_property("record_session")
     DISPLAY_CAPTURE = config.get_global_config_property("display_capture")
