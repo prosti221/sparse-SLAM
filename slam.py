@@ -10,9 +10,6 @@ import cv2 as cv
 
 LOG_TAG = 'Slam'
 
-# TODO: Add this as part of the global config
-RECORD_SESSION = True
-
 if __name__ == '__main__':
     config = Parser('slam/config/config.yaml')
     info_log(LOG_TAG, f"Starting SLAM with parameters: {config}")
