@@ -53,7 +53,7 @@ class Map:
 
     def add_keyframe(self, kf: Frame):
         if kf.frame_id in self.keyframes_by_id:
-            error_log(
+            warning_log(
                 LOG_TAG, f"Keyframe {kf.frame_id} already exists. Skipping.")
             return
 
