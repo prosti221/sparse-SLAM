@@ -1,3 +1,4 @@
+from functools import cached_property
 import numpy as np
 import cv2 as cv
 import uuid
@@ -183,6 +184,19 @@ class Frame:
 
         return (self.Kinv @ np.array([pt_2d[0], pt_2d[1], 1.0])).astype(np.float32)[:2]
 
+    @cached_property
+    def gray_image(self) -> np.ndarray:
+        if len(self.image.shape) == 3:
+            if self.image.shape[2] == 4:  # RGBA
+                return cv.cvtColor(self.image.copy(), cv.COLOR_RGBA2GRAY)
+            elif self.image.shape[2] == 3:  # RGB
+                return cv.cvtColor(self.image.copy(), cv.COLOR_RGB2GRAY)
+        return self.image.copy()  # Already grayscale
+
+    @cached_property
+    def Kinv(self):
+        return np.linalg.inv(self.K)
+
     # Properties
     @property
     def tracking_quality(self):
@@ -239,19 +253,6 @@ class Frame:
         self._pose = np.eye(4)
         self._pose[:3, :3] = R
         self._pose[:3, 3] = t
-
-    @property
-    def gray_image(self) -> np.ndarray:
-        if len(self.image.shape) == 3:
-            if self.image.shape[2] == 4:  # RGBA
-                return cv.cvtColor(self.image.copy(), cv.COLOR_RGBA2GRAY)
-            elif self.image.shape[2] == 3:  # RGB
-                return cv.cvtColor(self.image.copy(), cv.COLOR_RGB2GRAY)
-        return self.image.copy()  # Already grayscale
-
-    @property
-    def Kinv(self):
-        return np.linalg.inv(self.K)
 
     @property
     def num_tracked_features(self):
