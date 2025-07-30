@@ -4,9 +4,9 @@ const_tag: &AKAZE_EXTRACTOR "AKAZE"
 
 # Global config properties
 global:
-  load_video: "greece"
-  feature_extractor: *DNN_EXTRACTOR
-  enable_multiscale_features: false
+  load_video: "nyc_linear"
+  feature_extractor: *AKAZE_EXTRACTOR
+  enable_multiscale_features: false 
   enable_ba: true
   record_session: true
   display_capture: true 
