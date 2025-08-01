@@ -42,27 +42,23 @@ class Tracker:
         # If this is the first frame, initialize the current frame
         if not self.cur_frame:
             self.cur_frame = new_frame
-            return False
+            self.map.add_keyframe(self.cur_frame)
+            return True
 
-        # Check if this is during initialization
-        should_initialize = self.prev_frame is None
         self.prev_frame = self.cur_frame
         self.cur_frame = new_frame
 
-        if should_initialize:
-            self._initialize()
-        else:
-            # Predict the initial pose estimate for current frame
-            self.cur_frame.pose = self._get_next_pose_estimate()
+        # Predict the initial pose estimate for current frame
+        self.cur_frame.pose = self._get_next_pose_estimate()
 
-            # Project the visible map points onto current frame for matching by projection
-            projected_points = self._project_visible_map_points()
+        # Project the visible map points onto current frame for matching by projection
+        projected_points = self._project_visible_map_points()
 
-            # Match the projected points with the current frame's keypoints
-            observations = self._match_projected_points(projected_points)
+        # Match the projected points with the current frame's keypoints
+        observations = self._match_projected_points(projected_points)
 
-            # Check & handle keyframe insertion criteria
-            self._handle_keyframe_insertion(observations)
+        # Check & handle keyframe insertion criteria
+        self._handle_keyframe_insertion(observations)
 
         self.step += 1
         self.iterations_since_last_keyframe += 1

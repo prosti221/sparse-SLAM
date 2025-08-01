@@ -25,13 +25,15 @@ if __name__ == '__main__':
     cap, K = load_video(config)
     W, H = int(cap.get(cv.CAP_PROP_FRAME_WIDTH)), int(
         cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+
     global_map = Map()
     renderer = Renderer(
         global_map,
         K,
-        W=W,
-        H=H
+        W=1920,
+        H=1080
     )
+
     tracker = Tracker(
         global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
 

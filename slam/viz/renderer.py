@@ -403,20 +403,51 @@ class Renderer:
         self.frame_count = 0
 
     def capture_frame(self, complement_frame=None):
-        if self.frame_count == 0:
-            scale = 2 if complement_frame is not None else 1
-            W, H = (self.W * scale, self.H)
-            fourcc = cv.VideoWriter_fourcc(*'mp4v')
-            self.video_writer = cv.VideoWriter(
-                self.video_filename, fourcc, 30.0, (W, H))
-
-        # Capture screen from Open3D visualizer
+        # Capture renderer image
         renderer_frame = self.vis.capture_screen_float_buffer(False)
         renderer_frame = np.asarray(renderer_frame)
         renderer_frame = (renderer_frame * 255).astype(np.uint8)
         renderer_frame = cv.cvtColor(renderer_frame, cv.COLOR_RGB2BGR)
-        save_img = np.concatenate([complement_frame, renderer_frame], axis=1)
 
-        # Write frame to video
+        if complement_frame is not None:
+            h_r, w_r = renderer_frame.shape[:2]
+            h_c, w_c = complement_frame.shape[:2]
+
+            # Resize complement_frame to match height (maintaining aspect ratio)
+            scale = h_r / h_c
+            new_w = int(w_c * scale)
+            resized_complement = cv.resize(complement_frame, (new_w, h_r))
+
+            # Pad with black pixels to match width if needed
+            pad_left = (w_r - new_w) // 2
+            pad_right = w_r - new_w - pad_left
+
+            if pad_left < 0 or pad_right < 0:
+                # Video frame is wider than renderer → resize width to match, then pad height
+                scale = w_r / w_c
+                new_h = int(h_c * scale)
+                resized_complement = cv.resize(complement_frame, (w_r, new_h))
+                pad_top = (h_r - new_h) // 2
+                pad_bottom = h_r - new_h - pad_top
+                resized_complement = cv.copyMakeBorder(
+                    resized_complement, pad_top, pad_bottom, 0, 0,
+                    borderType=cv.BORDER_CONSTANT, value=(0, 0, 0))
+            else:
+                resized_complement = cv.copyMakeBorder(
+                    resized_complement, 0, 0, pad_left, pad_right,
+                    borderType=cv.BORDER_CONSTANT, value=(0, 0, 0))
+
+            save_img = np.concatenate(
+                [resized_complement, renderer_frame], axis=1)
+        else:
+            save_img = renderer_frame
+
+        # Initialize video writer if needed
+        if self.frame_count == 0:
+            height_out, width_out = save_img.shape[:2]
+            fourcc = cv.VideoWriter_fourcc(*'mp4v')
+            self.video_writer = cv.VideoWriter(
+                self.video_filename, fourcc, 30.0, (width_out, height_out))
+
         self.video_writer.write(save_img)
         self.frame_count += 1

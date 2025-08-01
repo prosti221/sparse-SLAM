@@ -169,22 +169,25 @@ class Map:
         return [obs for kf in local_keyframes for obs in kf.observed_points.values()]
 
     def prune_outlier_points(self):
-        local_keyframes = self.get_local_keyframes(
-            self.cur_keyframe.frame_id, LOCAL_MAP_WINDOW_SIZE)
-        local_kf_ids = {kf.frame_id for kf in local_keyframes}
+        # local_keyframes = self.get_local_keyframes(
+        #    self.cur_keyframe.frame_id, 20)
+        # local_kf_ids = {kf.frame_id for kf in local_keyframes}
 
         redundant_points = bad_points = 0
         for idx in reversed(range(len(self.points))):
             point = self.points[idx]
 
-            observing_kfs = set(point.observing_keyframes)
-            common_kfs = observing_kfs.intersection(local_kf_ids)
+            # Rethink this later...
+            """
+            #observing_kfs = set(point.observing_keyframes)
+            #common_kfs = observing_kfs.intersection(local_kf_ids)
 
             # Look for outdated points that have lost relevance
-            if len(common_kfs) == 0 and point.num_observations < MINIMUM_OBSERVATIONS_FOR_POINT:
+            if len(common_kfs) == 0 and point.num_observations < MINIMUM_OBSERVATIONS_FOR_POINT and False:
                 if self.remove_point_by_index(idx):
                     redundant_points += 1
                     continue
+            """
 
             # Look for bad points that have a low avg reprojection error
             if not point.is_good:

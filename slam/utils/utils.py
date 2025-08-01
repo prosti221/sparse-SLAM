@@ -88,6 +88,10 @@ def construct_K(focal_x, focal_y, c_x, c_y):
                      [0, 0, 1]])
 
 
+def normalize_vec(v):
+    return v / np.linalg.norm(v)
+
+
 def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     # 1. Check if point is in front of both cameras
     point_3d = point_4d[:3]
@@ -108,6 +112,16 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     # 2. Check depth bounds
     if cur_cam_coords[2] > MAX_DEPTH or prev_cam_coords[2] > MAX_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
+
+    # 3. Check parallax angle
+    vec1 = normalize_vec(point_3d - cur_frame.pose[:3, 3])
+    vec2 = normalize_vec(point_3d - prev_frame.pose[:3, 3])
+
+    cos_parallax = np.dot(vec1, vec2)
+    parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax, -1.0, 1.0)))
+
+    if parallax_angle < MAX_PARALLAX:
+        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION']
 
     # 4. Check reprojection error
     if cur_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR:
