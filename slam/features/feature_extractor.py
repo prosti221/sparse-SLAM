@@ -40,8 +40,8 @@ DEFAULT_DNN_CONFIG = {
     'scales': [1.0, 0.8, 0.6, 1.2],
     'weights_path': "weights/superpoint_v1.pth",
     'nms_dist': 4,
-    # 'conf_thresh': 0.000000005
-    'conf_thresh': 0.0005
+    'conf_thresh': 0.000000005
+    # 'conf_thresh': 0.0005
 }
 
 
@@ -59,62 +59,57 @@ class FeatureExtractor:
 
         self.extract_handler = None
 
-        match feature_extraction_method:
-            case "ORB":
-                # Configure ORB with multiscale support
-                self.detector = cv.ORB_create(
-                    nfeatures=self.orb_config.get('n_pts', 1000),
-                    scaleFactor=self.orb_config.get('scale_factor', 1.2),
-                    nlevels=self.orb_config.get('pyramid_levels', 8),
-                    edgeThreshold=self.orb_config.get('edge_threshold', 31),
-                    firstLevel=self.orb_config.get('first_level', 0),
-                    WTA_K=self.orb_config.get('wta_k', 2),
-                    patchSize=self.orb_config.get('patch_size', 31)
-                )
+        if feature_extraction_method == "ORB":
+            # Configure ORB with multiscale support
+            self.detector = cv.ORB_create(
+                nfeatures=self.orb_config.get('n_pts', 1000),
+                scaleFactor=self.orb_config.get('scale_factor', 1.2),
+                nlevels=self.orb_config.get('pyramid_levels', 8),
+                edgeThreshold=self.orb_config.get('edge_threshold', 31),
+                firstLevel=self.orb_config.get('first_level', 0),
+                WTA_K=self.orb_config.get('wta_k', 2),
+                patchSize=self.orb_config.get('patch_size', 31)
+            )
 
-                # Choose extraction method based on multiscale setting
-                if self.orb_config.get('multiscale_enabled', True):
-                    self.extract_handler = self._extract_orb_multiscale
-                else:
-                    self.extract_handler = self._extract_orb_single_scale
+            # Choose extraction method based on multiscale setting
+            if self.orb_config.get('multiscale_enabled', True):
+                self.extract_handler = self._extract_orb_multiscale
+            else:
+                self.extract_handler = self._extract_orb_single_scale
+        elif feature_extraction_method == "AKAZE":
+            # Configure AKAZE with multiscale support
+            self.detector = cv.AKAZE_create(
+                descriptor_type=self.akaze_config.get(
+                    'descriptor_type', cv.AKAZE_DESCRIPTOR_MLDB),
+                descriptor_size=self.akaze_config.get(
+                    'descriptor_size', 0),
+                descriptor_channels=self.akaze_config.get(
+                    'descriptor_channels', 3),
+                threshold=self.akaze_config.get('threshold', 0.001),
+                nOctaves=self.akaze_config.get('n_octaves', 4),
+                nOctaveLayers=self.akaze_config.get('n_octave_layers', 4)
+            )
 
-            case "AKAZE":
-                # Configure AKAZE with multiscale support
-                self.detector = cv.AKAZE_create(
-                    descriptor_type=self.akaze_config.get(
-                        'descriptor_type', cv.AKAZE_DESCRIPTOR_MLDB),
-                    descriptor_size=self.akaze_config.get(
-                        'descriptor_size', 0),
-                    descriptor_channels=self.akaze_config.get(
-                        'descriptor_channels', 3),
-                    threshold=self.akaze_config.get('threshold', 0.001),
-                    nOctaves=self.akaze_config.get('n_octaves', 4),
-                    nOctaveLayers=self.akaze_config.get('n_octave_layers', 4)
-                )
+            if self.akaze_config.get('multiscale_enabled', True):
+                self.extract_handler = self._extract_akaze_multiscale
+            else:
+                self.extract_handler = self._extract_akaze_single_scale
+        elif feature_extraction_method == "DNN":
+            self.detector = SuperPointFrontend(
+                weights_path=self.dnn_config.get(
+                    'weights_path', "weights/superpoint_v1.pth"),
+                nms_dist=self.dnn_config.get('nms_dist', 4),
+                conf_thresh=self.dnn_config.get('conf_thresh', 0.000000005)
+            )
 
-                if self.akaze_config.get('multiscale_enabled', True):
-                    self.extract_handler = self._extract_akaze_multiscale
-                else:
-                    self.extract_handler = self._extract_akaze_single_scale
+            if self.dnn_config.get('multiscale_enabled', True):
+                self.extract_handler = self._extract_dnn_multiscale
+            else:
+                self.extract_handler = self._extract_dnn_single_scale
+        else:
+            raise ValueError(
+                f"Unsupported feature extraction method: {feature_extraction_method}")
 
-            case "DNN":
-                self.detector = SuperPointFrontend(
-                    weights_path=self.dnn_config.get(
-                        'weights_path', "weights/superpoint_v1.pth"),
-                    nms_dist=self.dnn_config.get('nms_dist', 4),
-                    conf_thresh=self.dnn_config.get('conf_thresh', 0.000000005)
-                )
-
-                if self.dnn_config.get('multiscale_enabled', True):
-                    self.extract_handler = self._extract_dnn_multiscale
-                else:
-                    self.extract_handler = self._extract_dnn_single_scale
-
-            case _:
-                raise ValueError(
-                    f"Unsupported feature extraction method: {feature_extraction_method}")
-
-        # Get current config for logging
         current_config = getattr(
             self, f"{feature_extraction_method.lower().replace('-', '_')}_config")
         multiscale_info = ""
@@ -129,18 +124,7 @@ class FeatureExtractor:
         return self.extract_handler(img)
 
     def _create_image_pyramid(self, img: np.ndarray, n_levels: int, scale_factor: float) -> List[Tuple[np.ndarray, float]]:
-        """
-        Create image pyramid with corresponding scale factors.
-
-        Args:
-            img: Input grayscale image
-            n_levels: Number of pyramid levels
-            scale_factor: Scale factor between levels
-
-        Returns:
-            List of tuples (scaled_image, scale_multiplier)
-        """
-        pyramid = [(img, 1.0)]  # Original image with scale 1.0
+        pyramid = [(img, 1.0)]
 
         for level in range(1, n_levels):
             scale = scale_factor ** level
@@ -158,16 +142,6 @@ class FeatureExtractor:
         return pyramid
 
     def _create_custom_scales(self, img: np.ndarray, scales: List[float]) -> List[Tuple[np.ndarray, float]]:
-        """
-        Create images at custom scale factors.
-
-        Args:
-            img: Input grayscale image
-            scales: List of scale factors
-
-        Returns:
-            List of tuples (scaled_image, scale_factor)
-        """
         scaled_images = []
 
         for scale in scales:
@@ -189,10 +163,6 @@ class FeatureExtractor:
     # ===== ORB METHODS =====
 
     def _extract_orb_multiscale(self, img: np.ndarray) -> Tuple[List, np.ndarray]:
-        """
-        Extract ORB features using multiscale approach with image pyramid.
-        """
-        # Convert to grayscale if needed
         if len(img.shape) == 3:
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
         else:
@@ -212,7 +182,6 @@ class FeatureExtractor:
             LOG_TAG, f"Processing {len(pyramid)} pyramid levels for multiscale ORB")
 
         for level, (scaled_img, scale) in enumerate(pyramid):
-            # Adjust minimum distance based on scale
             min_dist = max(1, self.orb_config['min_distance'] / scale)
 
             # Extract corner points at this scale
@@ -243,7 +212,7 @@ class FeatureExtractor:
                         size=ORB_KEYPOINT_SIZE * scale,
                         angle=-1,
                         response=1.0,
-                        octave=level,  # Store pyramid level
+                        octave=level,
                         class_id=-1
                     )
                     level_keypoints.append(kp)
@@ -251,7 +220,6 @@ class FeatureExtractor:
             if not level_keypoints:
                 continue
 
-            # Compute ORB descriptors on original image
             try:
                 keypoints_computed, descriptors = self.detector.compute(
                     gray, level_keypoints)
@@ -277,10 +245,6 @@ class FeatureExtractor:
         return all_keypoints, final_descriptors
 
     def _extract_orb_single_scale(self, img: np.ndarray) -> Tuple[List, np.ndarray]:
-        """
-        Extract ORB features using single scale approach (original method).
-        """
-        # Convert to grayscale if needed
         if len(img.shape) == 3:
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
         else:
@@ -307,10 +271,6 @@ class FeatureExtractor:
     # ===== A-KAZE METHODS =====
 
     def _extract_akaze_multiscale(self, img: np.ndarray) -> Tuple[List, np.ndarray]:
-        """
-        Extract A-KAZE features using multiscale approach with image pyramid.
-        """
-        # Convert to grayscale if needed
         if len(img.shape) == 3:
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
         else:
@@ -330,7 +290,6 @@ class FeatureExtractor:
 
         for level, (scaled_img, scale) in enumerate(pyramid):
             try:
-                # Detect and compute features at this scale
                 keypoints, descriptors = self.detector.detectAndCompute(
                     scaled_img, None)
 
@@ -374,9 +333,6 @@ class FeatureExtractor:
         return all_keypoints, final_descriptors
 
     def _extract_akaze_single_scale(self, img: np.ndarray) -> Tuple[List, np.ndarray]:
-        """
-        Extract A-KAZE features using single scale approach (original method).
-        """
         gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY) if len(
             img.shape) == 3 else img
         keypoints, descriptors = self.detector.detectAndCompute(gray, None)
@@ -388,9 +344,6 @@ class FeatureExtractor:
     # ===== DNN (SuperPoint) METHODS =====
 
     def _extract_dnn_multiscale(self, img: np.ndarray) -> Tuple[List, List]:
-        """
-        Extract SuperPoint features using multiscale approach with custom scales.
-        """
         if len(img.shape) == 3:
             img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 
@@ -416,7 +369,6 @@ class FeatureExtractor:
                         kp = cv.KeyPoint(
                             # Scale back to original coordinates
                             x=pts[0, i] / scale,
-                            # Scale back to original coordinates
                             y=pts[1, i] / scale,
                             size=10 * scale,
                             angle=-1,
@@ -452,9 +404,6 @@ class FeatureExtractor:
         return all_keypoints, final_descriptors
 
     def _extract_dnn_single_scale(self, img: np.ndarray) -> Tuple[List, List]:
-        """
-        Extract SuperPoint features using single scale approach (original method).
-        """
         if len(img.shape) == 3:
             img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
         img = img.astype(np.float32) / 255.
@@ -477,32 +426,7 @@ class FeatureExtractor:
             LOG_TAG, f"Extracted {len(keypoints)} single-scale SuperPoint features")
         return keypoints, descriptors
 
-    def get_feature_info(self) -> Dict:
-        """
-        Get information about current feature extraction configuration.
-        """
-        method = self.feature_extraction_method.lower().replace('-', '_')
-        config = getattr(self, f"{method}_config")
-
-        info = {
-            'method': self.feature_extraction_method,
-            'config': config.copy(),
-            'multiscale_enabled': config.get('multiscale_enabled', True)
-        }
-
-        if info['multiscale_enabled']:
-            if self.feature_extraction_method == "DNN":
-                info['scales'] = config.get('scales', [1.0, 0.8, 0.6, 1.2])
-            else:
-                info['pyramid_levels'] = config.get('pyramid_levels', 4)
-                info['scale_factor'] = config.get('scale_factor', 1.2)
-
-        return info
-
     def set_multiscale_enabled(self, enabled: bool):
-        """
-        Enable or disable multiscale extraction and update the extraction handler.
-        """
         method = self.feature_extraction_method.lower().replace('-', '_')
         config = getattr(self, f"{method}_config")
         config['multiscale_enabled'] = enabled

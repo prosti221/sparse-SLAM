@@ -38,9 +38,7 @@ class G2OBundleAdjustment:
         R_init = self.map.cur_keyframe.pose[:3, :3]
         t_init = self.map.cur_keyframe.pose[:3, 3]
 
-        # Convert R_init to rvec_init using Rodrigues
         rvec_init, _ = cv.Rodrigues(R_init)
-        # Ensure rvec_init and t_init have the correct shape and type
         rvec_init = np.array(rvec_init, dtype=np.float32).reshape(3, 1)
         t_init = np.array(t_init, dtype=np.float32).reshape(3, 1)
 
