@@ -9,10 +9,10 @@ This is a monocular visual SLAM system that builds a sparse 3D map of the enviro
 - Keyframe-based mapping
 - Visualization using Open3D
 
-### Example run using A-KAZE for feature extraction:
+### Eamples
+#### Example run using A-KAZE for feature extraction with dashcam video input:
 
 https://github.com/user-attachments/assets/ff7c8afa-c63a-49e7-aa66-5c6ffd1ad6b9
-
 
 
 ### Example run using SuperPoint on [TUM rgbd](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download) dataset (fr1/xyz)
