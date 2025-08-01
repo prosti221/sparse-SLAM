@@ -16,9 +16,18 @@ https://github.com/user-attachments/assets/ff7c8afa-c63a-49e7-aa66-5c6ffd1ad6b9
 
 
 ### Example run using SuperPoint on [TUM rgbd](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download) dataset (fr1/xyz)
+#### SuperPoint
 This is using the SuperPoint feature extractor. Generates tons of good keypoints and its able to produce fairly dense maps, but its quite costly to run.
 
 https://github.com/user-attachments/assets/cb612c58-9a4e-4216-81dc-7656cf5de836
+
+#### A-KAZE
+Below is a full run using the AKAZE feature extractor.
+
+
+
+https://github.com/user-attachments/assets/ccb063bc-40e7-4074-a757-5cdbfd994c67
+
 
 
 ## Setup and run
