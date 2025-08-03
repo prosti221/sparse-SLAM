@@ -2,7 +2,7 @@ import cv2 as cv
 import numpy as np
 from typing import Dict, Callable, Tuple, List
 
-from slam.features.super_point_extractor import SuperPointFrontend
+from slam.features.super_point import SuperPointFrontend
 from slam.utils.constants import *
 from slam.utils.logger import debug_log
 
@@ -436,9 +436,7 @@ class FeatureExtractor:
         elif self.feature_extraction_method == "AKAZE":
             self.extract_handler = self._extract_akaze_multiscale if enabled else self._extract_akaze_single_scale
         elif self.feature_extraction_method == "DNN":
-            # self.extract_handler = self._extract_dnn_multiscale if enabled else self._extract_dnn_single_scale
-            # Setting to single scale for now given how slow this extractor is...
-            self.extract_handler = self._extract_dnn_single_scale
+            self.extract_handler = self._extract_dnn_multiscale if enabled else self._extract_dnn_single_scale
 
         debug_log(
             LOG_TAG, f"Multiscale extraction {'enabled' if enabled else 'disabled'} for {self.feature_extraction_method}")

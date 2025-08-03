@@ -10,7 +10,7 @@ colorama.init(autoreset=True)
 DEBUG = True
 
 # TODO: Make this configurable via environment variables or a config file
-DEBUG_TAG_FILTER = ["Parser", "Renderer"]
+DEBUG_TAG_FILTER = ["ConfigParser", "Renderer"]
 SEVERITY_FILTER = ["info", "error", "warning"]
 
 MSG_TYPE_TO_COLOR = {
