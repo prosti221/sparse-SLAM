@@ -1,10 +1,10 @@
 import yaml
 from slam.utils.logger import warning_log
 
-LOG_TAG = 'Parser'
+LOG_TAG = 'ConfigParser'
 
 
-class Parser:
+class ConfigParser:
     def __init__(self, config_path):
         self.config_path = config_path
         self.config = self.parse()

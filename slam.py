@@ -1,7 +1,7 @@
 from slam.utils.utils import *
 from slam.viz.renderer import Renderer
 from slam.core.tracker import Tracker
-from slam.config.parser import Parser
+from slam.config.config_parser import ConfigParser
 from slam.core.map import Map
 from slam.core.frame import Frame
 from slam.utils.logger import *
@@ -11,7 +11,7 @@ import cv2 as cv
 LOG_TAG = 'Slam'
 
 if __name__ == '__main__':
-    config = Parser('slam/config/config.yaml')
+    config = ConfigParser('slam/config/config.yaml')
     info_log(LOG_TAG, f"Starting SLAM with parameters: {config}")
 
     FEATURE_EXTRACTOR = config.get_global_config_property("feature_extractor")
@@ -23,7 +23,7 @@ if __name__ == '__main__':
         "enable_ba")
 
     cap, K = load_video(config)
-    W, H = int(cap.get(cv.CAP_PROP_FRAME_WIDTH)), int(
+    CAP_W, CAP_H = int(cap.get(cv.CAP_PROP_FRAME_WIDTH)), int(
         cap.get(cv.CAP_PROP_FRAME_HEIGHT))
 
     global_map = Map()
@@ -43,17 +43,12 @@ if __name__ == '__main__':
         renderer.start_recording_session()
 
     slam_in_progress = renderer_is_active = True
-    prev_img = np.zeros((H, W, 3), dtype=np.uint8)
+    prev_img = np.zeros((CAP_H, CAP_W, 3), dtype=np.uint8)
     while slam_in_progress or renderer_is_active:
         renderer.vis.update_renderer()
-        if not renderer.vis.poll_events():
-            renderer_is_active = False
-            slam_in_progress = False
+        if not renderer.vis.poll_events() or renderer.should_quit():
+            renderer_is_active = slam_in_progress = False
             continue
-
-        if renderer.should_quit():
-            slam_in_progress = renderer_is_active = False
-            break
 
         # Capture and write the current renderer frame if recording is enabled
         if RECORD_SESSION:

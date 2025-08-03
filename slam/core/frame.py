@@ -256,7 +256,7 @@ class Frame:
 
     @property
     def num_tracked_features(self):
-        return sum([int(self.kp_unique_mask[m.queryIdx]) for m in self.matches])
+        return sum(self.kp_unique_mask)
 
     @property
     def statistics(self):
