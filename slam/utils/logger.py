@@ -7,9 +7,8 @@ import colorama
 colorama.init(autoreset=True)
 
 # === Config ===
-DEBUG = True
-
 # TODO: Make this configurable via environment variables or a config file
+DEBUG = True
 DEBUG_TAG_FILTER = ["ConfigParser", "Renderer"]
 SEVERITY_FILTER = ["info", "error", "warning"]
 
@@ -27,7 +26,6 @@ logging.basicConfig(
     format="%(message)s"
 )
 
-# === Thread-local storage for scope context ===
 _log_context = threading.local()
 _log_context.active_debug_scope = None
 
@@ -46,12 +44,10 @@ def get_calling_function_name(skip=2):
 
 
 def set_debug_scope(func_name: str):
-    """Set the active debug scope function name."""
     _log_context.active_debug_scope = func_name
 
 
 def clear_debug_scope():
-    """Clear the active debug scope."""
     _log_context.active_debug_scope = None
 
 
