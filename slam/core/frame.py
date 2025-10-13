@@ -122,11 +122,11 @@ class Frame:
 
         if normalized:
             return np.array([x, y])
-        else:
-            # Pixel coordinates (u, v)
-            u = self.K[0, 0] * x + self.K[0, 2]
-            v = self.K[1, 1] * y + self.K[1, 2]
-            return np.array([u, v])
+            
+        # Pixel coordinates (u, v)
+        u = self.K[0, 0] * x + self.K[0, 2]
+        v = self.K[1, 1] * y + self.K[1, 2]
+        return np.array([u, v])
 
     def is_point_visible(self, point_3d: np.ndarray, margin: int = 10) -> bool:
         projected = self.project_point(point_3d, normalized=False)
