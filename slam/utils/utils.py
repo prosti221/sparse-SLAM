@@ -12,7 +12,7 @@ def load_video(config):
     video_tag = config.get_global_config_property("load_video")
     VIDEO_PATH = config.get_video_property(video_tag, 'path')
 
-    cap = cap = cv.VideoCapture(VIDEO_PATH)
+    cap = cv.VideoCapture(VIDEO_PATH)
     W = cap.get(cv.CAP_PROP_FRAME_WIDTH)
     H = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
     Fx = config.get_video_property(video_tag, 'fx', default=0)
