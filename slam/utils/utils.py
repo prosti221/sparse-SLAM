@@ -30,10 +30,18 @@ def load_video(config):
 
 
 def pt_obj_to_array(pts):
-    points_3d = np.array([pt.pt_3d for pt in pts])
-    color = np.array([pt.color for pt in pts])
+    if len(pts) == 0:
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.float32)
 
-    color = color / 255.0
+    num_pts = len(pts)
+    points_3d = np.empty((num_pts, 3), dtype=np.float32)
+    color = np.empty((num_pts, 3), dtype=np.float32)
+
+    for i, pt in enumerate(pts):
+        points_3d[i] = pt.pt_3d
+        color[i] = pt.color
+
+    color /= 255.0
     return points_3d, color
 
 
@@ -178,11 +186,10 @@ def compute_triangulation(frame1, frame2, use_optimization=False):
         warning_log(LOG_TAG, "No matches found for triangulation")
         return np.array([])
 
-    # Extract matched points
-    pts1 = np.array(
-        [frame1.kp_pts_norm[m.queryIdx] for m in frame1.matches])
-    pts2 = np.array(
-        [frame2.kp_pts_norm[m.trainIdx] for m in frame1.matches])
+    indices1 = [m.queryIdx for m in frame1.matches]
+    indices2 = [m.trainIdx for m in frame1.matches]
+    pts1 = frame1.kp_pts_norm[indices1]
+    pts2 = frame2.kp_pts_norm[indices2]
 
     # Get projection matrices
     P1 = np.linalg.inv(frame1.pose)[:3, :]
