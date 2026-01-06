@@ -6,7 +6,7 @@ PNP_MINIMUM_INLIERS = 10  # Minimum inliers for PnP
 
 ### KEYFRAME SELECTION CONSTANTS ###
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10
-MINIMUM_BASELINE_THRESHOLD = 4.0  # Minimum translation for new keyframe
+MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe
 # Minimum scene coverage for new keyframe
 MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.01  # Minimum quality for new keyframe
@@ -54,7 +54,7 @@ ORB_KEYPOINT_SIZE = 20  # Size of keypoints for feature extraction
 
 # --- Feature matching constants
 KNN_K_VALUE = 2  # Number of nearest neighbors for KNN matching
-LOWE_RATIO = 0.75  # Lowe's ratio test threshold for feature matching
+LOWE_RATIO = 0.7  # Lowe's ratio test threshold for feature matching
 # RANSAC threshold for essential matrix estimation
 MATCHER_RANSAC_MINIMUM_INLIERS = 8  # Minimum inliers for RANSAC
 MATCHER_RANSAC_THRESHOLD = 0.005

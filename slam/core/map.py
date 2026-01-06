@@ -124,10 +124,15 @@ class Map:
 
         # Remove connections between all pairs of keyframes that observe this point
         for i, kf1_id in enumerate(observing_kfs):
-            # Remove point from kf observation
-            del self.keyframes_by_id[kf1_id].observed_points[point.point_id]
+            # Remove point from kf observation (only for existing keyframes)
+            if kf1_id in self.keyframes_by_id:
+                del self.keyframes_by_id[kf1_id].observed_points[point.point_id]
 
             for kf2_id in observing_kfs[i+1:]:
+                # Only update covisibility for keyframes that exist
+                if kf1_id not in self.keyframes_by_id or kf2_id not in self.keyframes_by_id:
+                    continue
+
                 # Decrement connection strength
                 self.covisibility_graph[kf1_id][kf2_id] -= 1
                 self.covisibility_graph[kf2_id][kf1_id] -= 1
