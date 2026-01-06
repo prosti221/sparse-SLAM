@@ -61,7 +61,7 @@ if __name__ == '__main__':
         ret, img = cap.read()
         if not ret:
             info_log(
-                LOG_TAG, f"SLAM processing finished with {len(global_map.points)} keyframes and {len(global_map.keyframes)} points in the map!")
+                LOG_TAG, f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!")
             slam_in_progress = False
             continue
 
@@ -70,7 +70,7 @@ if __name__ == '__main__':
 
         if is_new_keyframe:
             info_log(
-                LOG_TAG, f"Updating renderer with {len(global_map.points)} points and {len(global_map.keyframes)} keyframes. Map tracking quality is: {global_map.avg_tracking_quality}")
+                LOG_TAG, f"Updating renderer with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points. Map tracking quality is: {global_map.avg_tracking_quality}")
             renderer.update()
 
         if DISPLAY_CAPTURE:
