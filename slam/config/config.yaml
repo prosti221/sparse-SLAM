@@ -6,9 +6,9 @@ const_tag: &AKAZE "AKAZE"
 global:
   load_video: "greece"
   feature_extractor: *ORB
-  enable_multiscale_features: false 
+  enable_multiscale_features: false
   enable_ba: true
-  record_session: true
+  record_session: false 
   display_capture: true 
   enable_debug: true
   enable_profiling: false # TODO: not yet implemented
@@ -52,7 +52,7 @@ videos:
     cx: 319.5
     cy: 239.5
   desk_rotation:
-    path: ./videos/calibrated/desk_rotation.mp4
+    path: ./videos/desk_rotation.mp4
     fx: 525
     fy: 525
     cx: 319.5

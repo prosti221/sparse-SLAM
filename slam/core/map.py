@@ -9,7 +9,7 @@ from slam.core.point import Point
 from slam.core.frame import Frame
 from slam.core.observation import Observation
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
-from slam.loop_closure import LoopClosureCandidate
+from slam.loop_closure import LoopClosureCandidate, KeyframeFeatureDatabase, LoopClosureDetector, PoseGraphOptimizer
 
 LOG_TAG = 'Map'
 
@@ -40,7 +40,6 @@ class Map:
         self.g2o_optimizer = G2OBundleAdjustment(self)
 
         # Loop closure components
-        from slam.loop_closure import KeyframeFeatureDatabase, LoopClosureDetector, PoseGraphOptimizer
         self.feature_db = KeyframeFeatureDatabase()
         self.loop_detector = LoopClosureDetector(self, self.feature_db)
         self.pose_graph_optimizer = PoseGraphOptimizer(self)
@@ -191,10 +190,6 @@ class Map:
         return [obs for kf in local_keyframes for obs in kf.observed_points.values()]
 
     def prune_outlier_points(self):
-        # local_keyframes = self.get_local_keyframes(
-        #    self.cur_keyframe.frame_id, 20)
-        # local_kf_ids = {kf.frame_id for kf in local_keyframes}
-
         redundant_points = bad_points = 0
         for idx in reversed(range(len(self.points))):
             point = self.points[idx]
@@ -312,7 +307,6 @@ class Map:
         self.consecutive_low_quality_frames = 0
 
         # Reinitialize components that might need it
-        from slam.loop_closure import KeyframeFeatureDatabase
         self.feature_db = KeyframeFeatureDatabase()
         self.loop_detector = type(self.loop_detector)(self, self.feature_db)
         self.pose_graph_optimizer = type(self.pose_graph_optimizer)(self)
