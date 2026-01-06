@@ -110,6 +110,10 @@ class Tracker:
             LOG_TAG, f"Removing duplicate points before triangulation. From {pre_filter_length} to {len(self.cur_frame.matches)}")
 
     def _handle_keyframe_insertion(self, observations: List[Observation]):
+        # Update the observations retrieved from matching by projection
+        for obs in observations:
+            obs.point.add_observation(obs)
+
         should_insert, result = should_insert_keyframe(
             self.cur_frame, self.map.cur_keyframe)
 
@@ -119,10 +123,6 @@ class Tracker:
             return
         debug_log(
             LOG_TAG, f"Inserting keyframe after {self.iterations_since_last_keyframe} iterations.")
-
-        # Update the observations retrieved from matching by projection
-        for obs in observations:
-            obs.point.add_observation(obs)
 
         # Match features between current frame and previous keyframe
         match_features_between_frames(
@@ -193,7 +193,7 @@ class Tracker:
                     best_dist = desc_dist
                     best_idx = i
 
-            if best_idx != -1 and best_dist < 40:
+            if best_idx != -1 and best_dist < 30:
                 repro_error = np.linalg.norm(
                     kp_coords[best_idx] - np.array([u_proj, v_proj]))
 

@@ -1,12 +1,12 @@
-const_tag: &DNN_EXTRACTOR "DNN"
-const_tag: &ORB_EXTRACTOR "ORB"
-const_tag: &AKAZE_EXTRACTOR "AKAZE"
+const_tag: &DNN "DNN"
+const_tag: &ORB "ORB"
+const_tag: &AKAZE "AKAZE"
 
 # Global config properties
 global:
-  load_video: "desk_xyz"
-  feature_extractor: *AKAZE_EXTRACTOR
-  enable_multiscale_features: false
+  load_video: "drone"
+  feature_extractor: *ORB
+  enable_multiscale_features: false 
   enable_ba: true
   record_session: true
   display_capture: true 

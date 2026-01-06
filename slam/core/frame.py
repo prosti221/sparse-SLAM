@@ -35,7 +35,7 @@ class Frame:
 
         self.observed_points: Dict[UUID, Observation] = {}
 
-        self.keypoint_to_point_map: Dict[Tuple[int, int], Point] = {}
+        self.keypoint_to_point_map: Dict[int, Point] = {}
 
         self.is_keyframe = False
 
@@ -94,8 +94,8 @@ class Frame:
         if point_id in self.observed_points:
             keypoint_idx = self.observed_points[point_id].kp_idx
             del self.observed_points[point_id]
-            if self.keypoints[keypoint_idx] in self.keypoint_to_point_map:
-                del self.keypoint_to_point_map[self.keypoints[keypoint_idx]]
+            if keypoint_idx in self.keypoint_to_point_map:
+                del self.keypoint_to_point_map[keypoint_idx]
 
     def world_to_camera(self, point_3d: np.ndarray) -> np.ndarray:
         # Convert to homogeneous coordinates

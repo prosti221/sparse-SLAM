@@ -69,7 +69,6 @@ def extractRt(F):
     if t[2] < 0:
         t *= -1
 
-    t = U[:, 2]
     ret = np.eye(4)
     ret[:3, :3] = R
     ret[:3, 3] = t
@@ -169,16 +168,9 @@ def get_reprojection_error(point_idx, cur_frame, prev_frame, point_3d):
 
 
 def triangulate(pose1, pose2, pts1, pts2):
-    ret = np.zeros((pts1.shape[0], 4))
-    for i, p in enumerate(zip(pts1, pts2)):
-        A = np.zeros((4, 4))
-        A[0] = p[0][0] * pose1[2] - pose1[0]
-        A[1] = p[0][1] * pose1[2] - pose1[1]
-        A[2] = p[1][0] * pose2[2] - pose2[0]
-        A[3] = p[1][1] * pose2[2] - pose2[1]
-        _, _, vt = np.linalg.svd(A)
-        ret[i] = vt[3]
-    return ret
+    # Use OpenCV's triangulatePoints for vectorized computation
+    points_4d = cv.triangulatePoints(pose1, pose2, pts1.T, pts2.T)
+    return points_4d.T  # Transpose to match original format (N, 4)
 
 
 def compute_triangulation(frame1, frame2, use_optimization=False):
@@ -260,8 +252,8 @@ def optimize_triangulation(pt1, pt2, P1, P2, initial_guess, max_iterations=10):
             residual_function,
             initial_guess,
             max_nfev=max_iterations * 10,
-            ftol=1e-15,
-            xtol=1e-15,
+            ftol=1e-4,
+            xtol=1e-4,
             method='lm'
         )
 
