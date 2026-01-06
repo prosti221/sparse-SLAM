@@ -1,12 +1,35 @@
 import cv2 as cv
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from slam.utils.utils import *
 from slam.utils.constants import *
 from slam.utils.logger import debug_log, error_log, warning_log
 from slam.core.frame import Frame
 
 LOG_TAG = 'Matcher'
+
+# Matcher cache to avoid recreating expensive matcher objects
+_matcher_cache: Dict[str, cv.DescriptorMatcher] = {}
+
+
+def _get_or_create_matcher(feature_extraction_method: str) -> cv.DescriptorMatcher:
+    cache_key = feature_extraction_method
+    if cache_key in _matcher_cache:
+        return _matcher_cache[cache_key]
+
+    if feature_extraction_method == DNN_EXTRACTOR_NAME:
+        index_params = dict(algorithm=1, trees=5)
+        search_params = dict(checks=50)
+        matcher = cv.FlannBasedMatcher(index_params, search_params)
+    else:
+        is_binary_desc = feature_extraction_method in BINARY_DESCRIPTION_METHODS
+        matcher = cv.BFMatcher(
+            cv.NORM_HAMMING if is_binary_desc else cv.NORM_L2, crossCheck=False)
+
+    _matcher_cache[cache_key] = matcher
+    debug_log(
+        LOG_TAG, f"Created and cached matcher for {feature_extraction_method}")
+    return matcher
 
 
 def estimate_essential_matrix(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
@@ -93,14 +116,7 @@ def select_best_model(
 
 
 def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str) -> Tuple[List[cv.DMatch], Optional[np.ndarray]]:
-    if feature_extraction_method == DNN_EXTRACTOR_NAME:
-        index_params = dict(algorithm=1, trees=5)
-        search_params = dict(checks=50)
-        matcher = cv.FlannBasedMatcher(index_params, search_params)
-    else:
-        is_binary_desc = feature_extraction_method in BINARY_DESCRIPTION_METHODS
-        matcher = cv.BFMatcher(
-            cv.NORM_HAMMING if is_binary_desc else cv.NORM_L2, crossCheck=False)
+    matcher = _get_or_create_matcher(feature_extraction_method)
 
     f1_kp, f1_desc = frame1.get_keypoints_descriptors()
     f2_kp, f2_desc = frame2.get_keypoints_descriptors()
@@ -120,11 +136,11 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
 
     # Filter using RANSAC with model selection
     if len(good_matches) > MATCHER_RANSAC_MINIMUM_INLIERS:
-        pts_f1 = np.array([f1_kp[m.queryIdx].pt for m in good_matches])
-        pts_f2 = np.array([f2_kp[m.trainIdx].pt for m in good_matches])
+        indices_f1 = [m.queryIdx for m in good_matches]
+        indices_f2 = [m.trainIdx for m in good_matches]
 
-        pts_f1_norm = normalize(pts_f1, frame1.Kinv)
-        pts_f2_norm = normalize(pts_f2, frame2.Kinv)
+        pts_f1_norm = frame1.kp_pts_norm[indices_f1]
+        pts_f2_norm = frame2.kp_pts_norm[indices_f2]
 
         # Select best model between Essential Matrix and Homography
         E, mask, selected_model = select_best_model(
