@@ -79,8 +79,7 @@ class Frame:
         self.keypoints = keypoints
         self.descriptors = descriptors
         if len(keypoints) > 0:
-            self.kp_pts = np.array(
-                [kp.pt for kp in keypoints], dtype=np.float32)
+            self.kp_pts = cv.KeyPoint.convert(keypoints)
             self.kp_pts_norm = normalize(self.kp_pts, self.Kinv)
             self.kp_unique_mask = [True] * len(self.kp_pts)
 
@@ -122,7 +121,7 @@ class Frame:
 
         if normalized:
             return np.array([x, y])
-            
+
         # Pixel coordinates (u, v)
         u = self.K[0, 0] * x + self.K[0, 2]
         v = self.K[1, 1] * y + self.K[1, 2]
