@@ -80,4 +80,17 @@ TRACKING_QUALITY_GRADIENT = {
 
 # --- Map constants
 TRACKING_QUALITY_WINDOW_SIZE = 5
-TRACKING_QUALITY_THRESHOLD = 0.2
+
+# --- Relocalization constants
+# Trigger relocalization when quality < 0.3
+RELOCALIZATION_QUALITY_THRESHOLD = 0.3
+RELOCALIZATION_FRAME_COUNT = 5  # After 5 consecutive low-quality frames
+RELOCALIZATION_WINDOW = 10  # Search last 10 keyframes first in normal reloc
+MIN_RELOCALIZATION_MATCHES = 15
+MIN_RELOCALIZATION_INLIERS = 12
+MIN_AGGRESSIVE_RELOCALIZATION_INLIERS = 8
+
+# --- Reset mechanism constants
+MAX_CONSECUTIVE_RELOCALIZATION_FAILURES = 2  # Reset after 3 failed attempts
+# Reset after 5 successful relocs in a row
+MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS = 5

@@ -9,7 +9,7 @@ colorama.init(autoreset=True)
 # === Config ===
 # TODO: Make this configurable via environment variables or a config file
 DEBUG = True
-DEBUG_TAG_FILTER = ["ConfigParser", "Renderer"]
+DEBUG_TAG_FILTER = ["Map", "LoopClosure", "Tracker", "g2oBA"]
 SEVERITY_FILTER = ["info", "error", "warning"]
 
 MSG_TYPE_TO_COLOR = {
@@ -52,7 +52,7 @@ def clear_debug_scope():
 
 
 def debug_log(log_tag, message):
-    if not DEBUG or log_tag in DEBUG_TAG_FILTER:
+    if not DEBUG or log_tag not in DEBUG_TAG_FILTER:
         return
     active_scope = getattr(_log_context, "active_debug_scope", None)
     calling_func = get_calling_function_name()

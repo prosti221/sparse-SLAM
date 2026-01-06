@@ -3,12 +3,13 @@ from itertools import dropwhile, islice
 from typing import List, Tuple, Set
 from uuid import UUID
 import numpy as np
-from slam.utils.logger import debug_log, error_log, warning_log
+from slam.utils.logger import info_log, debug_log, error_log, warning_log
 from slam.utils.constants import *
 from slam.core.point import Point
 from slam.core.frame import Frame
 from slam.core.observation import Observation
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
+from slam.loop_closure import LoopClosureCandidate
 
 LOG_TAG = 'Map'
 
@@ -31,7 +32,18 @@ class Map:
 
         # Tracking quality history
         self.tracking_quality_history: dict[UUID, float] = {}
+
+        # Recovery state tracking
+        self.consecutive_low_quality_frames = 0
+
+        # Bundle adjustment optimizer
         self.g2o_optimizer = G2OBundleAdjustment(self)
+
+        # Loop closure components
+        from slam.loop_closure import KeyframeFeatureDatabase, LoopClosureDetector, PoseGraphOptimizer
+        self.feature_db = KeyframeFeatureDatabase()
+        self.loop_detector = LoopClosureDetector(self, self.feature_db)
+        self.pose_graph_optimizer = PoseGraphOptimizer(self)
 
     def add_points(self, points: List[Point]):
         new_points = []
@@ -60,6 +72,11 @@ class Map:
         kf.is_keyframe = True
         self.keyframes.append(kf)
         self.keyframes_by_id[kf.frame_id] = kf
+
+        # Store features for loop closure detection
+        _, descriptors = kf.get_keypoints_descriptors()
+        if descriptors is not None:
+            self.feature_db.add_keyframe_features(kf.frame_id, descriptors)
 
         # Initialize covisibility connections for new keyframe
         self.covisibility_graph[kf.frame_id] = defaultdict(int)
@@ -259,8 +276,68 @@ class Map:
         self.tracking_quality_history = {
             kf_id: kf.tracking_quality for kf_id, kf in self.keyframes_by_id.items()}
 
+        # Update consecutive low quality frame counter for recovery detection
+        if self.avg_tracking_quality < RELOCALIZATION_QUALITY_THRESHOLD:
+            self.consecutive_low_quality_frames += 1
+        else:
+            self.consecutive_low_quality_frames = 0
+
     def needs_recovery(self) -> bool:
-        return self.avg_tracking_quality < TRACKING_QUALITY_THRESHOLD
+        return (self.avg_tracking_quality < RELOCALIZATION_QUALITY_THRESHOLD and
+                self.consecutive_low_quality_frames >= RELOCALIZATION_FRAME_COUNT)
+
+    def on_relocalization_successful(self, reference_keyframe_id: UUID):
+        """Handle successful relocalization - reset recovery state and trigger optimization"""
+        self.consecutive_low_quality_frames = 0
+        # Trigger local BA to refine the area
+        self.optimize(enable_ba=True)
+        info_log(
+            LOG_TAG, f"Successfully relocalized to keyframe {reference_keyframe_id}")
+
+    def reset(self):
+        """Clear all map data and reset to initial state"""
+        info_log(LOG_TAG, "Resetting map - clearing all data")
+
+        # Clear all collections
+        self.points.clear()
+        self.keyframes.clear()
+        self.point_coords.clear()
+        self.points_by_id.clear()
+        self.keyframes_by_id.clear()
+        self.covisibility_graph.clear()
+        self._covisibility_score_cache.clear()
+        self.tracking_quality_history.clear()
+
+        # Reset state counters
+        self.consecutive_low_quality_frames = 0
+
+        # Reinitialize components that might need it
+        from slam.loop_closure import KeyframeFeatureDatabase
+        self.feature_db = KeyframeFeatureDatabase()
+        self.loop_detector = type(self.loop_detector)(self, self.feature_db)
+        self.pose_graph_optimizer = type(self.pose_graph_optimizer)(self)
+
+        debug_log(LOG_TAG, "Map reset complete")
+
+    def remove_keyframes_after(self, reference_keyframe_id: UUID):
+        """Remove keyframes that were created after the reference keyframe"""
+        keyframes_to_remove = []
+        for kf in reversed(self.keyframes):
+            if kf.frame_id <= reference_keyframe_id:
+                break
+            keyframes_to_remove.append(kf)
+
+        for kf in keyframes_to_remove:
+            debug_log(
+                LOG_TAG, f"Removing bad keyframe {kf.frame_id} after relocalization")
+            self.remove_keyframe_by_id(kf.frame_id)
+
+    def detect_loop_closures(self, current_frame: Frame) -> List['LoopClosureCandidate']:
+        """
+        Detect potential loop closures for the current frame.
+        Called periodically during tracking.
+        """
+        return self.loop_detector.detect_potential_loops(current_frame)
 
     def get_covisibility_keyframes(self, keyframe_id: UUID, min_shared_points: int = 15) -> List[Frame]:
         if keyframe_id not in self.covisibility_graph:

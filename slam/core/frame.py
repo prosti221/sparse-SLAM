@@ -127,6 +127,46 @@ class Frame:
         v = self.K[1, 1] * y + self.K[1, 2]
         return np.array([u, v])
 
+    def project_points(self, points_3d: np.ndarray, normalized: bool = True) -> np.ndarray:
+        """
+        Project multiple 3D points to image coordinates.
+
+        Args:
+            points_3d: Array of 3D points, shape (N, 3)
+            normalized: If True, return normalized coordinates, else pixel coordinates
+
+        Returns:
+            Array of projected points, shape (N, 2). Invalid projections (behind camera) are None.
+        """
+        if points_3d.ndim != 2 or points_3d.shape[1] != 3:
+            raise ValueError("points_3d must be shape (N, 3)")
+
+        # Convert to homogeneous coordinates and transform to camera frame
+        points_homo = np.column_stack([points_3d, np.ones(len(points_3d))])
+        world_to_cam = np.linalg.inv(self.pose)
+        points_cam = (world_to_cam @ points_homo.T).T
+
+        # Check which points are in front of camera
+        valid_mask = points_cam[:, 2] > 0
+
+        # Initialize result array
+        result = np.full((len(points_3d), 2), np.nan)
+
+        if np.any(valid_mask):
+            # Normalized coordinates for valid points
+            x_norm = points_cam[valid_mask, 0] / points_cam[valid_mask, 2]
+            y_norm = points_cam[valid_mask, 1] / points_cam[valid_mask, 2]
+
+            if normalized:
+                result[valid_mask] = np.column_stack([x_norm, y_norm])
+            else:
+                # Convert to pixel coordinates
+                u = self.K[0, 0] * x_norm + self.K[0, 2]
+                v = self.K[1, 1] * y_norm + self.K[1, 2]
+                result[valid_mask] = np.column_stack([u, v])
+
+        return result
+
     def is_point_visible(self, point_3d: np.ndarray, margin: int = 10) -> bool:
         projected = self.project_point(point_3d, normalized=False)
         if projected is None:

@@ -4,7 +4,7 @@ const_tag: &AKAZE "AKAZE"
 
 # Global config properties
 global:
-  load_video: "drone"
+  load_video: "greece"
   feature_extractor: *ORB
   enable_multiscale_features: false 
   enable_ba: true
@@ -46,7 +46,7 @@ videos:
     cx: 319.5
     cy: 239.5
   desk_xyz:
-    path: ./videos/calibrated/desk_xyz.mp4
+    path: ./videos/desk_xyz.mp4
     fx: 525
     fy: 525
     cx: 319.5
