@@ -3,6 +3,7 @@ import cv2 as cv
 from scipy.spatial import cKDTree
 from collections import defaultdict
 from typing import List, Tuple
+from uuid import UUID
 
 from slam.core.point import Point
 from slam.core.frame import Frame
@@ -13,6 +14,7 @@ from slam.utils.constants import *
 from slam.utils.logger import *
 from slam.features.matcher import *
 from slam.features.feature_extractor import FeatureExtractor
+from slam.loop_closure import LoopClosureCandidate
 
 LOG_TAG = 'Tracker'
 
@@ -27,6 +29,8 @@ class Tracker:
 
         self.velocity = np.eye(4)
         self.iterations_since_last_keyframe = 0
+        self.consecutive_successful_relocalizations = 0
+        self.consecutive_relocalization_failures = 0
 
         self.enable_ba = enable_ba
 
@@ -48,8 +52,21 @@ class Tracker:
         self.prev_frame = self.cur_frame
         self.cur_frame = new_frame
 
-        # Predict the initial pose estimate for current frame
-        self.cur_frame.pose = self._get_next_pose_estimate()
+        # Predict the initial pose estimate using constant velocity model (more stable)
+        self.cur_frame.pose = self._get_next_pose_estimate(
+            use_kinematic_model=True)
+
+        # Try to refine with feature matching if possible
+        Rt = match_features_between_frames(
+            self.cur_frame, self.prev_frame, self.feature_extraction_method)
+        if Rt is not None:
+            # Refine the kinematic estimate with feature-based estimate
+            refined_pose = Rt @ self.prev_frame.pose
+            self.cur_frame.pose = refined_pose
+            debug_log(LOG_TAG, "Pose estimate refined with feature matching")
+        else:
+            debug_log(
+                LOG_TAG, "Using kinematic pose estimate (feature matching failed)")
 
         # Project the visible map points onto current frame for matching by projection
         projected_points = self._project_visible_map_points()
@@ -57,8 +74,20 @@ class Tracker:
         # Match the projected points with the current frame's keypoints
         observations = self._match_projected_points(projected_points)
 
+        # Refine pose using motion-only bundle adjustment if we have enough observations
+        if len(observations) >= 10:
+            pose_refined = self.map.g2o_optimizer.refine_pose_pnp()
+            if pose_refined:
+                debug_log(
+                    LOG_TAG, f"Pose refined with PnP using {len(observations)} observations")
+            else:
+                debug_log(LOG_TAG, "Pose refinement failed")
+
         # Check & handle keyframe insertion criteria
         self._handle_keyframe_insertion(observations)
+
+        # Periodic loop closure detection
+        self._handle_loop_closure_detection()
 
         self.step += 1
         self.iterations_since_last_keyframe += 1
@@ -67,6 +96,9 @@ class Tracker:
         # Update the velocity based on the current and previous frame poses
         self.velocity = np.linalg.inv(
             self.prev_frame.pose) @ self.cur_frame.pose
+
+        # Check for relocalization if tracking quality is consistently low
+        self._handle_relocalization_check()
 
         return self.cur_frame.is_keyframe
 
@@ -193,7 +225,7 @@ class Tracker:
                     best_dist = desc_dist
                     best_idx = i
 
-            if best_idx != -1 and best_dist < 30:
+            if best_idx != -1 and best_dist < 20:  # Stricter threshold for better matches
                 repro_error = np.linalg.norm(
                     kp_coords[best_idx] - np.array([u_proj, v_proj]))
 
@@ -290,3 +322,202 @@ class Tracker:
             return self.prev_frame.pose @ self.velocity
 
         return Rt @ self.prev_frame.pose
+
+    def _handle_loop_closure_detection(self):
+        return  # Disable loop closure for now
+        if self.step % 10 != 0 or len(self.map.keyframes) <= 10:
+            return
+
+        current_keyframe = self.map.cur_keyframe
+        if current_keyframe is None:
+            return
+
+        loop_candidates = self.map.detect_loop_closures(current_keyframe)
+        if not loop_candidates:
+            debug_log(LOG_TAG, "No loop closure candidates detected")
+            return
+
+        debug_log(
+            LOG_TAG, f"Detected {len(loop_candidates)} potential loop closures")
+
+        # Set query keyframe ID for candidates
+        for i, cand in enumerate(loop_candidates):
+            updated_cand = LoopClosureCandidate(
+                query_keyframe_id=current_keyframe.frame_id,
+                match_keyframe_id=cand.match_keyframe_id,
+                similarity_score=cand.similarity_score
+            )
+            loop_candidates[i] = updated_cand
+
+        verified_loops = self.map.loop_detector.verify_loop_candidates(
+            loop_candidates)
+        if not verified_loops:
+            debug_log(LOG_TAG, "No loop closures verified")
+            return
+
+        debug_log(
+            LOG_TAG, f"Verified {len(verified_loops)} loop closures - triggering optimization")
+
+        # Create pose graph constraints from verified loops
+        loop_constraints = []
+        for verified_loop in verified_loops:
+            constraint = self.map.pose_graph_optimizer.create_constraint_from_verified_loop(
+                verified_loop)
+            loop_constraints.append(constraint)
+
+        success = self.map.pose_graph_optimizer.optimize_with_loop_constraints(
+            loop_constraints)
+        if not success:
+            warning_log(LOG_TAG, "Pose graph optimization failed")
+            return
+
+        debug_log(
+            LOG_TAG, f"Successfully optimized pose graph with {len(verified_loops)} loop constraints")
+
+        # After pose graph optimization, run full global BA to fix 3D points
+        # This is critical because pose correction makes existing triangulations invalid
+        debug_log(
+            LOG_TAG, "Running full global bundle adjustment to fix 3D points after pose correction")
+        global_ba_success = self.map.g2o_optimizer.global_bundle_adjustment()
+        if global_ba_success:
+            debug_log(
+                LOG_TAG, "Global bundle adjustment completed successfully after loop closure")
+        else:
+            warning_log(
+                LOG_TAG, "Global bundle adjustment failed after loop closure - map may be inconsistent")
+
+    def _handle_relocalization_check(self):
+        """Check for relocalization using the map's recovery state"""
+        if not self.map.needs_recovery():
+            return
+
+        # Check for too many consecutive successful relocalizations BEFORE attempting
+        debug_log(
+            LOG_TAG, f"Checking consecutive successful relocs: {self.consecutive_successful_relocalizations}/{MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS}")
+        if self.consecutive_successful_relocalizations >= MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS:
+            warning_log(
+                LOG_TAG, f"Too many consecutive successful relocalizations ({self.consecutive_successful_relocalizations}) - map may be unstable, resetting")
+            self._reset_system()
+            return
+
+        debug_log(LOG_TAG, f"Map needs recovery - attempting relocalization")
+        if self._attempt_relocalization():
+            debug_log(LOG_TAG, "Relocalization successful!")
+            return
+
+        debug_log(LOG_TAG, "Relocalization failed, trying aggressive approach")
+        if self._attempt_aggressive_relocalization():
+            debug_log(LOG_TAG, "Aggressive relocalization successful!")
+            return
+
+        # Relocalization failed completely
+        self.map.consecutive_relocalization_failures += 1
+        warning_log(
+            LOG_TAG, f"Relocalization failed - tracking lost ({self.map.consecutive_relocalization_failures}/{MAX_CONSECUTIVE_RELOCALIZATION_FAILURES})")
+
+        # Check if we should reset the system due to consecutive failures
+        if self.map.consecutive_relocalization_failures >= MAX_CONSECUTIVE_RELOCALIZATION_FAILURES:
+            self._reset_system()
+            return
+
+        warning_log(
+            LOG_TAG, "Continuing with degraded tracking - try returning to previously mapped areas")
+
+    def _attempt_relocalization(self) -> bool:
+        # Search through recent keyframes (last N)
+        recent_keyframes = self.map.keyframes[-RELOCALIZATION_WINDOW:] if len(
+            self.map.keyframes) > RELOCALIZATION_WINDOW else self.map.keyframes
+
+        for kf in reversed(recent_keyframes):
+            pose, inliers = self._match_frame_to_keyframe(self.cur_frame, kf)
+            if inliers >= MIN_RELOCALIZATION_INLIERS:
+                # Success! Reset pose and continue
+                self.cur_frame.pose = pose
+                self.consecutive_successful_relocalizations += 1
+                self.map.on_relocalization_successful(kf.frame_id)
+                return True
+        return False
+
+    def _attempt_aggressive_relocalization(self) -> bool:
+        # Search ALL keyframes with more permissive matching
+        for kf in reversed(self.map.keyframes):
+            pose, inliers = self._match_frame_to_keyframe_permissive(
+                self.cur_frame, kf)
+            if inliers >= MIN_AGGRESSIVE_RELOCALIZATION_INLIERS:
+                # Reset pose and potentially clear recent bad keyframes
+                self.map.remove_keyframes_after(kf.frame_id)
+                self.cur_frame.pose = pose
+                self.consecutive_successful_relocalizations += 1
+                self.map.on_relocalization_successful(kf.frame_id)
+                return True
+        return False
+
+    def _match_frame_to_keyframe(self, frame: Frame, keyframe: Frame) -> Tuple[Optional[np.ndarray], int]:
+        matches, Rt = match_features(
+            frame, keyframe, self.feature_extraction_method)
+
+        if len(matches) < MIN_RELOCALIZATION_MATCHES:
+            return None, 0
+
+        # Extract matched points
+        indices_f1 = [m.queryIdx for m in matches]
+        indices_f2 = [m.trainIdx for m in matches]
+
+        pts_f1_norm = frame.kp_pts_norm[indices_f1]
+        pts_f2_norm = keyframe.kp_pts_norm[indices_f2]
+
+        # Estimate pose using RANSAC
+        E, mask, _ = estimate_essential_matrix(pts_f1_norm, pts_f2_norm)
+        if E is None:
+            return None, 0
+
+        inliers = np.sum(mask) if mask is not None else 0
+
+        if inliers >= MIN_RELOCALIZATION_INLIERS:
+            pose = extractRt(E)
+            # Transform relative to keyframe pose
+            return pose @ keyframe.pose, inliers
+
+        return None, 0
+
+    def _match_frame_to_keyframe_permissive(self, frame: Frame, keyframe: Frame) -> Tuple[Optional[np.ndarray], int]:
+        # Temporarily adjust matcher constants for more permissive matching
+        original_threshold = MATCHER_RANSAC_THRESHOLD
+        original_min_inliers = MATCHER_RANSAC_MINIMUM_INLIERS
+
+        # Make matching more permissive
+        import slam.utils.constants as const
+        const.MATCHER_RANSAC_THRESHOLD = 0.01  # More lenient
+        const.MATCHER_RANSAC_MINIMUM_INLIERS = 5  # Lower minimum
+
+        try:
+            result = self._match_frame_to_keyframe(frame, keyframe)
+        finally:
+            # Restore original values
+            const.MATCHER_RANSAC_THRESHOLD = original_threshold
+            const.MATCHER_RANSAC_MINIMUM_INLIERS = original_min_inliers
+
+        return result
+
+    def _reset_system(self):
+        """Reset the entire SLAM system and start fresh with current frame"""
+        info_log(LOG_TAG, "System reset triggered - clearing map and restarting")
+
+        # Reset the map completely
+        self.map.reset()
+
+        # Reset tracker state
+        self.step = 0
+        self.velocity = np.eye(4)
+        self.iterations_since_last_keyframe = 0
+        self.consecutive_successful_relocalizations = 0
+        self.consecutive_relocalization_failures = 0
+
+        # Set current frame as new origin (identity pose)
+        self.cur_frame.pose = np.eye(4)
+        self.prev_frame = None
+
+        # Add current frame as first keyframe of new map
+        self.map.add_keyframe(self.cur_frame)
+
+        info_log(LOG_TAG, "System reset complete - starting new map")
