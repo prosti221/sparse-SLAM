@@ -282,7 +282,6 @@ class Map:
                 self.consecutive_low_quality_frames >= RELOCALIZATION_FRAME_COUNT)
 
     def on_relocalization_successful(self, reference_keyframe_id: UUID):
-        """Handle successful relocalization - reset recovery state and trigger optimization"""
         self.consecutive_low_quality_frames = 0
         # Trigger local BA to refine the area
         self.optimize(enable_ba=True)
@@ -290,7 +289,6 @@ class Map:
             LOG_TAG, f"Successfully relocalized to keyframe {reference_keyframe_id}")
 
     def reset(self):
-        """Clear all map data and reset to initial state"""
         info_log(LOG_TAG, "Resetting map - clearing all data")
 
         # Clear all collections
@@ -314,7 +312,6 @@ class Map:
         debug_log(LOG_TAG, "Map reset complete")
 
     def remove_keyframes_after(self, reference_keyframe_id: UUID):
-        """Remove keyframes that were created after the reference keyframe"""
         keyframes_to_remove = []
         for kf in reversed(self.keyframes):
             if kf.frame_id <= reference_keyframe_id:
@@ -327,10 +324,6 @@ class Map:
             self.remove_keyframe_by_id(kf.frame_id)
 
     def detect_loop_closures(self, current_frame: Frame) -> List['LoopClosureCandidate']:
-        """
-        Detect potential loop closures for the current frame.
-        Called periodically during tracking.
-        """
         return self.loop_detector.detect_potential_loops(current_frame)
 
     def get_covisibility_keyframes(self, keyframe_id: UUID, min_shared_points: int = 15) -> List[Frame]:
@@ -352,7 +345,6 @@ class Map:
         debug_log(LOG_TAG, "Cleaned up covisibility score cache")
 
     def remove_keyframe_by_index(self, idx: int) -> bool:
-        """Remove a keyframe by its index in the keyframes list."""
         if idx < 0 or idx >= len(self.keyframes):
             error_log(LOG_TAG, f"Index {idx} out of range for keyframes list")
             return False
@@ -361,7 +353,6 @@ class Map:
         return self._remove_keyframe(keyframe, idx)
 
     def remove_keyframe_by_id(self, keyframe_id: UUID) -> bool:
-        """Remove a keyframe by its UUID."""
         if keyframe_id not in self.keyframes_by_id:
             error_log(LOG_TAG, f"Keyframe {keyframe_id} not found")
             return False
@@ -379,7 +370,6 @@ class Map:
         return self._remove_keyframe(keyframe, idx)
 
     def _remove_keyframe(self, keyframe: Frame, idx: int) -> bool:
-        """Internal method to remove a keyframe and clean up all references."""
         keyframe_id = keyframe.frame_id
 
         # Remove observations of this keyframe from all points
@@ -421,7 +411,6 @@ class Map:
         return True
 
     def _remove_keyframe_from_covisibility_graph(self, keyframe_id: UUID):
-        """Remove a keyframe from the covisibility graph and clean up connections."""
         if keyframe_id not in self.covisibility_graph:
             return
 
