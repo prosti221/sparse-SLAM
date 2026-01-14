@@ -387,11 +387,10 @@ class Tracker:
                 LOG_TAG, "Global bundle adjustment failed after loop closure - map may be inconsistent")
 
     def _handle_relocalization_check(self):
-        """Check for relocalization using the map's recovery state"""
         if not self.map.needs_recovery():
             return
 
-        # Check for too many consecutive successful relocalizations BEFORE attempting
+        # Check for too many consecutive successful relocalizations before attempting
         debug_log(
             LOG_TAG, f"Checking consecutive successful relocs: {self.consecutive_successful_relocalizations}/{MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS}")
         if self.consecutive_successful_relocalizations >= MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS:
@@ -431,7 +430,6 @@ class Tracker:
         for kf in reversed(recent_keyframes):
             pose, inliers = self._match_frame_to_keyframe(self.cur_frame, kf)
             if inliers >= MIN_RELOCALIZATION_INLIERS:
-                # Success! Reset pose and continue
                 self.cur_frame.pose = pose
                 self.consecutive_successful_relocalizations += 1
                 self.map.on_relocalization_successful(kf.frame_id)
@@ -439,7 +437,6 @@ class Tracker:
         return False
 
     def _attempt_aggressive_relocalization(self) -> bool:
-        # Search ALL keyframes with more permissive matching
         for kf in reversed(self.map.keyframes):
             pose, inliers = self._match_frame_to_keyframe_permissive(
                 self.cur_frame, kf)
@@ -487,8 +484,8 @@ class Tracker:
 
         # Make matching more permissive
         import slam.utils.constants as const
-        const.MATCHER_RANSAC_THRESHOLD = 0.01  # More lenient
-        const.MATCHER_RANSAC_MINIMUM_INLIERS = 5  # Lower minimum
+        const.MATCHER_RANSAC_THRESHOLD = 0.01
+        const.MATCHER_RANSAC_MINIMUM_INLIERS = 5
 
         try:
             result = self._match_frame_to_keyframe(frame, keyframe)
@@ -500,7 +497,6 @@ class Tracker:
         return result
 
     def _reset_system(self):
-        """Reset the entire SLAM system and start fresh with current frame"""
         info_log(LOG_TAG, "System reset triggered - clearing map and restarting")
 
         # Reset the map completely
@@ -513,7 +509,7 @@ class Tracker:
         self.consecutive_successful_relocalizations = 0
         self.consecutive_relocalization_failures = 0
 
-        # Set current frame as new origin (identity pose)
+        # Set current frame as new origin
         self.cur_frame.pose = np.eye(4)
         self.prev_frame = None
 
