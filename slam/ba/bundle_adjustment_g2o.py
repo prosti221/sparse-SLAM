@@ -105,15 +105,6 @@ class G2OBundleAdjustment:
         return self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=True, fix_points=False)
 
     def pose_graph_optimization(self, loop_constraints: List[Tuple[UUID, UUID, np.ndarray]]) -> bool:
-        """
-        Perform pose graph optimization with loop closure constraints.
-
-        Args:
-            loop_constraints: List of (from_keyframe_id, to_keyframe_id, relative_pose) tuples
-
-        Returns:
-            True if optimization succeeded
-        """
         debug_log(
             LOG_TAG, f"Starting pose graph optimization with {len(loop_constraints)} loop constraints")
 
@@ -294,7 +285,6 @@ class G2OBundleAdjustment:
             return False
 
     def _create_g2o_optimizer(self):
-        """Create and configure standard G2O optimizer setup"""
         opt = g2o.SparseOptimizer()
         solver = g2o.BlockSolverSE3(g2o.LinearSolverEigenSE3())
         solver = g2o.OptimizationAlgorithmLevenberg(solver)
@@ -312,7 +302,6 @@ class G2OBundleAdjustment:
 
     def _create_keyframe_vertices(self, optimizer, keyframes: List[Frame],
                                   vertex_id_offset: int = 0, fix_first: bool = True):
-        """Create SE3 vertices for keyframes and return mapping"""
         frame_to_vertex = {}
 
         for i, kf in enumerate(keyframes):
@@ -333,7 +322,6 @@ class G2OBundleAdjustment:
         return frame_to_vertex
 
     def _update_keyframe_poses_from_vertices(self, frame_to_vertex):
-        """Update keyframe poses from optimized G2O vertices"""
         for kf_id, vertex in frame_to_vertex.items():
             # Find the keyframe by ID
             kf = self.map.get_keyframe_by_id(kf_id)
