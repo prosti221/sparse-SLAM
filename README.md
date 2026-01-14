@@ -2,7 +2,7 @@
 ### Overview
 This is a monocular visual SLAM system that builds a sparse 3D map of the environment using feature-based techniques. The system tracks camera motion and reconstructs environmental features using only visual input from a single camera.
 ### Key Features
-- Real-time camera tracking using feature matching and pose estimation
+- Camera tracking through feature matching and pose estimation
 - Sparse 3D reconstruction of environmental features
 - Multiple feature extractors supported (ORB, AKAZE, SuperPoint)
 - Bundle adjustment for map and pose optimization (using g2o)
@@ -72,10 +72,8 @@ videos:
 - Colorama (for logging)
 
 ## Future TODOs
-- Add loop closure detection
-- Add relocalization strategy for when we lose track
 - Improve keyframe selection logic. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.
 - Figure out how to run the renderer in a separate thread. Due to GLFW limitations, the open3d renderer needs to run on the main thread. A way around this could be to run the SLAM pipeline in a separate worker thread instead, and let the renderer use the main thread.
 - Add tooling for profiling
-- Improve efficiency.
+- Make it run faster...
 - Add tooling for ground truth comparison for benchmarking
