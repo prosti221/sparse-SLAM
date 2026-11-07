@@ -1,0 +1,25 @@
+{
+  "seed": 42,
+  "note": "Thresholds recorded 2026-11-07 after the pose-convention + BA-anchoring fixes. forward_rotation is the healthy baseline sequence. orbit/translation are limited by the known lateral-motion essential-matrix ambiguity (see benchmarks/PLAN.md) - their thresholds are degradation tripwires, not quality bars.",
+  "thresholds": {
+    "forward_rotation": {
+      "ate_rmse": 0.3,
+      "rpe_trans_rmse": 0.4,
+      "rpe_rot_rmse": 2.0,
+      "map_on_surface_pct": 20.0,
+      "map_near_scene_pct": 12.0,
+      "resets": 0
+    },
+    "orbit": {
+      "ate_rmse": 3.0,
+      "rpe_rot_rmse": 60.0,
+      "map_on_surface_pct": 4.0,
+      "resets": 2
+    },
+    "translation": {
+      "ate_rmse": 4.5,
+      "rpe_rot_rmse": 60.0,
+      "resets": 2
+    }
+  }
+}
