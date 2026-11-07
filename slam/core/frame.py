@@ -29,6 +29,7 @@ class Frame:
         self.descriptors = None
 
         self._pose = np.eye(4)
+        self._pose_inv = np.eye(4)
 
         # Matching data
         self.matches = None
@@ -103,8 +104,10 @@ class Frame:
 
         # Transform to camera coordinates
         # Camera coordinates = R * (world_point - camera_center)
-        world_to_cam = np.linalg.inv(self.pose)
-        cam_coords = world_to_cam @ point_homo
+        # Uses the cached inverse: this runs once per map point per frame,
+        # and recomputing a 4x4 inverse every call dominated run time on
+        # large maps.
+        cam_coords = self._pose_inv @ point_homo
 
         return cam_coords[:3]
 
@@ -143,7 +146,7 @@ class Frame:
 
         # Convert to homogeneous coordinates and transform to camera frame
         points_homo = np.column_stack([points_3d, np.ones(len(points_3d))])
-        world_to_cam = np.linalg.inv(self.pose)
+        world_to_cam = self._pose_inv
         points_cam = (world_to_cam @ points_homo.T).T
 
         # Check which points are in front of camera
@@ -246,15 +249,14 @@ class Frame:
 
     @property
     def camera_center(self):
-        # Camera center is -R^T * t
-        R = self.pose[:3, :3]
-        t = self.pose[:3, 3]
-
-        return -R.T @ t
+        # For a camera-to-world pose (Twc = [R | t]), the camera center in
+        # world coordinates IS the translation component: Twc @ origin = t.
+        # (-R^T t would be the camera center of a world-to-camera pose.)
+        return self._pose[:3, 3]
 
     @property
     def projection_matrix(self):
-        world_to_cam = np.linalg.inv(self.pose)
+        world_to_cam = self._pose_inv
 
         return self.K @ world_to_cam[:3, :]
 
@@ -268,7 +270,10 @@ class Frame:
 
     @pose.setter
     def pose(self, value):
-        self._pose = value
+        # Copy to guard against aliasing, and cache the inverse: it is
+        # needed once per map point per frame (world_to_camera).
+        self._pose = np.array(value)
+        self._pose_inv = np.linalg.inv(self._pose)
 
     @property
     def pose_6dof(self):
@@ -289,9 +294,11 @@ class Frame:
         # Convert rotation vector to rotation matrix
         R, _ = cv.Rodrigues(rvec)
 
-        self._pose = np.eye(4)
-        self._pose[:3, :3] = R
-        self._pose[:3, 3] = t
+        pose = np.eye(4)
+        pose[:3, :3] = R
+        pose[:3, 3] = t
+        # Route through the pose property so the cached inverse stays fresh.
+        self.pose = pose
 
     @property
     def num_tracked_features(self):

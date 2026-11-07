@@ -432,6 +432,11 @@ class Tracker:
             pose, inliers = self._match_frame_to_keyframe(self.cur_frame, kf)
             if inliers >= MIN_RELOCALIZATION_INLIERS:
                 self.cur_frame.pose = pose
+                # The pose just jumped to the matched keyframe's frame.
+                # Feeding that jump into the constant-velocity model makes
+                # the next prediction repeat the teleport (and explode);
+                # reset it and let feature matching re-establish motion.
+                self.velocity = np.eye(4)
                 self.consecutive_successful_relocalizations += 1
                 self.map.on_relocalization_successful(kf.frame_id)
                 return True
@@ -445,6 +450,9 @@ class Tracker:
                 # Reset pose and potentially clear recent bad keyframes
                 self.map.remove_keyframes_after(kf.frame_id)
                 self.cur_frame.pose = pose
+                # See _attempt_relocalization: never feed the pose jump
+                # into the constant-velocity model.
+                self.velocity = np.eye(4)
                 self.consecutive_successful_relocalizations += 1
                 self.map.on_relocalization_successful(kf.frame_id)
                 return True
