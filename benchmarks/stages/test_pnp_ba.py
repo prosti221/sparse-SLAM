@@ -230,3 +230,31 @@ def test_local_ba_keeps_window_keyframes_consistent():
     for kf, before in zip(kfs, poses_before):
         moved = np.linalg.norm(kf.pose[:3, 3] - before[:3, 3])
         assert moved < 0.05, f"keyframe moved {moved:.3f} on clean input"
+
+
+def test_timer_global_ba_disabled_by_default():
+    """Phase 2a (finding 13): the timer-triggered global BA is disabled by
+    default (interval 0). Measured A/B: it HURT three of four sequences
+    (translation ATE 0.0845 -> 0.0181 without it) while dominating tum's
+    BA cost; local BA keeps corrections local via fixed boundary
+    keyframes, and the global re-solve traded well-constrained accuracy
+    for global smoothing on a cadence with no evidence of need. Global
+    BA stays available for loop closure (phase 3), triggered by loop
+    events, not a timer."""
+    from slam.utils import constants as const
+
+    K = make_K()
+    m = Map()
+    for i in range(12):
+        m.add_keyframe(make_frame(yaw_pose(0.0, (0.5 * i, 0.0, 0.0)), K))
+
+    # The shipped constant disables the timer.
+    assert const.GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL == 0
+    assert not m.should_perform_global_bundle_adjustment(
+        const.GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)
+
+    # Interval semantics still work for future re-enablement: > 0 fires
+    # at keyframe-count multiples, 0 disables.
+    assert m.should_perform_global_bundle_adjustment(4)      # 12 % 4 == 0
+    assert not m.should_perform_global_bundle_adjustment(5)  # 12 % 5 != 0
+    assert not m.should_perform_global_bundle_adjustment(0)

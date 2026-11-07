@@ -95,7 +95,7 @@ class Map:
         if enable_ba:
             success = False
             perform_global_ba = self.should_perform_global_bundle_adjustment(
-                GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)
+                const.GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)
             if perform_global_ba:
                 telemetry.event("ba_global_call")
                 success = self.g2o_optimizer.global_bundle_adjustment()
@@ -103,7 +103,7 @@ class Map:
                 telemetry.event("ba_local_call")
                 success = self.g2o_optimizer.local_bundle_adjustment(
                     self.keyframes[-1].frame_id,
-                    window_size=LOCAL_MAP_WINDOW_SIZE,
+                    window_size=const.LOCAL_MAP_WINDOW_SIZE,
                     fix_points=False
                 )
 
@@ -264,8 +264,19 @@ class Map:
         return shared_count
 
     def should_perform_global_bundle_adjustment(self, interval: int) -> bool:
-        # return len(self.keyframes) % interval == 0 or self.avg_tracking_quality < 0.45
-        return len(self.keyframes) % interval == 0
+        # Phase 2a (finding 13): interval-triggered global BA is DISABLED
+        # (interval <= 0). Measured A/B across all four sequences (seed 42,
+        # full record in benchmarks/IMPROVEMENT.md): turning it off IMPROVED
+        # three of four (translation ATE 0.0845 -> 0.0181, orbit 1.72 ->
+        # 1.04, forward_rotation 0.076 -> 0.065) at a large speed win, and
+        # cost only +0.005 ATE on tum_xyz (0.177 -> 0.182, within
+        # baseline). The local BA anchors window poses to FIXED boundary
+        # keyframes, keeping corrections local; a global re-solve trades
+        # accuracy in well-constrained regions to smooth systematic error
+        # across the whole map, on a fixed cadence with no evidence of
+        # need. Global BA remains available (and justified) on loop
+        # closure - Phase 3 triggers it on loop events, not on a timer.
+        return interval > 0 and len(self.keyframes) % interval == 0
 
     def get_keyframe_by_id(self, frame_id: UUID) -> Frame:
         return self.keyframes_by_id.get(frame_id, None)
@@ -285,7 +296,7 @@ class Map:
 
     def needs_recovery(self) -> bool:
         return (self.avg_tracking_quality < const.RELOCALIZATION_QUALITY_THRESHOLD and
-                self.consecutive_low_quality_frames >= RELOCALIZATION_FRAME_COUNT)
+                self.consecutive_low_quality_frames >= const.RELOCALIZATION_FRAME_COUNT)
 
     def on_relocalization_successful(self, reference_keyframe_id: UUID):
         self.consecutive_low_quality_frames = 0
@@ -454,7 +465,7 @@ class Map:
             return 0.0
 
         local_window_values = list(
-            self.tracking_quality_history.values())[-LOCAL_MAP_WINDOW_SIZE:]
+            self.tracking_quality_history.values())[-const.LOCAL_MAP_WINDOW_SIZE:]
 
         total_quality = sum(local_window_values) / len(local_window_values)
         return total_quality

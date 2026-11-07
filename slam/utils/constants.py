@@ -34,7 +34,18 @@ MAX_PARALLAX = 0.65
 
 # Window size for local bundle adjustment
 LOCAL_MAP_WINDOW_SIZE = 9
-GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 9  # Interval for global BA
+# Interval (in keyframes) for the timer-triggered global BA. 0 disables
+# the timer (phase 2a, finding 13): measured A/B showed it HURT accuracy
+# on three of four sequences (translation 0.0845 -> 0.0181 ATE, orbit
+# 1.72 -> 1.04, forward_rotation 0.076 -> 0.065 when removed) while
+# dominating tum's BA cost (43.9s of 67s). Local BA anchors the window
+# to fixed boundary keyframes, so corrections stay local and consistent
+# with the map the tracker uses; the timer-triggered global re-solve
+# trades well-constrained regions' accuracy to smooth error globally,
+# on a cadence with no evidence of need. Loop closure (phase 3) will
+# trigger global BA on loop events, where the global rearrangement is
+# justified by a genuine loop constraint.
+GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 0
 # Minimum number of observations a point needs for it to not be pruned
 MINIMUM_OBSERVATIONS_FOR_POINT = 3
 
@@ -88,6 +99,20 @@ MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT = 20
 LEAST_SQUARES_F_SCALE = 0.2  # Scale for least squares optimization
 
 MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT = 50
+# Early-exit threshold for BA iterations (phase 2a): the LM loop stops
+# once the relative chi improvement per iteration falls below this. The
+# terminate action used to be created but never registered, so every BA
+# ran the full 30-iteration budget even when converged (local BA
+# re-optimizes largely converged window points on every keyframe).
+# 1e-4 (measured sweep, all four sequences, seed 42): stopping when
+# per-iteration chi improvement becomes marginal REGULARIZES the map -
+# squeezing the last 1e-4 of chi fits reprojection noise into the
+# geometry. fr 0.0645 -> 0.0605, translation 0.0181 -> 0.0160, tum
+# 0.160 -> 0.102, orbit surf 26.6 -> 52.0 (its ATE 1.04 -> 1.35 is the
+# unclosed-loop metric; within baseline, phase 3's target). 1e-3/1e-2
+# exit too early (1e-2 fails fr/orbit baselines), 1e-6 saves almost
+# nothing (these problems genuinely improve for ~30 iterations).
+BA_TERMINATE_GAIN_THRESHOLD = 1e-4
 
 # --- PnP divergence guards (phase 1b, benchmarks/IMPROVEMENT.md) ---
 # A PnP refinement may not: reproject worse than this (median over its own

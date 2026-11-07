@@ -19,6 +19,9 @@ Event keys (counted pipeline decisions - deterministic per run):
                               refine_pose_pnp outcomes (all call sites)
   ba_local_call / ba_global_call / ba_success / ba_failure
                               map.optimize BA branch outcomes
+  ba_iterations              total LM iterations actually run by BA
+                              (early-exit via the terminate action makes
+                              this smaller than 30 x ba calls)
   ba_insufficient_observations / ba_global_insufficient_observations /
   ba_no_local_keyframes / ba_too_few_edges / ba_exception
                               BA rejection reasons

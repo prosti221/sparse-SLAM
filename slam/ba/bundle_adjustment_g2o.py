@@ -6,6 +6,7 @@ from slam.core.observation import Observation
 from typing import List, Tuple
 from slam.utils.logger import *
 from slam.utils.constants import *
+from slam.utils import constants as const
 from slam.utils import telemetry
 from uuid import UUID
 from typing import List, Optional, Tuple, List, Dict
@@ -85,7 +86,7 @@ class G2OBundleAdjustment:
         )
         inliers = np.arange(len(points_3d)).reshape(-1, 1)
 
-        if not success or len(inliers) < PNP_MINIMUM_INLIERS:
+        if not success or len(inliers) < const.PNP_MINIMUM_INLIERS:
             telemetry.event("pnp_no_solution" if not success else "pnp_few_inliers")
             warning_log(
                 LOG_TAG, f"PnP failed or not enough inliers: {len(inliers)}")
@@ -110,12 +111,12 @@ class G2OBundleAdjustment:
         obs2d64 = points_2d.astype(np.float64)
         X_cam = (R_refined @ pts64.T).T + t_refined
         front = X_cam[:, 2] > 0
-        if int(front.sum()) < PNP_MINIMUM_INLIERS:
+        if int(front.sum()) < const.PNP_MINIMUM_INLIERS:
             return _reject("behind_camera")
         proj = X_cam[front, :2] / X_cam[front, 2:3]
         median_err = float(np.median(
             np.linalg.norm(proj - obs2d64[front], axis=1)))
-        if median_err > PNP_MAX_MEDIAN_REPROJECTION_ERROR:
+        if median_err > const.PNP_MAX_MEDIAN_REPROJECTION_ERROR:
             return _reject("reprojection")
 
         # A refinement may not teleport or spin the camera: bounds relative
@@ -132,12 +133,12 @@ class G2OBundleAdjustment:
         if int(positive.sum()) == 0:
             return _reject("seed_behind_camera")
         med_depth = float(np.median(X_cam_init[positive, 2]))
-        if center_step > PNP_MAX_CENTER_STEP_RATIO * med_depth:
+        if center_step > const.PNP_MAX_CENTER_STEP_RATIO * med_depth:
             return _reject("center_step")
 
         cos_rot = (np.trace(R_init.T @ R_refined) - 1.0) / 2.0
         rot_step = float(np.degrees(np.arccos(np.clip(cos_rot, -1.0, 1.0))))
-        if rot_step > PNP_MAX_ROTATION_STEP_DEG:
+        if rot_step > const.PNP_MAX_ROTATION_STEP_DEG:
             return _reject("rotation_step")
 
         # Update frame pose
@@ -181,7 +182,7 @@ class G2OBundleAdjustment:
         fixed_kf_ids = involved_kf_ids - \
             {kf.frame_id for kf in local_keyframes}
 
-        if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
+        if len(observations) < const.MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             telemetry.event("ba_insufficient_observations")
             warning_log(
                 LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
@@ -201,7 +202,7 @@ class G2OBundleAdjustment:
         points = self.map.points
         observations = self.map.get_observations(keyframes)
 
-        if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
+        if len(observations) < const.MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
             telemetry.event("ba_global_insufficient_observations")
             warning_log(
                 LOG_TAG, f"Insufficient observations for global BA: {len(observations)}")
@@ -370,9 +371,11 @@ class G2OBundleAdjustment:
             if self.verbose:
                 opt.set_verbose(True)
 
-            # Optimize
+            # Optimize; the returned value is the number of LM iterations
+            # actually performed (early-exit via the terminate action).
             opt.initialize_optimization()
-            opt.optimize(30)
+            iterations = opt.optimize(30)
+            telemetry.event("ba_iterations", int(iterations))
 
             # Update keyframe poses
             self._update_keyframe_poses_from_vertices(frame_to_vertex)
@@ -399,8 +402,16 @@ class G2OBundleAdjustment:
         solver = g2o.OptimizationAlgorithmLevenberg(solver)
 
         terminate = g2o.SparseOptimizerTerminateAction()
-        terminate.set_gain_threshold(1e-6)
+        terminate.set_gain_threshold(const.BA_TERMINATE_GAIN_THRESHOLD)
         opt.set_algorithm(solver)
+        # Early exit at convergence (phase 2a): this action was previously
+        # created but never REGISTERED, so every BA ran the full
+        # 30-iteration budget even once the relative chi gain per
+        # iteration had fallen below the threshold. Local BA re-solves
+        # largely converged maps on every keyframe insertion (the same
+        # window points re-optimized every 2-3 frames), so most of that
+        # budget was spent proving convergence, not improving the map.
+        opt.add_post_iteration_action(terminate)
 
         # Add normalized camera parameters
         cam = g2o.CameraParameters(1.0, (0.0, 0.0), 0)
