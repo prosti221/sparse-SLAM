@@ -59,6 +59,14 @@ LOWE_RATIO = 0.7  # Lowe's ratio test threshold for feature matching
 MATCHER_RANSAC_MINIMUM_INLIERS = 8  # Minimum inliers for RANSAC
 MATCHER_RANSAC_THRESHOLD = 0.005
 MATCHER_RANSAC_PROBABILITY = 0.999  # Probability for RANSAC
+# A cheirality verdict is "decisive" when the winning branch's support
+# exceeds its opposite-translation twin by this ratio. The motion prior may
+# veto decisive verdicts that contradict recent motion (the backward-chain
+# collapse signature); coin-flip verdicts are left alone - their errors are
+# uncorrelated and partially cancel, while prior arbitration would correlate
+# them into drift (measured: translation ATE 1.81 -> 3.31, orbit RPE rot
+# 33 -> 43 deg when the prior arbitrates near-ties).
+MATCHER_PRIOR_DECISIVE_FLIP_RATIO = 2.0
 
 # --- Bundle adjustment constants
 MINIMUM_LOCAL_KEYFRAMES = 2  # Minimum keyframes for local BA

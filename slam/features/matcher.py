@@ -116,7 +116,8 @@ def select_best_model(
         return E, E_mask, "essential"
 
 
-def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str) -> Tuple[List[cv.DMatch], Optional[np.ndarray]]:
+def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
+                   motion_prior: Optional[np.ndarray] = None) -> Tuple[List[cv.DMatch], Optional[np.ndarray]]:
     matcher = _get_or_create_matcher(feature_extraction_method)
 
     f1_kp, f1_desc = frame1.get_keypoints_descriptors()
@@ -147,18 +148,40 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
         E, mask, selected_model = select_best_model(
             pts_f1_norm, pts_f2_norm)
 
-        filtered_matches = [m for i, m in enumerate(
-            good_matches) if mask[i] == 1]
+        if E is None or mask is None or int(np.sum(mask)) < 5:
+            # RANSAC could not estimate a usable model; no geometric pose.
+            # Callers fall back to the kinematic estimate (finding 11: the
+            # old code indexed into a None mask and crashed).
+            telemetry.event("match_no_model")
+            return good_matches, None
 
-        # Recover the relative pose with cv.recoverPose, which resolves the
-        # four-fold essential-matrix ambiguity via a cheirality (positive
-        # depth) check - no sign heuristics, stable for any motion direction.
-        # recoverPose(E, pts1, pts2) returns T_{f2<-f1}: the pose of frame1's
-        # camera expressed in frame2's camera frame. Poses compose directly
-        # with right multiplication:
-        #   Twc_frame1 = Twc_frame2 @ Rt
-        # Translation is unit-normalized (monocular scale).
-        Rt = extractRtFromE(pts_f1_norm, pts_f2_norm, E, np.eye(3))
+        inlier_mask = mask.ravel() == 1
+        filtered_matches = [m for i, m in enumerate(
+            good_matches) if inlier_mask[i]]
+
+        # Recover the relative pose from the essential matrix. The four-fold
+        # ambiguity is resolved by explicit cheirality scoring of all
+        # decompositions, with the constant-velocity motion prior (the
+        # previous frame-to-frame relative pose) breaking the ties that a
+        # cheirality vote alone coin-flips under lateral motion (phase 1a).
+        # Only E-inliers participate: outliers would corrupt both the
+        # cheirality support and the reprojection tiebreak.
+        # Convention: Rt is T_{f2<-f1}, the pose of frame1's camera in
+        # frame2's camera frame, so Twc_f1 = Twc_f2 @ Rt. Translation is
+        # unit-normalized (monocular scale).
+        # Recover the relative pose from the essential matrix. The four-fold
+        # ambiguity is resolved by explicit cheirality scoring of all
+        # decompositions, with the constant-velocity motion prior (the
+        # previous frame-to-frame relative pose) breaking the ties that a
+        # cheirality vote alone coin-flips under lateral motion (phase 1a).
+        # All good matches participate, matching recoverPose's input set
+        # (A/B measured: the E-inlier subset scores the same branches).
+        # Convention: Rt is T_{f2<-f1}, the pose of frame1's camera in
+        # frame2's camera frame, so Twc_f1 = Twc_f2 @ Rt. Translation is
+        # unit-normalized (monocular scale).
+        Rt = extractRtFromE(
+            pts_f1_norm, pts_f2_norm,
+            E, np.eye(3), motion_prior=motion_prior)
 
         debug_log(
             LOG_TAG,
@@ -173,8 +196,10 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
     return good_matches, None
 
 
-def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extraction_method: str) -> Optional[np.ndarray]:
-    matches, Rt = match_features(frame1, frame2, feature_extraction_method)
+def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extraction_method: str,
+                                  motion_prior: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
+    matches, Rt = match_features(frame1, frame2, feature_extraction_method,
+                                 motion_prior=motion_prior)
 
     if len(matches) == 0:
         warning_log(

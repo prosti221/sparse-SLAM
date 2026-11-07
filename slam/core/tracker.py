@@ -58,10 +58,17 @@ class Tracker:
         self.cur_frame.pose = self._get_next_pose_estimate(
             use_kinematic_model=True)
 
-        # Try to refine with feature matching if possible
+        # Try to refine with feature matching if possible. The motion prior
+        # for the essential-matrix disambiguation is the previous
+        # frame-to-frame relative pose (phase 1a); the identity carries no
+        # information (run start / post-reloc reset), so branch selection
+        # is then purely geometric.
+        motion_prior = None if np.array_equal(
+            self.velocity, np.eye(4)) else self.velocity
         with telemetry.stage("match"):
             Rt = match_features_between_frames(
-                self.cur_frame, self.prev_frame, self.feature_extraction_method)
+                self.cur_frame, self.prev_frame, self.feature_extraction_method,
+                motion_prior=motion_prior)
         if Rt is not None:
             # Refine the kinematic estimate with the feature-based relative
             # pose: Twc_cur = Twc_prev @ T_{prev<-cur}

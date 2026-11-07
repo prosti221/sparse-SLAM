@@ -53,15 +53,143 @@ def normalize(pts, Kinv):
     return np.dot(Kinv, add_ones(pts).T).T[:, :2]
 
 
-def extractRtFromE(pts1, pts2, E, K):
+def _prior_t_flip_penalty(t, prior):
+    """Penalty (0 or 180 degrees) for a candidate translation opposing the
+    motion prior's direction.
 
-    # Extract rotation and translation
-    _, R, t, _ = cv.recoverPose(E, pts1, pts2, K)
+    The prior arbitrates ONLY the +-t choice, not the R1/R2 twist: the +-t
+    flip is where cheirality measurably anti-correlates with truth under
+    degenerate baselines (measured: true branch 140/3071 vs backward branch
+    2931/3071 support), while the R1/R2 twist is well-resolved by cheirality
+    except on exact planar ties - and there, the true family is almost
+    always R1 (the twist is a 180 deg rotation), which the fixed candidate
+    order already prefers. Arbitrating R1/R2 with the prior's own rotation
+    locks a drifting estimate into the twisted branch (measured: orbit RPE
+    rot 33 -> 43 deg).
 
+    A prior with (near-)zero translation carries no direction information
+    (rotation-dominant motion); the penalty is then skipped.
+    """
+    t_p = np.asarray(prior[:3, 3], dtype=float)
+    t_p_norm = np.linalg.norm(t_p)
+    if t_p_norm > 1e-12 and float(np.dot(t, t_p)) < 0.0:
+        return 180.0
+    return 0.0
+
+
+def extractRtFromE(pts1, pts2, E, K, motion_prior=None):
+    """Recover the relative pose T_{f2<-f1} from an essential matrix.
+
+    cv.recoverPose resolves the four-fold ambiguity (R1, R2, +/-t) with a
+    cheirality vote alone. Under lateral motion over a dominant plane,
+    noisy features let a wrong branch win that vote - the pose chain then
+    steps backward and diverges (finding 8 / phase 1a,
+    benchmarks/IMPROVEMENT.md).
+
+    Instead, all four decompositions are scored explicitly:
+    1. geometric viability: a candidate must triangulate a meaningful
+       number of points in front of both cameras (>= max(5, 2% of the
+       winner's support)),
+    2. the cheirality verdict on the +-t flip is DECISIVE when the winning
+       branch out-supports its opposite-translation twin by
+       MATCHER_PRIOR_DECISIVE_FLIP_RATIO. Only then may the
+       constant-velocity motion prior (the previous frame-to-frame
+       relative pose) veto it: a decisive verdict opposing the recent
+       motion direction is the backward-chain collapse signature
+       (finding 8). Coin-flip verdicts are left alone - their errors are
+       uncorrelated and partially cancel, while prior arbitration would
+       correlate them into drift (measured: translation ATE 1.81 -> 3.31,
+       orbit RPE rot 33 -> 43 deg),
+    3. support count and fixed candidate order break ties
+       deterministically, matching recoverPose's empirically correct
+       first-match behavior. Reprojection error is deliberately NOT a
+       tiebreak: over a dominant plane the twisted pair earns exactly
+       equal cheirality support AND near-equal reprojection, so it
+       decides such ties by noise (measured: orbit RPE rot 25 -> 43).
+
+    A prior cannot override clear geometry: with a single viable
+    candidate the selection is purely geometric (a wrong prior can never
+    corrupt a good estimate).
+
+    Returns T_{f2<-f1} as a 4x4 matrix, translation unit-normalized
+    (monocular scale). Convention: X_f2 = R @ X_f1 + t, so camera-to-world
+    poses compose as Twc_f1 = Twc_f2 @ Rt.
+    """
+    pts1 = np.asarray(pts1, dtype=float).reshape(-1, 2)
+    pts2 = np.asarray(pts2, dtype=float).reshape(-1, 2)
+    K = np.asarray(K, dtype=float)
+
+    R1, R2, t = cv.decomposeEssentialMat(E)
+    t = np.asarray(t, dtype=float).flatten()
+    candidates = [(R1, t), (R1, -t), (R2, t), (R2, -t)]
+
+    P1 = K @ np.eye(3, 4)
+    scores = []  # (support, reproj_error, R, t) per candidate
+    for R_c, t_c in candidates:
+        P2 = K @ np.hstack([R_c, t_c.reshape(3, 1)])
+        points_4d = triangulate(P1, P2, pts1, pts2)
+        w = points_4d[:, 3]
+        finite = np.abs(w) > 1e-9
+        X1 = np.full((len(points_4d), 3), np.nan)
+        X1[finite] = points_4d[finite, :3] / w[finite, None]
+        X2 = (R_c @ X1[finite].T).T + t_c
+
+        in_front = (X1[finite, 2] > 0) & (X2[:, 2] > 0)
+        support = int(in_front.sum())
+        if support > 0:
+            proj1 = X1[finite][in_front, :2] / X1[finite][in_front, 2:3]
+            proj2 = X2[in_front, :2] / X2[in_front, 2:3]
+            errs = np.concatenate([
+                np.linalg.norm(proj1 - pts1[finite][in_front], axis=1),
+                np.linalg.norm(proj2 - pts2[finite][in_front], axis=1)])
+            reproj = float(np.mean(errs))
+        else:
+            reproj = float("inf")
+        scores.append((support, reproj, R_c, t_c))
+
+    best_support = max(s[0] for s in scores)
+    if best_support == 0:
+        # Degenerate E: no candidate has cheirality support. Match the
+        # pre-1a behavior (recoverPose's answer) and let the caller's
+        # guards handle the rest.
+        _, R, t_rec, _ = cv.recoverPose(E, pts1, pts2, K)
+        ret = np.eye(4)
+        ret[:3, :3] = R
+        ret[:3, 3] = t_rec.flatten()
+        return ret
+
+    # Geometric viability floor - deliberately tiny relative to the winner
+    # (see docstring: under degenerate baselines the cheirality vote is
+    # noise-driven and can anti-correlate with the true branch).
+    support_floor = max(5.0, 0.02 * best_support)
+    viable = [i for i, s in enumerate(scores) if s[0] >= support_floor]
+    if not viable:
+        # No candidate reaches the floor (best support < 5 points): fall
+        # back to the geometric winner rather than nothing.
+        viable = [max(range(len(scores)), key=lambda i: scores[i][0])]
+
+    # Decisiveness of the cheirality verdict on the +-t flip: ratio of the
+    # winner's support to its opposite-translation twin's. Only decisive
+    # verdicts may be vetoed by the motion prior (see docstring + the
+    # MATCHER_PRIOR_DECISIVE_FLIP_RATIO constant).
+    winner_idx = max(range(len(scores)), key=lambda i: scores[i][0])
+    winner_sign = 1 if winner_idx in (0, 2) else -1
+    opposite_support = max(
+        (scores[i][0] for i in range(len(scores))
+         if (1 if i in (0, 2) else -1) != winner_sign), default=0)
+    decisive = scores[winner_idx][0] >= \
+        MATCHER_PRIOR_DECISIVE_FLIP_RATIO * max(opposite_support, 1)
+
+    if motion_prior is not None and len(viable) > 1 and decisive:
+        chosen = min(viable, key=lambda i: (
+            _prior_t_flip_penalty(scores[i][3], motion_prior),
+            -scores[i][0], i))
+    else:
+        chosen = min(viable, key=lambda i: (-scores[i][0], i))
+    _, _, R_c, t_c = scores[chosen]
     ret = np.eye(4)
-    ret[:3, :3] = R
-    ret[:3, 3] = t.flatten()
-
+    ret[:3, :3] = R_c
+    ret[:3, 3] = t_c
     return ret
 
 
