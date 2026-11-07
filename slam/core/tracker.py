@@ -88,10 +88,24 @@ class Tracker:
         with telemetry.stage("proj_match"):
             observations = self._match_projected_points(projected_points)
 
-        # Refine pose using motion-only bundle adjustment if we have enough observations
+        # Register the projection matches (map-point side AND frame side)
+        # before pose refinement: refine_pose_pnp reads the frame's
+        # observations. This registration used to happen inside
+        # _handle_keyframe_insertion - i.e. AFTER the per-frame PnP - which
+        # is why that PnP read the previous keyframe's stale observations
+        # and refined the wrong frame entirely (finding 9).
+        for obs in observations:
+            obs.point.add_observation(obs)
+
+        # Refine the current frame's pose against the map. The E-chained
+        # estimate is only the SEED; PnP over the frame's map-point
+        # observations is the map-anchoring step - the long-baseline
+        # constraint that per-frame essential matrices cannot provide
+        # (finding 12). Divergent solutions are guarded and rejected.
         if len(observations) >= 10:
             with telemetry.stage("pnp"):
-                pose_refined = self.map.g2o_optimizer.refine_pose_pnp()
+                pose_refined = self.map.g2o_optimizer.refine_pose_pnp(
+                    self.cur_frame)
             telemetry.event("pnp_frame_ok" if pose_refined else "pnp_frame_fail")
             if pose_refined:
                 debug_log(
@@ -100,7 +114,7 @@ class Tracker:
                 debug_log(LOG_TAG, "Pose refinement failed")
 
         # Check & handle keyframe insertion criteria
-        self._handle_keyframe_insertion(observations)
+        self._handle_keyframe_insertion()
 
         # Periodic loop closure detection
         self._handle_loop_closure_detection()
@@ -160,11 +174,9 @@ class Tracker:
         debug_log(
             LOG_TAG, f"Removing duplicate points before triangulation. From {pre_filter_length} to {len(self.cur_frame.matches)}")
 
-    def _handle_keyframe_insertion(self, observations: List[Observation]):
-        # Update the observations retrieved from matching by projection
-        for obs in observations:
-            obs.point.add_observation(obs)
-
+    def _handle_keyframe_insertion(self):
+        # Observations were already registered in update() before the
+        # per-frame PnP (see finding 9 notes there).
         should_insert, result = should_insert_keyframe(
             self.cur_frame, self.map.cur_keyframe)
 

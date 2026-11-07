@@ -77,6 +77,17 @@ LEAST_SQUARES_F_SCALE = 0.2  # Scale for least squares optimization
 
 MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT = 50
 
+# --- PnP divergence guards (phase 1b, benchmarks/IMPROVEMENT.md) ---
+# A PnP refinement may not: reproject worse than this (median over its own
+# observations, normalized coords), move the camera farther than this
+# fraction of the median observed depth, or rotate more than this many
+# degrees from the seed pose. Violations are rejected and the frame keeps
+# its seed pose - a diverged PnP must never poison the map (measured
+# pre-1b: keyframe PnP diverging to |t| ~ 2e4, 12x beyond MAX_DEPTH).
+PNP_MAX_MEDIAN_REPROJECTION_ERROR = 0.02  # ~9 px at fx=450
+PNP_MAX_CENTER_STEP_RATIO = 0.5          # of median observed depth
+PNP_MAX_ROTATION_STEP_DEG = 20.0
+
 # --- Renderer constants
 TRACKING_QUALITY_GRADIENT = {
     'min_hue': 0.0,    # Red (poor tracking)

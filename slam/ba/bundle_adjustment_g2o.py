@@ -19,11 +19,34 @@ class G2OBundleAdjustment:
         self.verbose = verbose
         self.map = map
 
-    def refine_pose_pnp(self):
+    def refine_pose_pnp(self, frame: Frame = None):
+        """Refine a frame's pose with PnP over its map-point observations.
+
+        `frame=None` refines the map's current keyframe (the keyframe path
+        via Map.optimize). The tracker passes the CURRENT frame: finding 9
+        was precisely this call reading and writing the PREVIOUS keyframe
+        instead, so per-frame refinement never applied to the tracked
+        trajectory - and every frame re-solved an already-converged stale
+        problem (~500 wasted solves on TUM).
+
+        Divergence guards (phase 1b): a solution that is non-finite,
+        reprojects worse than PNP_MAX_MEDIAN_REPROJECTION_ERROR over its
+        own observations, moves the camera more than
+        PNP_MAX_CENTER_STEP_RATIO of the median observed depth, or rotates
+        more than PNP_MAX_ROTATION_STEP_DEG from the seed is rejected - the
+        frame keeps its seed pose.
+        """
+        if frame is None:
+            frame = self.map.cur_keyframe
+        if frame is None:
+            telemetry.event("pnp_no_frame")
+            warning_log(LOG_TAG, "No frame given for pose refinement")
+            return False, 0
+
         points_3d = []
         points_2d = []
 
-        for obs in self.map.cur_keyframe.observed_points.values():
+        for obs in frame.observed_points.values():
             points_3d.append(obs.pt_3d)
             points_2d.append(obs.pt_2d_norm)
 
@@ -41,13 +64,14 @@ class G2OBundleAdjustment:
         # inverse of the camera-to-world pose stored on the frame. Seeding
         # with the pose directly inverts rotation/translation and can push
         # the iterative solver into a mirrored local minimum.
-        T_cw_init = np.linalg.inv(self.map.cur_keyframe.pose)
+        seed_pose = frame.pose  # Twc
+        T_cw_init = np.linalg.inv(seed_pose)
         R_init = T_cw_init[:3, :3]
         t_init = T_cw_init[:3, 3]
 
         rvec_init, _ = cv.Rodrigues(R_init)
         rvec_init = np.array(rvec_init, dtype=np.float32).reshape(3, 1)
-        t_init = np.array(t_init, dtype=np.float32).reshape(3, 1)
+        t_init_f = np.array(t_init, dtype=np.float32).reshape(3, 1)
 
         success, rvec, tvec = cv.solvePnP(
             points_3d,
@@ -55,7 +79,7 @@ class G2OBundleAdjustment:
             np.eye(3),
             distCoeffs=np.zeros(5),
             rvec=rvec_init,
-            tvec=t_init,
+            tvec=t_init_f,
             useExtrinsicGuess=True,
             flags=cv.SOLVEPNP_ITERATIVE
         )
@@ -67,14 +91,62 @@ class G2OBundleAdjustment:
                 LOG_TAG, f"PnP failed or not enough inliers: {len(inliers)}")
             return False, len(inliers)
 
-        # Update frame pose
         R_refined, _ = cv.Rodrigues(rvec)
-        pose = np.eye(4)
-        pose[:3, :3] = R_refined
-        pose[:3, 3] = tvec.flatten()
-        self.map.cur_keyframe.pose = np.linalg.inv(pose)
+        t_refined = np.asarray(tvec, dtype=np.float64).flatten()
 
-        debug_log(LOG_TAG, f"Pose refined with {len(inliers)} inliers.")
+        def _reject(reason: str):
+            telemetry.event(f"pnp_guard_{reason}")
+            warning_log(
+                LOG_TAG, f"PnP guard rejected solution ({reason}) - keeping seed pose")
+            return False, len(inliers)
+
+        # --- Divergence guards: reject and keep the seed pose ---
+        if not (np.all(np.isfinite(R_refined)) and np.all(np.isfinite(t_refined))):
+            return _reject("nonfinite")
+
+        # Reprojection quality of the solution over its own observations
+        # (median: robust to a minority of mismatched observations).
+        pts64 = points_3d.astype(np.float64)
+        obs2d64 = points_2d.astype(np.float64)
+        X_cam = (R_refined @ pts64.T).T + t_refined
+        front = X_cam[:, 2] > 0
+        if int(front.sum()) < PNP_MINIMUM_INLIERS:
+            return _reject("behind_camera")
+        proj = X_cam[front, :2] / X_cam[front, 2:3]
+        median_err = float(np.median(
+            np.linalg.norm(proj - obs2d64[front], axis=1)))
+        if median_err > PNP_MAX_MEDIAN_REPROJECTION_ERROR:
+            return _reject("reprojection")
+
+        # A refinement may not teleport or spin the camera: bounds relative
+        # to the seed pose and the observed scene depth.
+        T_cw_refined = np.eye(4)
+        T_cw_refined[:3, :3] = R_refined
+        T_cw_refined[:3, 3] = t_refined
+        refined_pose = np.linalg.inv(T_cw_refined)  # Twc
+        center_step = float(np.linalg.norm(
+            refined_pose[:3, 3] - seed_pose[:3, 3]))
+
+        X_cam_init = (R_init @ pts64.T).T + t_init
+        positive = X_cam_init[:, 2] > 0
+        if int(positive.sum()) == 0:
+            return _reject("seed_behind_camera")
+        med_depth = float(np.median(X_cam_init[positive, 2]))
+        if center_step > PNP_MAX_CENTER_STEP_RATIO * med_depth:
+            return _reject("center_step")
+
+        cos_rot = (np.trace(R_init.T @ R_refined) - 1.0) / 2.0
+        rot_step = float(np.degrees(np.arccos(np.clip(cos_rot, -1.0, 1.0))))
+        if rot_step > PNP_MAX_ROTATION_STEP_DEG:
+            return _reject("rotation_step")
+
+        # Update frame pose
+        frame.pose = refined_pose
+
+        debug_log(LOG_TAG, f"Pose refined with {len(inliers)} inliers "
+                           f"(median reproj {median_err:.5f}, "
+                           f"center step {center_step:.3f}, "
+                           f"rot step {rot_step:.2f} deg).")
         telemetry.event("pnp_ok")
 
         return True, len(inliers)

@@ -1,10 +1,17 @@
 """Stage tests: PnP pose refinement and local bundle adjustment.
 
-Regressions for two fixed bugs:
+Regressions for three fixed bugs:
 - refine_pose_pnp must be seeded with the world-to-camera transform
   (the inverse of the stored Twc) and must write back camera-to-world.
+- refine_pose_pnp must refine the frame it is GIVEN (the tracker passes
+  the current frame) - it used to read/write the map's previous keyframe,
+  so per-frame refinement never applied to the tracked trajectory
+  (finding 9, phase 1b).
 - local BA must be anchored: keyframes outside the window are fixed
   vertices, so the window cannot drift rigidly at zero reprojection cost.
+- Divergent PnP solutions (unexplainable observations, teleporting
+  refinements) must be rejected by the guards, keeping the seed pose
+  (phase 1b).
 """
 import numpy as np
 import pytest
@@ -59,6 +66,97 @@ def test_refine_pose_pnp_recovers_perturbed_pose():
     assert inliers >= 10
     assert _rot_error(kf.pose[:3, :3], T_true[:3, :3]) < 0.2
     assert np.linalg.norm(kf.pose[:3, 3] - T_true[:3, 3]) < 0.02
+
+
+def test_refine_pose_pnp_targets_requested_frame():
+    """Finding 9 regression (phase 1b): refine_pose_pnp must refine the
+    frame it is GIVEN - the tracker's current frame - and must not touch
+    the map's previous keyframe. Pre-1b this call read the previous
+    keyframe's observations and wrote the previous keyframe's pose, so
+    per-frame refinement never applied to the tracked trajectory."""
+    K = make_K()
+    T_true = yaw_pose(0.2, (1.0, 2.0, 5.0))
+    world_points = make_world_points(40, z_range=(8.0, 12.0))
+
+    m, kf = _build_keyframe_map(T_true, world_points, K)
+    kf_pose_before = kf.pose.copy()
+
+    # A separate current frame: its keypoints are the TRUE projections of
+    # the map points (real image measurements), but its stored pose is a
+    # perturbed E-chain estimate - exactly the tracker's situation.
+    cur = make_frame(T_true, K)
+    uvs = [project_gt(T_true, X, K)[0] for X in world_points]
+    set_keypoints(cur, uvs)
+    for i, pt in enumerate(m.points):
+        pt.add_observation(Observation(cur, pt, i))
+    perturb = se3(Rotation.from_euler("y", np.radians(1.5)).as_matrix(),
+                  np.array([0.03, -0.02, 0.04]))
+    cur.pose = T_true @ perturb
+
+    ok, inliers = m.g2o_optimizer.refine_pose_pnp(cur)
+
+    assert ok
+    assert _rot_error(cur.pose[:3, :3], T_true[:3, :3]) < 0.2
+    assert np.linalg.norm(cur.pose[:3, 3] - T_true[:3, 3]) < 0.02
+    # The keyframe is a DIFFERENT frame: it must be untouched.
+    assert np.allclose(kf.pose, kf_pose_before, atol=1e-12), \
+        "refine_pose_pnp(cur) must not move the previous keyframe"
+
+
+def test_pnp_guards_reject_divergent_solution():
+    """Phase 1b: observations no pose can explain (all corrupted by
+    large random offsets) must yield a rejection, and the frame must
+    keep its seed pose - a diverged PnP must never poison the map."""
+    K = make_K()
+    T_seed = yaw_pose(0.2, (1.0, 2.0, 5.0))
+    world_points = make_world_points(40, z_range=(8.0, 12.0))
+
+    m, kf = _build_keyframe_map(T_seed, world_points, K)
+
+    cur = make_frame(T_seed, K)
+    rng = np.random.default_rng(11)
+    uvs = []
+    for X in world_points:
+        uv, _ = project_gt(T_seed, X, K)
+        uvs.append(uv + rng.uniform(30.0, 60.0, size=2))
+    set_keypoints(cur, uvs)
+    for i, pt in enumerate(m.points):
+        pt.add_observation(Observation(cur, pt, i))
+    seed_pose = cur.pose.copy()
+
+    ok, _ = m.g2o_optimizer.refine_pose_pnp(cur)
+
+    assert not ok
+    assert np.allclose(cur.pose, seed_pose, atol=1e-12), \
+        "seed pose must be kept when guards reject"
+
+
+def test_pnp_guards_reject_teleporting_solution():
+    """Phase 1b: a 'refinement' that teleports the camera (center step
+    far beyond the observed scene depth) is rejected even if the target
+    is geometrically consistent - refinement must correct, not relocate
+    (the pre-1b divergence mode reached |t| ~ 2e4)."""
+    K = make_K()
+    T_true = yaw_pose(0.2, (1.0, 2.0, 5.0))
+    world_points = make_world_points(40, z_range=(8.0, 12.0))
+
+    m, kf = _build_keyframe_map(T_true, world_points, K)
+
+    # Observations come from T_true, but the stored seed is ~60 units away:
+    # any consistent solution is a teleport relative to the seed.
+    cur = make_frame(T_true, K)
+    uvs = [project_gt(T_true, X, K)[0] for X in world_points]
+    set_keypoints(cur, uvs)
+    for i, pt in enumerate(m.points):
+        pt.add_observation(Observation(cur, pt, i))
+    cur.pose = yaw_pose(0.0, (60.0, 0.0, 0.0))
+    seed_pose = cur.pose.copy()
+
+    ok, _ = m.g2o_optimizer.refine_pose_pnp(cur)
+
+    assert not ok
+    assert np.allclose(cur.pose, seed_pose, atol=1e-12), \
+        "seed pose must be kept when the refinement teleports"
 
 
 def _build_trajectory_map(n_keyframes, world_points, K):
