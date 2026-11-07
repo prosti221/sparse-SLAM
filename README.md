@@ -27,10 +27,18 @@ This is using the SuperPoint feature extractor. Generates tons of good keypoints
 https://github.com/user-attachments/assets/cb612c58-9a4e-4216-81dc-7656cf5de836
 
 ## Setup and run
-Install the required dependencies, ideally in a new environment:
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management. Install uv, then run:
 
 ```bash
-pip install -r requirements.txt
+uv run python slam.py
+```
+
+On the first run, uv automatically downloads the pinned Python version (see `.python-version`), creates a virtual environment, and installs all dependencies.
+
+**macOS note:** the Open3D wheel requires `libusb` at runtime. If `import open3d` fails with a dylib error, install it with Homebrew:
+
+```bash
+brew install libusb
 ```
 
 The weights for SuperPoint are already provided in the repo.
@@ -60,7 +68,7 @@ videos:
 ## Example: TUM RGBD Dataset
 1. Download the [TUM RGBD dataset](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download)
 2. Configure the dataset path in ```config.yaml```
-3. Run ```python slam.py```
+3. Run ```uv run python slam.py```
 
 ## Dependencies
 - OpenCV

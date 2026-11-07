@@ -1,9 +1,0 @@
-opencv-python
-numpy
-open3d
-colorama
-g2o-python
-scipy
-torch
-torchvision
-scikit-image

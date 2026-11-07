@@ -2,8 +2,12 @@
 __pycache__/
 *.py[cod]
 
+# uv virtual environment
+.venv/
+
 output/
 videos/
+data/
 slam/depth_estimation/
 slam/external/
 weights/

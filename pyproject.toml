@@ -1,0 +1,21 @@
+[project]
+name = "sparse-slam"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "colorama>=0.4.6",
+    "g2o-python>=0.0.12",
+    "numpy<2",
+    "open3d>=0.20.0",
+    "opencv-python>=4,<5",
+    "pyyaml>=6.0.3",
+    "scikit-image>=0.26.0",
+    "scipy>=1.17.1",
+    "torch>=2.15.0",
+    "torchvision>=0.29.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
