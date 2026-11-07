@@ -165,6 +165,11 @@ class G2OBundleAdjustment:
 
         # Local points: every map point observed by a window keyframe.
         # Kept in map insertion order so the optimization is deterministic.
+        # (A phase-2d experiment restricted this set to points with >= 2
+        # window observations - REJECTED: fast-rotating sequences never
+        # re-observe points, so most points have exactly one window
+        # observation by construction, and orbit's map collapsed to 2
+        # keyframes / surf 0%. See benchmarks/IMPROVEMENT.md "Phase 2d".)
         local_point_set = self.map.get_local_points(local_keyframes)
         local_points = [p for p in self.map.points if p in local_point_set]
 

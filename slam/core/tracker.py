@@ -204,17 +204,26 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _project_visible_map_points(self) -> List[Tuple[Point, np.ndarray]]:
-        projected_points = []
+        # Phase 2c: batch-projected. The previous per-point loop called
+        # project_point for every map point every frame (a 4x4 @ 4 GEMV
+        # each, ~800 frames x 10k points on TUM); Frame.project_points
+        # does the same math as one GEMM. In-front filtering matches the
+        # old per-point semantics exactly (behind-camera -> skipped).
+        if not self.map.points:
+            return []
 
-        for mp in self.map.points:
-            pt_3d = mp.pt_3d
-            # Project the 3D point to the current frame as pixel image coordinates (u, v)
-            projected_point = self.cur_frame.project_point(
-                pt_3d, normalized=False)
-            if projected_point is None:
+        pts_3d = np.empty((len(self.map.points), 3), dtype=np.float64)
+        for i, mp in enumerate(self.map.points):
+            pts_3d[i] = mp.pt_3d
+
+        uv = self.cur_frame.project_points(pts_3d, normalized=False)
+
+        projected_points = []
+        for mp, (u, v) in zip(self.map.points, uv):
+            # project_points writes NaN for behind-camera points.
+            if not (np.isfinite(u) and np.isfinite(v)):
                 continue
-            projected_points.append(
-                (mp, projected_point))
+            projected_points.append((mp, np.array([u, v])))
 
         return projected_points
 
@@ -233,9 +242,17 @@ class Tracker:
 
         tree = cKDTree(kp_coords)
 
+        # Phase 2c: visibility bounds on the ALREADY projected pixel
+        # coordinates (same margin-10 bounds semantics as the previous
+        # is_point_visible call, which re-projected every map point a
+        # second time per frame - the second of the projection costs).
+        H, W = self.cur_frame.image.shape[:2]
+        margin = 10
+
         for mp, (u_proj, v_proj) in projected_points:
             # If the points are out of bounds, we skip.
-            if not self.cur_frame.is_point_visible(mp.pt_3d):
+            if not (margin <= u_proj < W - margin and
+                    margin <= v_proj < H - margin):
                 continue
 
             if self.cur_frame in mp.observations:
