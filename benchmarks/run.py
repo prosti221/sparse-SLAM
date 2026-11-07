@@ -106,6 +106,64 @@ def print_table(results: dict) -> None:
         print(" ".join(str(v).ljust(w) for v, (_, w) in zip(row, columns)))
 
 
+# Non-overlapping pipeline stages (see benchmarks/IMPROVEMENT.md phase 0);
+# "other" = measured wall time not covered by any stage.
+PROFILE_STAGES = ["extract", "match", "project", "proj_match", "pnp",
+                   "kf_match", "map_optimize", "triangulate", "relocate",
+                   "other"]
+
+
+def print_profile_table(results: dict) -> None:
+    """Where does the time go? Milliseconds per frame, per stage."""
+    columns = [("sequence", 18)] + [(s, 11) for s in PROFILE_STAGES] + [("fps", 6)]
+    header = " ".join(name.ljust(width) for name, width in columns)
+    print("\n-- profile (ms/frame) --")
+    print(header)
+    print("-" * len(header))
+    for seq, m in results.items():
+        timing = m.get("timing_ms_per_frame", {})
+        row = [seq] + [_cell(timing.get(s), ".1f") for s in PROFILE_STAGES] \
+            + [_cell(m["fps"], ".1f")]
+        print(" ".join(str(v).ljust(w) for v, (_, w) in zip(row, columns)))
+
+
+def print_diagnostics_table(results: dict) -> None:
+    """What happened along the way? Event counts + collapse tripwire."""
+    event_keys = {
+        "match_fb": "match_fallback",
+        "pnp_ok": "pnp_frame_ok",
+        "pnp_fail": "pnp_frame_fail",
+        "ba": "ba_local_call",
+        "ba_fail": "ba_failure",
+        "tri_ok": "tri_accepted",
+        "tri_rej": "tri_rejected",
+    }
+    columns = [("sequence", 18), ("match_fb", 9), ("pnp_ok", 7),
+               ("pnp_fail", 8), ("ba", 5), ("ba_fail", 7),
+               ("tri_ok", 8), ("tri_rej", 8), ("reloc", 6),
+               ("resets", 6), ("max_jump", 9)]
+    header = " ".join(name.ljust(width) for name, width in columns)
+    print("\n-- diagnostics (counts; ba counts local+global calls) --")
+    print(header)
+    print("-" * len(header))
+    for seq, m in results.items():
+        ev = m.get("events", {})
+        row = [seq]
+        for label, _ in columns[1:]:
+            if label == "ba":
+                row.append(str(ev.get("ba_local_call", 0) + ev.get("ba_global_call", 0)))
+            elif label == "reloc":
+                row.append(str(ev.get("reloc_success", 0)
+                               + ev.get("reloc_aggressive_success", 0)))
+            elif label == "resets":
+                row.append(str(m["resets"]))
+            elif label == "max_jump":
+                row.append(_cell(m.get("max_pose_jump"), ".2f"))
+            else:
+                row.append(str(ev.get(event_keys[label], 0)))
+        print(" ".join(str(v).ljust(w) for v, (_, w) in zip(row, columns)))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sequences", nargs="+", default=DEFAULT_SEQUENCES,
@@ -131,6 +189,8 @@ def main() -> int:
         print(f"[bench] '{name}' done in {time.perf_counter() - t0:.1f}s", flush=True)
 
     print_table(results)
+    print_profile_table(results)
+    print_diagnostics_table(results)
 
     # Persist a machine-readable report
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -144,7 +204,8 @@ def main() -> int:
     if args.update_baselines:
         with open(BASELINES_FILE, "w") as f:
             json.dump({"seed": args.seed, "thresholds": {
-                seq: {k: round(float(v), 4) for k, v in m.items()}
+                seq: {k: (round(float(v), 4) if isinstance(v, (int, float)) else v)
+                      for k, v in m.items()}
                 for seq, m in results.items()}}, f, indent=2)
         print(f"[bench] baselines updated: {BASELINES_FILE}")
 

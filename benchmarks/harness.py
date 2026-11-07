@@ -18,6 +18,7 @@ import slam.utils.logger as slam_logger
 from slam.core.frame import Frame
 from slam.core.map import Map
 from slam.core.tracker import Tracker
+from slam.utils import telemetry
 
 
 @dataclass
@@ -29,6 +30,8 @@ class RunResult:
     num_keyframes: int
     resets: int
     seconds: float
+    telemetry: dict = field(default_factory=dict)
+    # telemetry snapshot: stage_seconds / stage_calls / events
 
     @property
     def fps(self) -> float:
@@ -85,21 +88,31 @@ def run_slam(dataset_dir: Path,
     poses: List[np.ndarray] = []
     keyframe_indices: List[int] = []
     steps: List[int] = []
+
+    # Attach the telemetry recorder for this run only. It is a pure
+    # observer: stages time call sites, events count pipeline decisions;
+    # nothing here can perturb the pipeline's numerics.
+    recorder = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(recorder)
+
     t_start = time.perf_counter()
+    try:
+        for i, frame_file in enumerate(frame_files):
+            img = cv.imread(str(frame_file))
+            if img is None:
+                raise IOError(f"Failed to read frame: {frame_file}")
+            frame = Frame(img, K)
+            is_new_keyframe = tracker.update(frame)
 
-    for i, frame_file in enumerate(frame_files):
-        img = cv.imread(str(frame_file))
-        if img is None:
-            raise IOError(f"Failed to read frame: {frame_file}")
-        frame = Frame(img, K)
-        is_new_keyframe = tracker.update(frame)
-
-        poses.append(tracker.cur_frame.pose)
-        steps.append(tracker.step)
-        if is_new_keyframe:
-            keyframe_indices.append(i)
-
-    elapsed = time.perf_counter() - t_start
+            poses.append(tracker.cur_frame.pose)
+            steps.append(tracker.step)
+            if is_new_keyframe:
+                keyframe_indices.append(i)
+    finally:
+        elapsed = time.perf_counter() - t_start
+        # Always detach, even on crashes, so no recorder ever leaks into
+        # subsequent runs/tests in this process.
+        telemetry.set_recorder(None)
 
     resets = int(sum(1 for a, b in zip(steps, steps[1:]) if b < a))
     if world_map.points:
@@ -115,4 +128,5 @@ def run_slam(dataset_dir: Path,
         num_keyframes=len(world_map.keyframes),
         resets=resets,
         seconds=elapsed,
+        telemetry=recorder.snapshot(),
     )

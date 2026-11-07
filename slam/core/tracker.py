@@ -12,6 +12,7 @@ from slam.core.observation import Observation
 from slam.utils.utils import *
 from slam.utils.constants import *
 from slam.utils.logger import *
+from slam.utils import telemetry
 from slam.features.matcher import *
 from slam.features.feature_extractor import FeatureExtractor
 from slam.loop_closure import LoopClosureCandidate
@@ -39,8 +40,9 @@ class Tracker:
 
     def update(self, new_frame: Frame) -> bool:
         # Extract features from the new frame
-        new_kps, new_descs = self.feature_extractor.extract(
-            new_frame.gray_image)
+        with telemetry.stage("extract"):
+            new_kps, new_descs = self.feature_extractor.extract(
+                new_frame.gray_image)
         new_frame.set_features(new_kps, new_descs)
 
         # If this is the first frame, initialize the current frame
@@ -57,8 +59,9 @@ class Tracker:
             use_kinematic_model=True)
 
         # Try to refine with feature matching if possible
-        Rt = match_features_between_frames(
-            self.cur_frame, self.prev_frame, self.feature_extraction_method)
+        with telemetry.stage("match"):
+            Rt = match_features_between_frames(
+                self.cur_frame, self.prev_frame, self.feature_extraction_method)
         if Rt is not None:
             # Refine the kinematic estimate with the feature-based relative
             # pose: Twc_cur = Twc_prev @ T_{prev<-cur}
@@ -66,18 +69,23 @@ class Tracker:
             self.cur_frame.pose = refined_pose
             debug_log(LOG_TAG, "Pose estimate refined with feature matching")
         else:
+            telemetry.event("match_fallback")
             debug_log(
                 LOG_TAG, "Using kinematic pose estimate (feature matching failed)")
 
         # Project the visible map points onto current frame for matching by projection
-        projected_points = self._project_visible_map_points()
+        with telemetry.stage("project"):
+            projected_points = self._project_visible_map_points()
 
         # Match the projected points with the current frame's keypoints
-        observations = self._match_projected_points(projected_points)
+        with telemetry.stage("proj_match"):
+            observations = self._match_projected_points(projected_points)
 
         # Refine pose using motion-only bundle adjustment if we have enough observations
         if len(observations) >= 10:
-            pose_refined = self.map.g2o_optimizer.refine_pose_pnp()
+            with telemetry.stage("pnp"):
+                pose_refined = self.map.g2o_optimizer.refine_pose_pnp()
+            telemetry.event("pnp_frame_ok" if pose_refined else "pnp_frame_fail")
             if pose_refined:
                 debug_log(
                     LOG_TAG, f"Pose refined with PnP using {len(observations)} observations")
@@ -99,7 +107,8 @@ class Tracker:
             self.prev_frame.pose) @ self.cur_frame.pose
 
         # Check for relocalization if tracking quality is consistently low
-        self._handle_relocalization_check()
+        with telemetry.stage("relocate"):
+            self._handle_relocalization_check()
 
         return self.cur_frame.is_keyframe
 
@@ -112,9 +121,11 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _on_keyframe_inserted(self):
-        self.map.optimize(self.enable_ba)
+        with telemetry.stage("map_optimize"):
+            self.map.optimize(self.enable_ba)
 
-        triangulated_points = self._triangulate()
+        with telemetry.stage("triangulate"):
+            triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
 
     def _filter_duplicate_keypoints(self):
@@ -158,8 +169,9 @@ class Tracker:
             LOG_TAG, f"Inserting keyframe after {self.iterations_since_last_keyframe} iterations.")
 
         # Match features between current frame and previous keyframe
-        match_features_between_frames(
-            self.cur_frame, self.map.cur_keyframe, self.feature_extraction_method)
+        with telemetry.stage("kf_match"):
+            match_features_between_frames(
+                self.cur_frame, self.map.cur_keyframe, self.feature_extraction_method)
 
         # We filter out matches that have already been triangulated.
         self._filter_duplicate_keypoints()
@@ -288,6 +300,10 @@ class Tracker:
             LOG_TAG,
             f"Triangulated {len(points)} points, rejected {rejected_points} points. Validation results: {validation_str}"
         )
+        telemetry.event("tri_accepted", len(points))
+        telemetry.event("tri_rejected", rejected_points)
+        for code_name, count in validation_results.items():
+            telemetry.event(f"tri_reject_{code_name}", count)
         return points
 
     def _create_point_and_register_observations(self, point_4d: np.ndarray, point_idx: int) -> Point:
@@ -412,6 +428,7 @@ class Tracker:
 
         # Relocalization failed completely
         self.map.consecutive_relocalization_failures += 1
+        telemetry.event("reloc_failed")
         warning_log(
             LOG_TAG, f"Relocalization failed - tracking lost ({self.map.consecutive_relocalization_failures}/{MAX_CONSECUTIVE_RELOCALIZATION_FAILURES})")
 
@@ -424,6 +441,7 @@ class Tracker:
             LOG_TAG, "Continuing with degraded tracking - try returning to previously mapped areas")
 
     def _attempt_relocalization(self) -> bool:
+        telemetry.event("reloc_attempt")
         # Search through recent keyframes (last N)
         recent_keyframes = self.map.keyframes[-RELOCALIZATION_WINDOW:] if len(
             self.map.keyframes) > RELOCALIZATION_WINDOW else self.map.keyframes
@@ -431,6 +449,7 @@ class Tracker:
         for kf in reversed(recent_keyframes):
             pose, inliers = self._match_frame_to_keyframe(self.cur_frame, kf)
             if inliers >= MIN_RELOCALIZATION_INLIERS:
+                telemetry.event("reloc_success")
                 self.cur_frame.pose = pose
                 # The pose just jumped to the matched keyframe's frame.
                 # Feeding that jump into the constant-velocity model makes
@@ -443,10 +462,12 @@ class Tracker:
         return False
 
     def _attempt_aggressive_relocalization(self) -> bool:
+        telemetry.event("reloc_aggressive_attempt")
         for kf in reversed(self.map.keyframes):
             pose, inliers = self._match_frame_to_keyframe_permissive(
                 self.cur_frame, kf)
             if inliers >= MIN_AGGRESSIVE_RELOCALIZATION_INLIERS:
+                telemetry.event("reloc_aggressive_success")
                 # Reset pose and potentially clear recent bad keyframes
                 self.map.remove_keyframes_after(kf.frame_id)
                 self.cur_frame.pose = pose
@@ -508,6 +529,7 @@ class Tracker:
         return result
 
     def _reset_system(self):
+        telemetry.event("system_reset")
         info_log(LOG_TAG, "System reset triggered - clearing map and restarting")
 
         # Reset the map completely

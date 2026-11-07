@@ -6,6 +6,7 @@ from slam.core.observation import Observation
 from typing import List, Tuple
 from slam.utils.logger import *
 from slam.utils.constants import *
+from slam.utils import telemetry
 from uuid import UUID
 from typing import List, Optional, Tuple, List, Dict
 import cv2 as cv
@@ -27,6 +28,7 @@ class G2OBundleAdjustment:
             points_2d.append(obs.pt_2d_norm)
 
         if len(points_3d) < 4:
+            telemetry.event("pnp_few_points")
             warning_log(
                 LOG_TAG, f"Not enough points for pose refinement ({len(points_3d)} provided).")
             return False, 0
@@ -60,6 +62,7 @@ class G2OBundleAdjustment:
         inliers = np.arange(len(points_3d)).reshape(-1, 1)
 
         if not success or len(inliers) < PNP_MINIMUM_INLIERS:
+            telemetry.event("pnp_no_solution" if not success else "pnp_few_inliers")
             warning_log(
                 LOG_TAG, f"PnP failed or not enough inliers: {len(inliers)}")
             return False, len(inliers)
@@ -72,6 +75,7 @@ class G2OBundleAdjustment:
         self.map.cur_keyframe.pose = np.linalg.inv(pose)
 
         debug_log(LOG_TAG, f"Pose refined with {len(inliers)} inliers.")
+        telemetry.event("pnp_ok")
 
         return True, len(inliers)
 
@@ -82,6 +86,7 @@ class G2OBundleAdjustment:
         local_keyframes = self.map.get_local_keyframes(
             reference_frame_id, window_size)
         if not local_keyframes:
+            telemetry.event("ba_no_local_keyframes")
             warning_log(LOG_TAG, "No local keyframes found for local BA")
             return False
 
@@ -105,6 +110,7 @@ class G2OBundleAdjustment:
             {kf.frame_id for kf in local_keyframes}
 
         if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
+            telemetry.event("ba_insufficient_observations")
             warning_log(
                 LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
             return False
@@ -124,6 +130,7 @@ class G2OBundleAdjustment:
         observations = self.map.get_observations(keyframes)
 
         if len(observations) < MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT:
+            telemetry.event("ba_global_insufficient_observations")
             warning_log(
                 LOG_TAG, f"Insufficient observations for global BA: {len(observations)}")
             return False
@@ -284,6 +291,7 @@ class G2OBundleAdjustment:
                 edge_count += 1
 
             if edge_count < 10:
+                telemetry.event("ba_too_few_edges")
                 warning_log(LOG_TAG, f"Too few edges: {edge_count}")
                 return False
 
@@ -307,6 +315,7 @@ class G2OBundleAdjustment:
             return True
 
         except Exception as e:
+            telemetry.event("ba_exception")
             error_log(LOG_TAG, f"g2o optimization failed: {e}")
             import traceback
             error_log(LOG_TAG, traceback.format_exc())

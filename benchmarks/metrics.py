@@ -157,4 +157,27 @@ def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
     metrics["map_points"] = len(result.map_points)
     metrics["resets"] = result.resets
     metrics["fps"] = result.fps
+
+    # Collapse tripwire: the largest single-step camera-center displacement.
+    # A finding-8-style blowup (pose chain stepping backward, PnP diverging
+    # to |t| ~ 1e4) flags itself here instead of hiding behind an ATE number.
+    centers = result.poses[:, :3, 3]
+    if len(centers) > 1:
+        jumps = np.linalg.norm(np.diff(centers, axis=0), axis=1)
+        metrics["max_pose_jump"] = float(jumps.max())
+    else:
+        metrics["max_pose_jump"] = 0.0
+    metrics["max_cam_dist"] = float(np.linalg.norm(centers, axis=1).max()) \
+        if len(centers) else 0.0
+
+    # Per-stage timing, ms per processed frame ("other" = measured wall
+    # time minus the stage totals). Diagnostic only - never a gate.
+    n = max(result.frames_processed, 1)
+    stage_seconds = result.telemetry.get("stage_seconds", {})
+    timing = {name: seconds / n * 1000.0
+              for name, seconds in stage_seconds.items()}
+    timing["other"] = max(0.0, result.seconds - sum(stage_seconds.values())) \
+        / n * 1000.0
+    metrics["timing_ms_per_frame"] = timing
+    metrics["events"] = dict(result.telemetry.get("events", {}))
     return metrics

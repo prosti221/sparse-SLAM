@@ -5,6 +5,7 @@ from uuid import UUID
 import numpy as np
 from slam.utils.logger import info_log, debug_log, error_log, warning_log
 from slam.utils.constants import *
+from slam.utils import telemetry
 from slam.core.point import Point
 from slam.core.frame import Frame
 from slam.core.observation import Observation
@@ -95,14 +96,17 @@ class Map:
             perform_global_ba = self.should_perform_global_bundle_adjustment(
                 GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL)
             if perform_global_ba:
+                telemetry.event("ba_global_call")
                 success = self.g2o_optimizer.global_bundle_adjustment()
             else:
+                telemetry.event("ba_local_call")
                 success = self.g2o_optimizer.local_bundle_adjustment(
                     self.keyframes[-1].frame_id,
                     window_size=LOCAL_MAP_WINDOW_SIZE,
                     fix_points=False
                 )
 
+            telemetry.event("ba_success" if success else "ba_failure")
             if success:
                 debug_log(
                     LOG_TAG, "BA was successful, pruning outlier points...")
@@ -211,6 +215,7 @@ class Map:
                 if self.remove_point_by_index(idx):
                     bad_points += 1
 
+        telemetry.event("points_pruned", bad_points)
         debug_log(
             LOG_TAG, f"Removed {bad_points} bad points, and {redundant_points} redundant points")
 

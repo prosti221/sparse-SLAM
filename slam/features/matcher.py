@@ -4,6 +4,7 @@ from typing import List, Tuple, Optional, Dict
 from slam.utils.utils import *
 from slam.utils.constants import *
 from slam.utils.logger import debug_log, error_log, warning_log
+from slam.utils import telemetry
 from slam.core.frame import Frame
 
 LOG_TAG = 'Matcher'
@@ -166,6 +167,7 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
         )
         return filtered_matches, Rt
     else:
+        telemetry.event("match_no_ransac")
         warning_log(LOG_TAG, "Not enough matches found for RANSAC")
 
     return good_matches, None
@@ -177,7 +179,12 @@ def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extracti
     if len(matches) == 0:
         warning_log(
             LOG_TAG, f"No matches found between frames: {frame1.frame_id} and {frame2.frame_id}")
-        return None, None
+        telemetry.event("match_zero")
+        # Finding 10 (see benchmarks/IMPROVEMENT.md): this used to return
+        # `None, None` - a truthy 2-tuple that sailed through callers'
+        # `Rt is not None` check and crashed the pose composition with a
+        # TypeError. Zero matches means no pose estimate.
+        return None
 
     debug_log(
         LOG_TAG, f"Found {len(matches)} matches between frames: {frame1.frame_id} and {frame2.frame_id}")
