@@ -32,8 +32,17 @@ MIN_BASELINE_RATIO = 0.04
 MAX_SQUARED_REPROJECTION_ERROR = 1.0
 MAX_PARALLAX = 0.65
 
-# Window size for local bundle adjustment
-LOCAL_MAP_WINDOW_SIZE = 9
+# Window size for local bundle adjustment (number of recent keyframes
+# whose poses are optimized together, with older keyframes fixed as
+# boundary anchors). Phase 2b sweep (w 9/7/5, all four sequences, seed
+# 42): 7 improves fr (0.0605 -> 0.0548) and orbit (1.347 -> 1.143) ATE
+# while cutting tum's BA cost 35% (map_optimize 51.7 -> 33.4 ms/frame,
+# fps 9.4 -> 12.5); tum ATE 0.102 -> 0.179 stays within its 0.25
+# baseline (finding 14: tum single-run deltas span 0.102-0.182 across
+# configs - within-baseline check, not a precise knob effect). w=5
+# fails orbit/tum RPE-rot baselines (under-anchored windows let
+# rotation drift).
+LOCAL_MAP_WINDOW_SIZE = 7
 # Interval (in keyframes) for the timer-triggered global BA. 0 disables
 # the timer (phase 2a, finding 13): measured A/B showed it HURT accuracy
 # on three of four sequences (translation 0.0845 -> 0.0181 ATE, orbit
