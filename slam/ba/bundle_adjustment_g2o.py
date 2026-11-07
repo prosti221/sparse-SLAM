@@ -34,9 +34,14 @@ class G2OBundleAdjustment:
         points_3d = np.array(points_3d, dtype=np.float32)
         points_2d = np.array(points_2d, dtype=np.float32)
 
-        # Initial pose guess from current frame pose
-        R_init = self.map.cur_keyframe.pose[:3, :3]
-        t_init = self.map.cur_keyframe.pose[:3, 3]
+        # Initial extrinsic guess: cv.solvePnP refines the world-to-camera
+        # transform (X_cam = R @ X_world + t), so the guess must come from the
+        # inverse of the camera-to-world pose stored on the frame. Seeding
+        # with the pose directly inverts rotation/translation and can push
+        # the iterative solver into a mirrored local minimum.
+        T_cw_init = np.linalg.inv(self.map.cur_keyframe.pose)
+        R_init = T_cw_init[:3, :3]
+        t_init = T_cw_init[:3, 3]
 
         rvec_init, _ = cv.Rodrigues(R_init)
         rvec_init = np.array(rvec_init, dtype=np.float32).reshape(3, 1)
@@ -76,10 +81,28 @@ class G2OBundleAdjustment:
 
         local_keyframes = self.map.get_local_keyframes(
             reference_frame_id, window_size)
-        observations = self.map.get_observations(local_keyframes)
+        if not local_keyframes:
+            warning_log(LOG_TAG, "No local keyframes found for local BA")
+            return False
 
-        keyframes = self.map.keyframes
-        points = self.map.points
+        # Local points: every map point observed by a window keyframe.
+        # Kept in map insertion order so the optimization is deterministic.
+        local_point_set = self.map.get_local_points(local_keyframes)
+        local_points = [p for p in self.map.points if p in local_point_set]
+
+        # All observations of the local points, INCLUDING observations from
+        # keyframes outside the window. Those extra keyframes are added as
+        # fixed vertices and anchor the optimization: without them, the free
+        # window poses + points form a gauge-free subsystem that can drift
+        # rigidly with no reprojection penalty.
+        observations = [obs for p in local_points
+                        for obs in p.observations.values()]
+
+        involved_kf_ids = {obs.frame.frame_id for obs in observations}
+        involved_keyframes = [kf for kf in self.map.keyframes
+                               if kf.frame_id in involved_kf_ids]
+        fixed_kf_ids = involved_kf_ids - \
+            {kf.frame_id for kf in local_keyframes}
 
         if len(observations) < MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             warning_log(
@@ -89,7 +112,10 @@ class G2OBundleAdjustment:
             debug_log(
                 LOG_TAG, f"Using : {len(observations)} observations for BA optimization")
 
-        return self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=True, fix_points=fix_points)
+        return self._optimize_with_g2o(
+            involved_keyframes, local_points, observations,
+            fix_initial_poses=True, fix_points=fix_points,
+            fixed_keyframe_ids=fixed_kf_ids)
 
     def global_bundle_adjustment(self) -> bool:
         debug_log(LOG_TAG, "Starting global BA with g2o")
@@ -208,7 +234,8 @@ class G2OBundleAdjustment:
     def _optimize_with_g2o(self, keyframes: List[Frame], points: List[Point],
                            observations: List[Observation],
                            fix_initial_poses: bool = False,
-                           fix_points: bool = False) -> bool:
+                           fix_points: bool = False,
+                           fixed_keyframe_ids: set = None) -> bool:
         try:
             # Create optimizer with standard setup
             opt = self._create_g2o_optimizer()
@@ -219,7 +246,8 @@ class G2OBundleAdjustment:
 
             # Create keyframe vertices
             frame_to_vertex = self._create_keyframe_vertices(
-                opt, keyframes, vertex_id_offset=0, fix_first=fix_initial_poses)
+                opt, keyframes, vertex_id_offset=0, fix_first=fix_initial_poses,
+                fixed_keyframe_ids=fixed_keyframe_ids)
 
             # Create point vertices with interleaved IDs
             point_to_vertex = {}
@@ -301,7 +329,8 @@ class G2OBundleAdjustment:
         return opt
 
     def _create_keyframe_vertices(self, optimizer, keyframes: List[Frame],
-                                  vertex_id_offset: int = 0, fix_first: bool = True):
+                                  vertex_id_offset: int = 0, fix_first: bool = True,
+                                  fixed_keyframe_ids: set = None):
         frame_to_vertex = {}
 
         for i, kf in enumerate(keyframes):
@@ -314,7 +343,11 @@ class G2OBundleAdjustment:
             v_se3 = g2o.VertexSE3Expmap()
             v_se3.set_id(vertex_id_offset + i)
             v_se3.set_estimate(se3)
-            v_se3.set_fixed(i == 0 and fix_first)
+            # First keyframe is fixed when requested (gauge origin), plus any
+            # explicitly anchored keyframes (e.g. local-BA window boundary).
+            is_fixed = (i == 0 and fix_first) or (
+                fixed_keyframe_ids is not None and kf.frame_id in fixed_keyframe_ids)
+            v_se3.set_fixed(is_fixed)
 
             optimizer.add_vertex(v_se3)
             frame_to_vertex[kf.frame_id] = v_se3

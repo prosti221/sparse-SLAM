@@ -149,7 +149,15 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str)
         filtered_matches = [m for i, m in enumerate(
             good_matches) if mask[i] == 1]
 
-        Rt = extractRt(E)
+        # Recover the relative pose with cv.recoverPose, which resolves the
+        # four-fold essential-matrix ambiguity via a cheirality (positive
+        # depth) check - no sign heuristics, stable for any motion direction.
+        # recoverPose(E, pts1, pts2) returns T_{f2<-f1}: the pose of frame1's
+        # camera expressed in frame2's camera frame. Poses compose directly
+        # with right multiplication:
+        #   Twc_frame1 = Twc_frame2 @ Rt
+        # Translation is unit-normalized (monocular scale).
+        Rt = extractRtFromE(pts_f1_norm, pts_f2_norm, E, np.eye(3))
 
         debug_log(
             LOG_TAG,

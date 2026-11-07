@@ -53,29 +53,6 @@ def normalize(pts, Kinv):
     return np.dot(Kinv, add_ones(pts).T).T[:, :2]
 
 
-def extractRt(F):
-    W = np.asmatrix([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
-    U, d, Vt = np.linalg.svd(F)
-    if np.linalg.det(U) < 0:
-        U *= -1.0
-    if np.linalg.det(Vt) < 0:
-        Vt *= -1.0
-
-    R = np.dot(np.dot(U, W), Vt)
-    if np.sum(R.diagonal()) < 0:
-        R = np.dot(np.dot(U, W.T), Vt)
-
-    t = U[:, 2]
-    if t[2] < 0:
-        t *= -1
-
-    ret = np.eye(4)
-    ret[:3, :3] = R
-    ret[:3, 3] = t
-
-    return ret
-
-
 def extractRtFromE(pts1, pts2, E, K):
 
     # Extract rotation and translation

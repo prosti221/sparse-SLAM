@@ -60,8 +60,9 @@ class Tracker:
         Rt = match_features_between_frames(
             self.cur_frame, self.prev_frame, self.feature_extraction_method)
         if Rt is not None:
-            # Refine the kinematic estimate with feature-based estimate
-            refined_pose = Rt @ self.prev_frame.pose
+            # Refine the kinematic estimate with the feature-based relative
+            # pose: Twc_cur = Twc_prev @ T_{prev<-cur}
+            refined_pose = self.prev_frame.pose @ Rt
             self.cur_frame.pose = refined_pose
             debug_log(LOG_TAG, "Pose estimate refined with feature matching")
         else:
@@ -321,7 +322,7 @@ class Tracker:
         if Rt is None:
             return self.prev_frame.pose @ self.velocity
 
-        return Rt @ self.prev_frame.pose
+        return self.prev_frame.pose @ Rt
 
     def _handle_loop_closure_detection(self):
         return  # Disable loop closure for now
@@ -471,9 +472,11 @@ class Tracker:
         inliers = np.sum(mask) if mask is not None else 0
 
         if inliers >= MIN_RELOCALIZATION_INLIERS:
-            pose = extractRt(E)
-            # Transform relative to keyframe pose
-            return pose @ keyframe.pose, inliers
+            if Rt is None:
+                return None, 0
+            # Rt is the pose of this frame expressed in the keyframe's frame
+            # (T_{kf<-frame}), so: Twc_frame = Twc_keyframe @ Rt
+            return keyframe.pose @ Rt, inliers
 
         return None, 0
 
