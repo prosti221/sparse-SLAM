@@ -1,41 +1,36 @@
-from slam.utils.utils import *
-from slam.viz.renderer import Renderer
-from slam.core.tracker import Tracker
-from slam.config.config_parser import ConfigParser
-from slam.core.map import Map
-from slam.core.frame import Frame
-from slam.utils.logger import *
-from slam.utils.constants import *
 import cv2 as cv
 
-LOG_TAG = 'Slam'
+from slam.config.config_parser import ConfigParser
+from slam.core.frame import Frame
+from slam.core.map import Map
+from slam.core.tracker import Tracker
+from slam.utils.constants import *
+from slam.utils.logger import *
+from slam.utils.utils import *
+from slam.viz.renderer import Renderer
 
-if __name__ == '__main__':
-    config = ConfigParser('slam/config/config.yaml')
+LOG_TAG = "Slam"
+
+if __name__ == "__main__":
+    config = ConfigParser("slam/config/config.yaml")
     info_log(LOG_TAG, f"Starting SLAM with parameters: {config}")
 
     FEATURE_EXTRACTOR = config.get_global_config_property("feature_extractor")
     RECORD_SESSION = config.get_global_config_property("record_session")
     DISPLAY_CAPTURE = config.get_global_config_property("display_capture")
-    ENABLE_MULTISCALE = config.get_global_config_property(
-        "enable_multiscale_features")
-    ENABLE_BA = config.get_global_config_property(
-        "enable_ba")
+    ENABLE_MULTISCALE = config.get_global_config_property("enable_multiscale_features")
+    ENABLE_BA = config.get_global_config_property("enable_ba")
 
     cap, K = load_video(config)
-    CAP_W, CAP_H = int(cap.get(cv.CAP_PROP_FRAME_WIDTH)), int(
-        cap.get(cv.CAP_PROP_FRAME_HEIGHT))
-
-    global_map = Map()
-    renderer = Renderer(
-        global_map,
-        K,
-        W=1920,
-        H=1080
+    CAP_W, CAP_H = (
+        int(cap.get(cv.CAP_PROP_FRAME_WIDTH)),
+        int(cap.get(cv.CAP_PROP_FRAME_HEIGHT)),
     )
 
-    tracker = Tracker(
-        global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
+    global_map = Map()
+    renderer = Renderer(global_map, K, W=1920, H=1080)
+
+    tracker = Tracker(global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
 
     renderer.start()
 
@@ -61,7 +56,9 @@ if __name__ == '__main__':
         ret, img = cap.read()
         if not ret:
             info_log(
-                LOG_TAG, f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!")
+                LOG_TAG,
+                f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!",
+            )
             slam_in_progress = False
             continue
 
@@ -70,11 +67,13 @@ if __name__ == '__main__':
 
         if is_new_keyframe:
             info_log(
-                LOG_TAG, f"Updating renderer with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points. Map tracking quality is: {global_map.avg_tracking_quality}")
+                LOG_TAG,
+                f"Updating renderer with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points. Map tracking quality is: {global_map.avg_tracking_quality}",
+            )
             renderer.update()
 
         if DISPLAY_CAPTURE:
-            cv.imshow('frame', img)
+            cv.imshow("frame", img)
         prev_img = img
 
     cv.destroyAllWindows()
