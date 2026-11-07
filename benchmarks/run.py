@@ -31,7 +31,8 @@ DEFAULT_SEQUENCES = ["forward_rotation", "orbit", "translation", "tum_xyz"]
 
 # Thresholds applied to each metric. Missing sequence entry = no baseline yet.
 THRESHOLD_RULES = {
-    "max": ["ate_rmse", "rpe_trans_rmse", "rpe_rot_rmse", "resets"],
+    "max": ["ate_rmse", "rpe_trans_rmse", "rpe_rot_rmse", "resets",
+            "max_pose_jump"],
     "min": ["map_on_surface_pct", "map_near_scene_pct"],
 }
 
@@ -164,6 +165,32 @@ def print_diagnostics_table(results: dict) -> None:
         print(" ".join(str(v).ljust(w) for v, (_, w) in zip(row, columns)))
 
 
+def apply_overrides(pairs) -> None:
+    """Temporarily override slam.utils.constants values for this run.
+
+    Consumers of the overridable family read the constants through the
+    module (see should_insert_keyframe / tracker / map), so threshold
+    sweeps reach the pipeline live.
+    """
+    import slam.utils.constants as const
+
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        name = name.strip()
+        if not sep or not hasattr(const, name):
+            raise SystemExit(
+                f"[bench] --override expects NAME=VALUE of a slam.utils.constants "
+                f"constant; got {pair!r}")
+        current = getattr(const, name)
+        try:
+            parsed = type(current)(value.strip())
+        except ValueError:
+            raise SystemExit(
+                f"[bench] cannot parse {value!r} as {type(current).__name__} for {name}")
+        setattr(const, name, parsed)
+        print(f"[bench] override: {name} = {parsed} (default {current})", flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sequences", nargs="+", default=DEFAULT_SEQUENCES,
@@ -175,7 +202,13 @@ def main() -> int:
                         help="write this run's metrics into baselines.json")
     parser.add_argument("--no-baseline", action="store_true",
                         help="skip baseline comparison")
+    parser.add_argument("--override", action="append", default=[],
+                        metavar="NAME=VALUE",
+                        help="override a slam.utils.constants value for this run "
+                             "(repeatable), e.g. --override KEYFRAME_MINIMUM_ROTATION_DEG=1.5")
     args = parser.parse_args()
+
+    apply_overrides(args.override)
 
     if args.regen:
         for name in args.sequences:

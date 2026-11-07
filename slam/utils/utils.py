@@ -4,6 +4,7 @@ from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
 from slam.utils.logger import *
 from slam.utils.constants import *
+from slam.utils import constants as const
 
 LOG_TAG = 'Utils'
 
@@ -389,35 +390,57 @@ def compute_new_points_ratio(cur_frame):
     return cur_frame.num_tracked_features / len(cur_frame.matches)
 
 
-def should_insert_keyframe(cur_frame, prev_keyframe):
-    # 1. Check baseline constraints
+def should_insert_keyframe(cur_frame, prev_keyframe,
+                           frames_since_last_keyframe=0):
+    # Constants are read through the module (not the star-imported copies)
+    # so benchmark threshold sweeps (--override) can tune them live.
+    #
+    # 1. Viewpoint change: translation baseline OR accumulated rotation
+    #    since the last keyframe. Rotation-dominant motion starved the map
+    #    under the translation-only criterion (phase 1c: forward_rotation
+    #    inserted keyframes on the forced-frame backstop while its
+    #    triangulation rejected ~100% of points). The rotation trigger
+    #    REGULARIZES the cadence of rotating sequences (gap-capped): it
+    #    fires proactively at a consistent cadence, before starvation
+    #    develops, but never frame-to-frame, where degenerate pairs poison
+    #    the map. Sequences with a denser baseline-driven cadence
+    #    (orbit: ~2.7 frames) are naturally pre-empted.
     baseline_distance = compute_baseline_distance(cur_frame, prev_keyframe)
-    baseline_ok = MINIMUM_BASELINE_THRESHOLD <= baseline_distance
+    R_rel = cur_frame.pose[:3, :3].T @ prev_keyframe.pose[:3, :3]
+    cos_rot = (np.trace(R_rel) - 1.0) / 2.0
+    rotation_deg = float(np.degrees(np.arccos(np.clip(cos_rot, -1.0, 1.0))))
+
+    baseline_ok = const.MINIMUM_BASELINE_THRESHOLD <= baseline_distance
+    cadence_allows = frames_since_last_keyframe >= \
+        const.KEYFRAME_ROTATION_MIN_FRAME_GAP
+    rotation_ok = (const.KEYFRAME_MINIMUM_ROTATION_DEG <= rotation_deg
+                   and cadence_allows)
+    viewpoint_ok = baseline_ok or rotation_ok
 
     # 2. Check new points ratio
     new_points_ratio = compute_new_points_ratio(cur_frame)
-    new_points_ok = new_points_ratio >= MINIMUM_NEW_POINTS_RATIO
+    new_points_ok = new_points_ratio >= const.MINIMUM_NEW_POINTS_RATIO
 
     # 3. Check tracking quality
-    quality_ok = cur_frame.tracking_quality >= MINIMUM_KEYFRAME_QUALITY_THRESHOLD
+    quality_ok = cur_frame.tracking_quality >= const.MINIMUM_KEYFRAME_QUALITY_THRESHOLD
 
     # Decision logic
     reasons = []
 
-    if not baseline_ok:
-        if baseline_distance < MINIMUM_BASELINE_THRESHOLD:
-            reasons.append(
-                f"Baseline too small: {baseline_distance:.3f} < {MINIMUM_BASELINE_THRESHOLD}")
+    if not viewpoint_ok:
+        reasons.append(
+            f"Baseline too small: {baseline_distance:.3f} < {const.MINIMUM_BASELINE_THRESHOLD} "
+            f"or rotation trigger unmet: {rotation_deg:.2f} deg at {frames_since_last_keyframe} frames since last keyframe")
     if not new_points_ok:
         reasons.append(
-            f"Not enough new points: {new_points_ratio:.2f} < {MINIMUM_NEW_POINTS_RATIO}")
+            f"Not enough new points: {new_points_ratio:.2f} < {const.MINIMUM_NEW_POINTS_RATIO}")
 
     if not quality_ok:
         reasons.append(
-            f"Tracking quality too low: {cur_frame.tracking_quality:.2f} < {MINIMUM_KEYFRAME_QUALITY_THRESHOLD}")
+            f"Tracking quality too low: {cur_frame.tracking_quality:.2f} < {const.MINIMUM_KEYFRAME_QUALITY_THRESHOLD}")
 
     # Keyframe insertion criteria
-    critical_conditions = [baseline_ok]
+    critical_conditions = [viewpoint_ok]
     quality_conditions = [new_points_ok, quality_ok]
 
     # Insert keyframe if:
@@ -429,6 +452,7 @@ def should_insert_keyframe(cur_frame, prev_keyframe):
     if should_insert:
         debug_log(LOG_TAG, "Keyframe statistics: "
                   f"Baseline: {baseline_distance:.3f}, "
+                  f"Rotation: {rotation_deg:.2f} deg, "
                   f"New Points Ratio: {new_points_ratio:.2f}, "
                   f"Tracking Quality: {cur_frame.tracking_quality:.2f}, ")
         return True, "Quality criteria met"

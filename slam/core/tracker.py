@@ -11,6 +11,7 @@ from slam.core.map import Map
 from slam.core.observation import Observation
 from slam.utils.utils import *
 from slam.utils.constants import *
+from slam.utils import constants as const
 from slam.utils.logger import *
 from slam.utils import telemetry
 from slam.features.matcher import *
@@ -178,9 +179,10 @@ class Tracker:
         # Observations were already registered in update() before the
         # per-frame PnP (see finding 9 notes there).
         should_insert, result = should_insert_keyframe(
-            self.cur_frame, self.map.cur_keyframe)
+            self.cur_frame, self.map.cur_keyframe,
+            frames_since_last_keyframe=self.iterations_since_last_keyframe)
 
-        if not should_insert and self.iterations_since_last_keyframe < MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES:
+        if not should_insert and self.iterations_since_last_keyframe < const.MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES:
             debug_log(
                 LOG_TAG, f"Skipping keyframe insertion criteria not met. {result}")
             return

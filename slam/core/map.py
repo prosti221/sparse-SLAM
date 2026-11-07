@@ -5,6 +5,7 @@ from uuid import UUID
 import numpy as np
 from slam.utils.logger import info_log, debug_log, error_log, warning_log
 from slam.utils.constants import *
+from slam.utils import constants as const
 from slam.utils import telemetry
 from slam.core.point import Point
 from slam.core.frame import Frame
@@ -277,13 +278,13 @@ class Map:
             kf_id: kf.tracking_quality for kf_id, kf in self.keyframes_by_id.items()}
 
         # Update consecutive low quality frame counter for recovery detection
-        if self.avg_tracking_quality < RELOCALIZATION_QUALITY_THRESHOLD:
+        if self.avg_tracking_quality < const.RELOCALIZATION_QUALITY_THRESHOLD:
             self.consecutive_low_quality_frames += 1
         else:
             self.consecutive_low_quality_frames = 0
 
     def needs_recovery(self) -> bool:
-        return (self.avg_tracking_quality < RELOCALIZATION_QUALITY_THRESHOLD and
+        return (self.avg_tracking_quality < const.RELOCALIZATION_QUALITY_THRESHOLD and
                 self.consecutive_low_quality_frames >= RELOCALIZATION_FRAME_COUNT)
 
     def on_relocalization_successful(self, reference_keyframe_id: UUID):

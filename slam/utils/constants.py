@@ -7,6 +7,18 @@ PNP_MINIMUM_INLIERS = 10  # Minimum inliers for PnP
 ### KEYFRAME SELECTION CONSTANTS ###
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10
 MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe
+# Minimum accumulated rotation (deg) since the last keyframe for a new
+# one - rotation is viewpoint change just like translation (phase 1c:
+# rotation-dominant motion starved the map under the translation-only
+# criterion). Gated by a minimum inter-keyframe gap: it REGULARIZES the
+# cadence of rotating sequences (forward_rotation's ragged 3.6-frame
+# gaps starved its map; a consistent gap-3 cadence fixes it) but never
+# fires frame-to-frame, where the resulting degenerate pairs poison the
+# map (orbit with an ungated threshold: 44 -> 140 keyframes, surf
+# 15.9 -> 0). Sequences whose baseline-driven cadence is already denser
+# (orbit inserts every ~2.7 frames) are naturally pre-empted.
+KEYFRAME_MINIMUM_ROTATION_DEG = 1.5
+KEYFRAME_ROTATION_MIN_FRAME_GAP = 3
 # Minimum scene coverage for new keyframe
 MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.01  # Minimum quality for new keyframe

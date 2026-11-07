@@ -73,3 +73,71 @@ def test_reason_string_reports_failed_conditions():
     assert "Baseline" in reason
     assert "new points" in reason
     assert "Tracking quality" in reason
+
+
+# --- Phase 1c: rotation-aware viewpoint criterion ---
+
+def test_rotation_triggers_insertion_without_baseline():
+    """Phase 1c: accumulated rotation is viewpoint change - it may satisfy
+    the critical condition where translation cannot. Rotation-dominant
+    motion starved the map under the translation-only criterion
+    (forward_rotation triangulation rejected ~100% of points)."""
+    prev_kf = _policy_frame(yaw_pose(0.0, (0, 0, 0)), 0.0)
+    # Baseline 0.5 fails, but 5 deg of accumulated rotation at a
+    # sufficiently sparse cadence passes.
+    cur = _policy_frame(yaw_pose(np.radians(5.0), (0.5, 0, 0)), 0.0, n_tracked=60)
+
+    should, reason = should_insert_keyframe(cur, prev_kf,
+                                            frames_since_last_keyframe=3)
+    assert should, reason
+
+
+def test_small_rotation_and_baseline_rejects():
+    """Both translation and rotation below their thresholds: no keyframe,
+    even with perfect quality conditions."""
+    prev_kf = _policy_frame(yaw_pose(0.0, (0, 0, 0)), 0.5)
+    cur = _policy_frame(yaw_pose(np.radians(0.5), (1.0, 0, 0)), 0.0, n_tracked=60)
+
+    should, _ = should_insert_keyframe(cur, prev_kf,
+                                       frames_since_last_keyframe=5)
+    assert not should
+
+
+def test_rotation_trigger_is_gap_capped():
+    """Phase 1c self-limiting gate: the rotation trigger never fires
+    frame-to-frame (gap below KEYFRAME_ROTATION_MIN_FRAME_GAP) - a
+    degenerate 1-2 frame pair poisons the map with junk triangulations
+    (measured on orbit with an ungated threshold: 44 -> 140 keyframes,
+    surf 15.9 -> 0)."""
+    prev_kf = _policy_frame(yaw_pose(0.0, (0, 0, 0)), 0.0)
+    cur = _policy_frame(yaw_pose(np.radians(5.0), (0.5, 0, 0)), 0.0, n_tracked=60)
+
+    # Dense cadence (gap < min): no trigger, however much rotation.
+    should, _ = should_insert_keyframe(cur, prev_kf,
+                                       frames_since_last_keyframe=2)
+    assert not should, "rotation trigger fired on a dense frame-to-frame cadence"
+
+    # Sparse cadence (gap >= min): trigger fires.
+    should, _ = should_insert_keyframe(cur, prev_kf,
+                                       frames_since_last_keyframe=3)
+    assert should
+
+
+def test_policy_reads_live_constants():
+    """The overridability contract for benchmark sweeps (--override):
+    the policy reads its constants through the module, so changing them
+    changes behavior without code changes."""
+    import slam.utils.constants as const
+    saved = (const.MINIMUM_BASELINE_THRESHOLD,
+              const.KEYFRAME_MINIMUM_ROTATION_DEG)
+    try:
+        const.MINIMUM_BASELINE_THRESHOLD = 10.0
+        const.KEYFRAME_MINIMUM_ROTATION_DEG = 999.0
+        prev_kf = _policy_frame(yaw_pose(0.0, (0, 0, 0)), 0.0)
+        cur = _policy_frame(yaw_pose(0.0, (3.0, 0, 0)), 0.0, n_tracked=60)
+
+        should, _ = should_insert_keyframe(cur, prev_kf)
+        assert not should, "baseline 3.0 must reject under a 10.0 threshold"
+    finally:
+        (const.MINIMUM_BASELINE_THRESHOLD,
+         const.KEYFRAME_MINIMUM_ROTATION_DEG) = saved
