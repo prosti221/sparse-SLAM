@@ -132,19 +132,27 @@ def map_near_scene_pct(map_points: np.ndarray, scene_points: np.ndarray,
     return float(np.mean(dists <= tol) * 100.0)
 
 
-def evaluate(result, gt_poses: np.ndarray, scene_points: np.ndarray,
-             planes: np.ndarray) -> Dict[str, object]:
-    """Full metric suite for one run. `result` is a harness.RunResult."""
+def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
+             planes: Optional[np.ndarray]) -> Dict[str, object]:
+    """Full metric suite for one run. `result` is a harness.RunResult.
+
+    scene_points/planes may be None (real-world datasets with no analytic
+    scene geometry); map-vs-scene metrics are skipped in that case.
+    """
     metrics = ate(result.poses, gt_poses)
     s, R, t = metrics["alignment"]
     metrics.pop("alignment")
 
     metrics.update(rpe(result.poses, gt_poses, s))
     metrics["scale_consistency"] = scale_consistency(result.poses, gt_poses)
-    metrics["map_on_surface_pct"] = map_on_surface_pct(
-        result.map_points, planes, s, R, t)
-    metrics["map_near_scene_pct"] = map_near_scene_pct(
-        result.map_points, scene_points, s, R, t)
+    if scene_points is not None and len(scene_points) > 0:
+        metrics["map_on_surface_pct"] = map_on_surface_pct(
+            result.map_points, planes, s, R, t)
+        metrics["map_near_scene_pct"] = map_near_scene_pct(
+            result.map_points, scene_points, s, R, t)
+    else:
+        metrics["map_on_surface_pct"] = None
+        metrics["map_near_scene_pct"] = None
     metrics["keyframes"] = result.num_keyframes
     metrics["map_points"] = len(result.map_points)
     metrics["resets"] = result.resets

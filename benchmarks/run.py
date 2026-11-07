@@ -16,12 +16,18 @@ from pathlib import Path
 import numpy as np
 
 from benchmarks.synthetic.generator import SEQUENCES, generate_sequence
+from benchmarks.tum import prepare_tum_sequence
 from benchmarks.harness import run_slam, load_trajectory, load_scene
 from benchmarks import metrics
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINES_FILE = Path(__file__).resolve().parent / "baselines.json"
 REPORT_DIR = REPO_ROOT / "output" / "benchmarks"
+
+# 'tum_xyz' is a real-world sequence (auto-downloaded on first use);
+# the rest are generated synthetic worlds.
+TUM_SEQUENCES = {"tum_xyz"}
+DEFAULT_SEQUENCES = ["forward_rotation", "orbit", "translation", "tum_xyz"]
 
 # Thresholds applied to each metric. Missing sequence entry = no baseline yet.
 THRESHOLD_RULES = {
@@ -31,9 +37,20 @@ THRESHOLD_RULES = {
 
 
 def evaluate_sequence(name: str, seed: int) -> dict:
-    seq_dir = generate_sequence(name)
+    if name in SEQUENCES:
+        seq_dir = generate_sequence(name)
+    elif name in TUM_SEQUENCES:
+        seq_dir = prepare_tum_sequence()
+    else:
+        raise ValueError(f"Unknown sequence '{name}'. "
+                         f"Available: {sorted(SEQUENCES) + sorted(TUM_SEQUENCES)}")
+
     gt_poses = load_trajectory(seq_dir)
-    scene_points, planes = load_scene(seq_dir)
+    # Synthetic sequences ship analytic scene geometry; real-world ones don't.
+    scene_points, planes = None, None
+    if (seq_dir / "scene_points.txt").exists():
+        scene_points, planes = load_scene(seq_dir)
+
     result = run_slam(seq_dir, seed=seed)
     return metrics.evaluate(result, gt_poses, scene_points, planes)
 
@@ -52,6 +69,8 @@ def check_baselines(results: dict, baselines: dict) -> dict:
                     continue
                 limit = thresholds[key]
                 value = m[key]
+                if value is None:
+                    continue  # metric not available for this dataset
                 bad = (value > limit) if direction == "max" else (value < limit)
                 if bad:
                     seq_failures.append(
@@ -59,6 +78,10 @@ def check_baselines(results: dict, baselines: dict) -> dict:
         if seq_failures:
             failures[seq] = seq_failures
     return failures
+
+
+def _cell(value, spec: str) -> str:
+    return "-" if value is None else format(value, spec)
 
 
 def print_table(results: dict) -> None:
@@ -74,18 +97,19 @@ def print_table(results: dict) -> None:
     for seq, m in results.items():
         row = [
             seq, str(m["keyframes"]), str(m["map_points"]),
-            f"{m['ate_rmse']:.4f}", f"{m['scale']:.4f}",
-            f"{m['scale_consistency']:.3f}",
-            f"{m['rpe_trans_rmse']:.4f}", f"{m['rpe_rot_rmse']:.2f}",
-            f"{m['map_on_surface_pct']:.1f}", f"{m['map_near_scene_pct']:.1f}",
-            str(m["resets"]), f"{m['fps']:.1f}",
+            _cell(m["ate_rmse"], ".4f"), _cell(m["scale"], ".4f"),
+            _cell(m["scale_consistency"], ".3f"),
+            _cell(m["rpe_trans_rmse"], ".4f"), _cell(m["rpe_rot_rmse"], ".2f"),
+            _cell(m["map_on_surface_pct"], ".1f"), _cell(m["map_near_scene_pct"], ".1f"),
+            str(m["resets"]), _cell(m["fps"], ".1f"),
         ]
         print(" ".join(str(v).ljust(w) for v, (_, w) in zip(row, columns)))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sequences", nargs="+", default=sorted(SEQUENCES))
+    parser.add_argument("--sequences", nargs="+", default=DEFAULT_SEQUENCES,
+                        help=f"one of {DEFAULT_SEQUENCES}")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--regen", action="store_true",
                         help="force regeneration of synthetic sequences")

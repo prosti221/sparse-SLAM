@@ -1,0 +1,134 @@
+"""Stage tests: PnP pose refinement and local bundle adjustment.
+
+Regressions for two fixed bugs:
+- refine_pose_pnp must be seeded with the world-to-camera transform
+  (the inverse of the stored Twc) and must write back camera-to-world.
+- local BA must be anchored: keyframes outside the window are fixed
+  vertices, so the window cannot drift rigidly at zero reprojection cost.
+"""
+import numpy as np
+import pytest
+from scipy.spatial.transform import Rotation
+
+from benchmarks.stages.helpers import make_K, make_frame, se3, yaw_pose, project_gt, set_keypoints, make_world_points
+from slam.core.map import Map
+from slam.core.point import Point
+from slam.core.observation import Observation
+
+
+def _rot_error(R_a, R_b):
+    return np.degrees(np.arccos(np.clip(
+        (np.trace(R_a.T @ R_b) - 1.0) / 2.0, -1.0, 1.0)))
+
+
+def _build_keyframe_map(pose, world_points, K):
+    """Map with a single keyframe at `pose` observing all world points."""
+    m = Map()
+    kf = make_frame(pose, K)
+    uvs = []
+    points = []
+    for X in world_points:
+        uv, _ = project_gt(pose, X, K)
+        uvs.append(uv)
+        pt = Point(X.copy(), None, np.zeros(32, dtype=np.uint8))
+        points.append(pt)
+    set_keypoints(kf, uvs)
+    for i, pt in enumerate(points):
+        pt.add_observation(Observation(kf, pt, i))
+    m.add_keyframe(kf)
+    m.add_points(points)
+    return m, kf
+
+
+def test_refine_pose_pnp_recovers_perturbed_pose():
+    """PnP must pull a slightly perturbed keyframe pose back to truth."""
+    K = make_K()
+    T_true = yaw_pose(0.2, (1.0, 2.0, 5.0))
+    world_points = make_world_points(40, z_range=(8.0, 12.0))
+
+    m, kf = _build_keyframe_map(T_true, world_points, K)
+
+    # Perturb: 1.5 deg rotation + 0.05 units translation.
+    perturb = se3(Rotation.from_euler("y", np.radians(1.5)).as_matrix(),
+                  np.array([0.03, -0.02, 0.04]))
+    kf.pose = T_true @ perturb
+
+    ok, inliers = m.g2o_optimizer.refine_pose_pnp()
+
+    assert ok
+    assert inliers >= 10
+    assert _rot_error(kf.pose[:3, :3], T_true[:3, :3]) < 0.2
+    assert np.linalg.norm(kf.pose[:3, 3] - T_true[:3, 3]) < 0.02
+
+
+def _build_trajectory_map(n_keyframes, world_points, K):
+    """A map with keyframes marching forward along +z, all observing a
+    shared cloud of world points (12 KFs x 40 pts -> strong covisibility)."""
+    m = Map()
+    kfs = []
+    points = [Point(X.copy(), None, np.zeros(32, dtype=np.uint8))
+              for X in world_points]
+    for i in range(n_keyframes):
+        T = yaw_pose(0.0, (0.0, 0.0, 0.5 * i))
+        kf = make_frame(T, K)
+        uvs = []
+        for X in world_points:
+            uv, _ = project_gt(T, X, K)
+            uvs.append(uv)
+        set_keypoints(kf, uvs)
+        for j, pt in enumerate(points):
+            pt.add_observation(Observation(kf, pt, j))
+        m.add_keyframe(kf)
+        kfs.append(kf)
+    m.add_points(points)
+    return m, kfs
+
+
+def test_local_ba_is_anchored_and_recovers_perturbed_keyframe():
+    """Regression for the gauge-freedom bug: with outer keyframes fixed,
+    a moderately perturbed window keyframe must be pulled back to its true
+    pose. Pre-fix, the window could absorb the perturbation as a rigid
+    drift at zero reprojection cost instead."""
+    K = make_K()
+    world_points = make_world_points(40, z_range=(7.0, 10.0))
+    m, kfs = _build_trajectory_map(12, world_points, K)
+
+    T_true_last = kfs[-1].pose.copy()
+    # Realistic perturbation: 1 deg rotation + 0.3 units along the optical
+    # axis (the weakest LM direction - a strong test of anchoring).
+    perturb = se3(Rotation.from_euler("y", np.radians(1.0)).as_matrix(),
+                  np.array([0.0, 0.0, 0.3]))
+    kfs[-1].pose = T_true_last @ perturb
+
+    ok = m.g2o_optimizer.local_bundle_adjustment(
+        kfs[-1].frame_id, window_size=5, fix_points=False)
+
+    assert ok
+    # The perturbed keyframe must be pulled back near its true pose.
+    assert np.linalg.norm(kfs[-1].pose[:3, 3] - T_true_last[:3, 3]) < 0.1, \
+        "local BA failed to recover the perturbed keyframe pose"
+    assert _rot_error(kfs[-1].pose[:3, :3], T_true_last[:3, :3]) < 0.5
+    # The fixed first keyframe must not have moved at all.
+    assert np.allclose(kfs[0].pose, np.eye(4), atol=1e-9)
+    # No other window keyframe may slide rigidly away from its pose.
+    for idx, kf in enumerate(kfs):
+        T_expected = yaw_pose(0.0, (0.0, 0.0, 0.5 * idx))
+        assert np.linalg.norm(kf.pose[:3, 3] - T_expected[:3, 3]) < 0.1
+
+
+def test_local_ba_keeps_window_keyframes_consistent():
+    """Without any perturbation, local BA must be a no-op-ish refinement:
+    poses were generated from exact geometry, so nothing may move much."""
+    K = make_K()
+    world_points = make_world_points(40, z_range=(7.0, 10.0))
+    m, kfs = _build_trajectory_map(12, world_points, K)
+
+    poses_before = [kf.pose.copy() for kf in kfs]
+
+    ok = m.g2o_optimizer.local_bundle_adjustment(
+        kfs[-1].frame_id, window_size=5, fix_points=False)
+
+    assert ok
+    for kf, before in zip(kfs, poses_before):
+        moved = np.linalg.norm(kf.pose[:3, 3] - before[:3, 3])
+        assert moved < 0.05, f"keyframe moved {moved:.3f} on clean input"
