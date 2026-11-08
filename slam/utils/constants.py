@@ -57,6 +57,19 @@ LOCAL_MAP_WINDOW_SIZE = 7
 GLOBAL_BUNDLE_ADJUSTMENT_KEYFRAME_INTERVAL = 0
 # Minimum number of observations a point needs for it to not be pruned
 MINIMUM_OBSERVATIONS_FOR_POINT = 3
+# Phase 2h step 3: redundant-keyframe culling (at most ONE older
+# keyframe per insertion, after optimize/triangulate). A candidate -
+# any keyframe outside the protected windows (never keyframes[0], the
+# gauge anchor; never the local-BA window; never the relocation window,
+# which normal relocalization matches against) - is redundant when at
+# least CULL_REDUNDANCY_RATIO of its point-side map points are observed
+# by at least CULL_MIN_OTHER_OBSERVERS OTHER keyframes: the information
+# it carries is already carried by its neighbors (ORB-SLAM-style).
+# Point-side observations only (the BA constraint registry - phase 2g)
+# and keyframe observers only (tracker frames never anchor anything).
+# Conservative defaults; swept via --override in the 2h A/B.
+CULL_REDUNDANCY_RATIO = 0.9
+CULL_MIN_OTHER_OBSERVERS = 3
 
 # Bidirectional validation codes
 TRIANGULATION_VALIDATION_CODE = {

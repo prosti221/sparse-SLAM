@@ -110,8 +110,8 @@ def print_table(results: dict) -> None:
 # Non-overlapping pipeline stages (see benchmarks/IMPROVEMENT.md phase 0);
 # "other" = measured wall time not covered by any stage.
 PROFILE_STAGES = ["extract", "match", "project", "proj_match", "pnp",
-                   "kf_match", "map_optimize", "triangulate", "relocate",
-                   "other"]
+                   "kf_match", "map_optimize", "triangulate", "cull",
+                   "relocate", "other"]
 
 
 def print_profile_table(results: dict) -> None:

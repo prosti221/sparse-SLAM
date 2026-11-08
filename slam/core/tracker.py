@@ -150,6 +150,13 @@ class Tracker:
             triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
 
+        # Phase 2h step 3: bound map growth - at most one redundant
+        # older keyframe per insertion (never the gauge anchor or the
+        # BA/relocation windows). Runs after triangulation so the
+        # candidate scan sees the full fresh map.
+        with telemetry.stage("cull"):
+            self.map.cull_redundant_keyframe()
+
     def _filter_duplicate_keypoints(self):
         for match in self.cur_frame.matches:
             cur_keyframe_kp = self.map.cur_keyframe.keypoints[match.trainIdx]

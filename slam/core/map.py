@@ -479,6 +479,68 @@ class Map:
             LOG_TAG, f"Removed keyframe {keyframe_id} and {removed_points_count} associated points")
         return True
 
+    def cull_redundant_keyframe(self) -> bool:
+        """Phase 2h step 3: bound map growth by removing redundant
+        keyframes (ORB-SLAM-style). Called once per keyframe insertion,
+        AFTER optimize/triangulate, so the candidate scan sees the full
+        fresh map. A candidate is redundant when at least
+        CULL_REDUNDANCY_RATIO of its point-side map points are observed
+        by at least CULL_MIN_OTHER_OBSERVERS OTHER keyframes - the
+        information it carries is already carried by its neighbors. At
+        most ONE keyframe (the oldest redundant candidate) is culled
+        per insertion. Protected, never culled:
+
+        - keyframes[0] (the gauge anchor),
+        - the local-BA window (LOCAL_MAP_WINDOW_SIZE most recent),
+        - the relocation window (RELOCALIZATION_WINDOW most recent -
+          normal relocalization matches features against these;
+          shrinking that pool mid-run would blind the recovery path).
+
+        Registry semantics (phases 2g/2h lessons): point-side
+        observations only (the frame-side registry holds dedup-only
+        matches and phantom pruned points), and KEYFRAME observers only
+        (never-promoted tracker frames are never optimized and never
+        removed - they must not count as anchors).
+        """
+        protected_tail = max(const.LOCAL_MAP_WINDOW_SIZE,
+                             const.RELOCALIZATION_WINDOW)
+        n = len(self.keyframes)
+        # Candidates: keyframes[1:n-protected_tail] (oldest first).
+        end = n - protected_tail
+        if end <= 1:
+            return False
+        candidates = {kf.frame_id for kf in self.keyframes[1:end]}
+
+        # One pass over live points: bucket each point by which
+        # candidate keyframes observe it (point-side registry), and
+        # count the point's OTHER keyframe observers once (a point
+        # needs >= CULL_MIN_OTHER_OBSERVERS+1 keyframe observers in
+        # total to be redundant evidence for anyone).
+        candidate_points: dict[UUID, list] = defaultdict(list)
+        for point in self.points:
+            kf_observers = [fid for fid in point.observations
+                            if fid in self.keyframes_by_id]
+            n_others = len(kf_observers) - 1
+            for fid in kf_observers:
+                if fid in candidates:
+                    candidate_points[fid].append((point, n_others))
+
+        for kf in self.keyframes[1:end]:
+            bucket = candidate_points.get(kf.frame_id)
+            if not bucket:
+                # No point-side observations (all its points pruned):
+                # ratio undefined. Conservative - skip (it may still
+                # serve relocalization matching).
+                continue
+            redundant = sum(1 for _, n_others in bucket
+                             if n_others >= const.CULL_MIN_OTHER_OBSERVERS)
+            if redundant >= const.CULL_REDUNDANCY_RATIO * len(bucket):
+                debug_log(
+                    LOG_TAG, f"Culling redundant keyframe {kf.frame_id} "
+                    f"({redundant}/{len(bucket)} points redundantly observed)")
+                return self.remove_keyframe_by_id(kf.frame_id)
+        return False
+
     def _remove_keyframe_from_covisibility_graph(self, keyframe_id: UUID):
         if keyframe_id not in self.covisibility_graph:
             return
