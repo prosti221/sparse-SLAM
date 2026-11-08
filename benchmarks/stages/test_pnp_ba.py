@@ -352,3 +352,177 @@ def test_filter_duplicate_registers_consistent_observations():
 
     # Both matched keypoints masked for triangulation.
     assert cur.kp_unique_mask == [False, False]
+
+
+# --- Phase 2i (P1): BA-overhead cuts. All three must be BIT-IDENTICAL
+# to the code they replaced: the vectorized per-group norms, the
+# hoisted quality-flag pass in the error fold, and the incremental
+# edge bookkeeping that replaced the per-call opt.edges() rebuild.
+
+def _fold_map(n_kfs, world_points, K, include_behind_camera=True):
+    """A trajectory map plus one point that is BEHIND every camera
+    (exercises the finite-filter path: its fold never updates, so its
+    observers must never be flagged)."""
+    m = Map()
+    kfs = []
+    points = [Point(X.copy(), None, np.zeros(32, dtype=np.uint8))
+              for X in world_points]
+    if include_behind_camera:
+        points.append(Point(np.array([0.0, 0.0, -1.0]), None,
+                            np.zeros(32, dtype=np.uint8)))
+    for i in range(n_kfs):
+        T = yaw_pose(0.0, (0.0, 0.0, 0.5 * i))
+        kf = make_frame(T, K)
+        uvs = []
+        for X in world_points:
+            uv, _ = project_gt(T, X, K)
+            uvs.append(uv)
+        if include_behind_camera:
+            uvs.append((320.0, 240.0))  # pixel for the behind-camera point
+        set_keypoints(kf, uvs)
+        for j, pt in enumerate(points):
+            pt.add_observation(Observation(kf, pt, j))
+        m.add_keyframe(kf)
+        kfs.append(kf)
+    m.add_points(points)
+    return m, kfs, points
+
+
+def _reference_fold(observations):
+    """The pre-2i semantics, inlined: by-frame batched projection with
+    per-observation norms, and per-update quality flags."""
+    from collections import defaultdict
+    by_frame = defaultdict(list)
+    for obs in observations:
+        by_frame[obs.frame].append(obs)
+
+    error_by_obs = {}
+    for frame, group in by_frame.items():
+        pts_3d = np.empty((len(group), 3), dtype=np.float64)
+        for i, obs in enumerate(group):
+            pts_3d[i] = obs.pt_3d
+        projected = frame.project_points(pts_3d, normalized=True)
+        for obs, proj in zip(group, projected):
+            if not np.all(np.isfinite(proj)):
+                continue
+            error_by_obs[obs] = np.linalg.norm(proj - obs.pt_2d_norm)
+
+    for obs in observations:
+        error = error_by_obs.get(obs)
+        if error is not None:
+            obs.point.update_reprojection_error(error)  # flags on
+
+
+def _flagged_frames(m):
+    """Flagged keyframes by POSITION: twin maps have different uuid4s,
+    so positional indices are the comparable identity."""
+    return {i for i, kf in enumerate(m.keyframes)
+            if kf.tracking_quality_needs_update}
+
+
+def test_recompute_point_errors_bit_identical_point_grouped():
+    """The 2i fold (vectorized norms + hoisted flags) must produce
+    EXACTLY the old averages and the old final flag set, on the
+    point-consecutive order local BA uses."""
+    K = make_K()
+    world_points = make_world_points(12, z_range=(7.0, 10.0))
+    m_ref, kfs_ref, pts_ref = _fold_map(6, world_points, K)
+    m_new, kfs_new, pts_new = _fold_map(6, world_points, K)
+
+    obs_ref = [obs for p in pts_ref for obs in p.observations.values()]
+    obs_new = [obs for p in pts_new for obs in p.observations.values()]
+    assert len(obs_ref) == len(obs_new)
+
+    _reference_fold(obs_ref)
+    m_new.g2o_optimizer._recompute_point_errors(obs_new)
+
+    for p_ref, p_new in zip(pts_ref, pts_new):
+        assert p_new.average_reprojection_error == \
+            p_ref.average_reprojection_error, \
+            "running average diverged from the reference fold"
+    assert _flagged_frames(m_new) == _flagged_frames(m_ref)
+    # The behind-camera point never updates: its average stays 0 and it
+    # contributes no flags (covered positionally by the set equality).
+    assert pts_new[-1].average_reprojection_error == 0.0
+
+
+def test_recompute_point_errors_bit_identical_frame_grouped():
+    """Same equivalence on the frame-grouped order the global-BA path
+    uses (observations grouped by keyframe, not by point): the hoist's
+    change-detection must stay correct there too."""
+    K = make_K()
+    world_points = make_world_points(8, z_range=(7.0, 10.0))
+    m_ref, kfs_ref, pts_ref = _fold_map(5, world_points, K)
+    m_new, kfs_new, pts_new = _fold_map(5, world_points, K)
+
+    obs_ref = [obs for kf in kfs_ref for obs in kf.observed_points.values()]
+    obs_new = [obs for kf in kfs_new for obs in kf.observed_points.values()]
+
+    _reference_fold(obs_ref)
+    m_new.g2o_optimizer._recompute_point_errors(obs_new)
+
+    for p_ref, p_new in zip(pts_ref, pts_new):
+        assert p_new.average_reprojection_error == \
+            p_ref.average_reprojection_error
+    assert _flagged_frames(m_new) == _flagged_frames(m_ref)
+
+
+def test_update_reprojection_error_flag_parameter():
+    """update_quality=False must skip flagging entirely; the default
+    must keep flagging (tracker and triangulation call sites)."""
+    K = make_K()
+    m, kfs, pts = _fold_map(3, make_world_points(4, z_range=(7.0, 10.0)), K)
+    kf = kfs[0]
+    pt = pts[0]
+    kf.tracking_quality_needs_update = False
+
+    pt.update_reprojection_error(0.5, update_quality=False)
+    assert not kf.tracking_quality_needs_update
+    # Running average: starts at 0, divides by the observation count.
+    assert pt.average_reprojection_error == 0.5 / pt.num_observations
+
+    pt.update_reprojection_error(0.5)
+    assert kf.tracking_quality_needs_update
+
+
+def test_persistent_graph_edge_bookkeeping_consistency():
+    """Phase 2i (P1): the incremental pair bookkeeping must exactly
+    mirror the graph across reconciles - including the stale-vertex
+    cascade path exercised by a 2h keyframe cull."""
+    K = make_K()
+    world_points = make_world_points(40, z_range=(7.0, 10.0))
+    m, kfs = _build_trajectory_map(12, world_points, K)
+
+    def bookkeeping_pairs(ba):
+        return {(pid, fid)
+                for pid, fids in ba._graph_edges_by_pt.items()
+                for fid in fids}
+
+    def graph_pairs(ba):
+        vid2pt = {v: pid for pid, v in ba._pt_vertex.items()}
+        vid2kf = {v: fid for fid, v in ba._kf_vertex.items()}
+        return {(vid2pt[e.vertex(0)], vid2kf[e.vertex(1)])
+                for e in ba._local_opt.edges()}
+
+    ba = m.g2o_optimizer
+    assert ba.local_bundle_adjustment(kfs[-1].frame_id,
+                                       window_size=5, fix_points=False)
+    assert bookkeeping_pairs(ba) == graph_pairs(ba)
+
+    # Cull a middle keyframe (2h machinery), then reconcile again: the
+    # cascade path must drop exactly the culled keyframe's pairs.
+    assert m.remove_keyframe_by_id(kfs[2].frame_id)
+    assert ba.local_bundle_adjustment(m.keyframes[-1].frame_id,
+                                      window_size=5, fix_points=False)
+    assert bookkeeping_pairs(ba) == graph_pairs(ba)
+    assert kfs[2].frame_id not in ba._kf_vertex
+
+    # A third reconcile with a sliding window (different stale set).
+    assert ba.local_bundle_adjustment(m.keyframes[-1].frame_id,
+                                      window_size=7, fix_points=False)
+    assert bookkeeping_pairs(ba) == graph_pairs(ba)
+
+    # Count consistency across both views.
+    n_pairs = sum(len(s) for s in ba._graph_edges_by_pt.values())
+    assert n_pairs == sum(len(s) for s in ba._graph_edges_by_kf.values())
+    assert n_pairs == len(ba._local_opt.edges())

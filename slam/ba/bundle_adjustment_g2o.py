@@ -38,6 +38,15 @@ class G2OBundleAdjustment:
         self._local_opt = None
         self._kf_vertex = {}   # frame_id -> VertexSE3Expmap
         self._pt_vertex = {}   # point_id -> VertexPointXYZ
+        # Phase 2i (P1): incremental edge bookkeeping. The 2f reconcile
+        # rebuilt the existing-pair set from opt.edges() on EVERY call -
+        # two pybind vertex() calls per edge (821k calls across the 39
+        # BA calls of a translation run, ~21% of its BA time). These
+        # two views of the graph's (point, keyframe) edge pairs are
+        # maintained at edge creation and stale-vertex removal instead;
+        # pair membership is O(1) and no per-call rebuild happens.
+        self._graph_edges_by_pt = {}   # point_id -> set(frame_id)
+        self._graph_edges_by_kf = {}   # frame_id -> set(point_id)
         self._local_edge_info = None
         self._local_robust_kernel = None
         self._local_vertex_id = 0
@@ -248,6 +257,8 @@ class G2OBundleAdjustment:
         self._local_edge_info = np.eye(2)
         self._kf_vertex = {}
         self._pt_vertex = {}
+        self._graph_edges_by_pt = {}
+        self._graph_edges_by_kf = {}
         return opt
 
     def _add_point_edge(self, obs):
@@ -258,7 +269,16 @@ class G2OBundleAdjustment:
         edge.set_information(self._local_edge_info)
         edge.set_measurement(obs.pt_2d_norm)
         edge.set_robust_kernel(self._local_robust_kernel)
-        self._local_opt.add_edge(edge)
+        # Record the pair only if the edge actually entered the graph
+        # (add_edge returns False on failure): the bookkeeping must
+        # mirror the graph exactly, and a failed edge must stay
+        # "missing" so the next reconcile's delta pass re-creates it -
+        # the same self-healing the 2f per-call rebuild provided.
+        if self._local_opt.add_edge(edge):
+            pid = obs.point.point_id
+            fid = obs.frame.frame_id
+            self._graph_edges_by_pt.setdefault(pid, set()).add(fid)
+            self._graph_edges_by_kf.setdefault(fid, set()).add(pid)
         return edge
 
     def _local_ba_persistent(self, local_keyframes, local_points,
@@ -276,6 +296,8 @@ class G2OBundleAdjustment:
             self._local_opt = None
             self._kf_vertex = {}
             self._pt_vertex = {}
+            self._graph_edges_by_pt = {}
+            self._graph_edges_by_kf = {}
             return False
 
     def _reconcile_and_optimize(self, local_keyframes, local_points,
@@ -303,9 +325,23 @@ class G2OBundleAdjustment:
         for frame_id in [fid for fid in self._kf_vertex
                          if fid not in target_kf_ids]:
             opt.remove_vertex(self._kf_vertex.pop(frame_id))
+            # Maintain the edge bookkeeping: the cascade removed
+            # exactly this keyframe's pairs.
+            for pid in self._graph_edges_by_kf.pop(frame_id, ()):
+                pt_pairs = self._graph_edges_by_pt.get(pid)
+                if pt_pairs is not None:
+                    pt_pairs.discard(frame_id)
+                    if not pt_pairs:
+                        del self._graph_edges_by_pt[pid]
         for point_id in [pid for pid in self._pt_vertex
                          if pid not in target_pt_ids]:
             opt.remove_vertex(self._pt_vertex.pop(point_id))
+            for fid in self._graph_edges_by_pt.pop(point_id, ()):
+                kf_pairs = self._graph_edges_by_kf.get(fid)
+                if kf_pairs is not None:
+                    kf_pairs.discard(point_id)
+                    if not kf_pairs:
+                        del self._graph_edges_by_kf[fid]
 
         # --- Add new point vertices (in map order). Edges are created in
         # a single delta pass below, from the observations list - the
@@ -338,23 +374,22 @@ class G2OBundleAdjustment:
 
         # --- Delta edges: one pass over the observations list, in the
         # same order the fresh build adds them, creating only pairs not
-        # yet in the graph. The existing-pairs set is rebuilt per call
-        # (O(edges), small); the pass also self-heals any edge a
-        # previous call failed to create. ---
-        vid2pt = {v: pid for pid, v in self._pt_vertex.items()}
-        vid2kf = {v: fid for fid, v in self._kf_vertex.items()}
-        existing_pairs = {
-            (vid2pt.get(e.vertex(0)), vid2kf.get(e.vertex(1)))
-            for e in opt.edges()
-        }
+        # yet in the graph. Phase 2i (P1): pair membership comes from
+        # the incremental bookkeeping (_graph_edges_by_pt) instead of
+        # rebuilding a set from opt.edges() per call; the iteration
+        # order is unchanged, so the solve sequence is identical. (The
+        # frame registry is NOT a valid edge source:
+        # _filter_duplicate_keypoints registers observations frame-side
+        # only, and overwrites frame-side entries with objects that
+        # differ from the point-side ones - both variants were
+        # measured to break the fresh-build parity.) ---
         for obs in observations:
             fid = obs.frame.frame_id
             if fid not in self._kf_vertex:
                 continue
-            key = (obs.point.point_id, fid)
-            if key not in existing_pairs:
+            pt_pairs = self._graph_edges_by_pt.get(obs.point.point_id)
+            if pt_pairs is None or fid not in pt_pairs:
                 self._add_point_edge(obs)
-                existing_pairs.add(key)
 
         # Safety net: every KEYFRAME observation must now be an edge.
         # (The observations list also contains non-keyframe tracker
@@ -685,29 +720,67 @@ class G2OBundleAdjustment:
         # forward by another point's grouping) and measurably diverges
         # orbit/tum. Pass 1 only READS geometry (project + norm); pass 2
         # applies the errors in the original order.
+        #
+        # Phase 2i (P1), both bit-identical: (a) pass 1 computes the
+        # norms vectorized per frame group (the same per-row reduction
+        # as the per-observation np.linalg.norm call it replaces), and
+        # (b) pass 2 hoists the quality-flag storm - update_reprojection
+        # _error used to flag ALL of a point's observers on EVERY fold
+        # step (quadratic in observation count; ~780k idempotent
+        # attribute-sets per BA call on translation). The flag is
+        # idempotent and lazily consumed (Frame.tracking_quality
+        # recomputes on next read), so folding with update_quality=False
+        # and flagging each point's observers once - only points whose
+        # fold actually updated, exactly as the interleaved flags would
+        # have - leaves the observable state identical. The local-BA
+        # observations list is point-consecutive (one flag pass per
+        # point); the global-BA list is frame-grouped, where the
+        # change-detection flags each point once per contiguous segment
+        # - idempotent, so still correct.
         by_frame = defaultdict(list)
         for obs in observations:
             by_frame[obs.frame].append(obs)
 
         error_by_obs = {}
         for frame, group in by_frame.items():
-            pts_3d = np.empty((len(group), 3), dtype=np.float64)
-            for i, obs in enumerate(group):
-                pts_3d[i] = obs.pt_3d
+            pts_3d = np.array([obs.pt_3d for obs in group],
+                              dtype=np.float64)
 
             projected = frame.project_points(pts_3d, normalized=True)
 
-            for obs, proj in zip(group, projected):
-                # project_points writes NaN for behind-camera points;
-                # the old path skipped them (project_point -> None).
-                if not np.all(np.isfinite(proj)):
-                    continue
-                error_by_obs[obs] = np.linalg.norm(proj - obs.pt_2d_norm)
+            # project_points writes NaN for behind-camera points;
+            # the old path skipped them (project_point -> None).
+            # The finite mask is vectorized, but the norm stays a
+            # per-observation 1-D call: np.linalg.norm(x, axis=1)
+            # reduces via add.reduce while the 1-D norm reduces via
+            # dot - measurably different at the last ULP (stage-pinned),
+            # and the fold's bits are load-bearing (finding 15).
+            finite = np.all(np.isfinite(projected), axis=1)
+            for obs, proj, ok in zip(group, projected, finite):
+                if ok:
+                    error_by_obs[obs] = np.linalg.norm(
+                        proj - obs.pt_2d_norm)
+
+        # Pass 2: apply the errors in the ORIGINAL observations order,
+        # flagging each point's observers once after its fold segment.
+        flushed = None
+        flushed_updated = False
+
+        def _flush_flags():
+            if flushed is not None and flushed_updated:
+                flushed._update_observing_keyframe_quality()
 
         for obs in observations:
+            if obs.point is not flushed:
+                _flush_flags()
+                flushed = obs.point
+                flushed_updated = False
             error = error_by_obs.get(obs)
             if error is not None:
-                obs.point.update_reprojection_error(error)
+                obs.point.update_reprojection_error(
+                    error, update_quality=False)
+                flushed_updated = True
+        _flush_flags()
 
     def _extract_camera_params(self):
         if self.map.cur_keyframe is None or not hasattr(self.map.cur_keyframe, 'K'):

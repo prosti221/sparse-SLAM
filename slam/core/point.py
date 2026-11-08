@@ -40,13 +40,25 @@ class Point:
     def get_observation_in_keyframe(self, frame_id: UUID) -> Observation:
         return self.observations.get(frame_id, None)
 
-    def update_reprojection_error(self, error: float) -> None:
+    def update_reprojection_error(self, error: float,
+                                  update_quality: bool = True) -> None:
         if self.num_observations > 0:
             self.average_reprojection_error = (
                 self.average_reprojection_error *
                 (self.num_observations - 1) + error
             ) / self.num_observations
-        self._update_observing_keyframe_quality()
+        # Phase 2i (P1): the BA error-fold recomputes every point's
+        # errors back-to-back, and flagging ALL observers on EVERY fold
+        # step was quadratic in a point's observation count (~780k
+        # idempotent attribute-sets per BA call on translation, whose
+        # long-lived points carry ~21 observations). The flag is
+        # idempotent and lazily consumed (Frame.tracking_quality
+        # recomputes on next read), so batch folds pass update_quality=
+        # False and flag each point's observers once, afterwards
+        # (preserving the exact set: only points whose fold actually
+        # updated get flagged - see _recompute_point_errors).
+        if update_quality:
+            self._update_observing_keyframe_quality()
 
     def _update_observing_keyframe_quality(self):
         for obs in self.observations.values():
