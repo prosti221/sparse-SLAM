@@ -258,3 +258,27 @@ def test_timer_global_ba_disabled_by_default():
     assert m.should_perform_global_bundle_adjustment(4)      # 12 % 4 == 0
     assert not m.should_perform_global_bundle_adjustment(5)  # 12 % 5 != 0
     assert not m.should_perform_global_bundle_adjustment(0)
+
+
+def test_point_remove_observation_updates_count():
+    """Finding 16: Point.remove_observation used to assign to the
+    setter-less num_observations property (AttributeError on every
+    call that found the observation). Reachable via Map._remove_keyframe
+    (the keyframe-culling path, unused by benchmarks so far) - the map
+    management item cannot be enabled until this works."""
+    import numpy as np
+
+    from slam.core.point import Point
+    from slam.core.observation import Observation
+
+    K = make_K()
+    kf = make_frame(yaw_pose(0.0, (0, 0, 0)), K)
+    set_keypoints(kf, [(10.0, 10.0)])  # Observation reads frame.keypoints lazily
+    pt = Point(np.zeros(3), None, np.zeros(32, dtype=np.uint8))
+
+    obs = Observation(kf, pt, 0)
+    pt.add_observation(obs)
+    assert pt.num_observations == 1
+
+    pt.remove_observation(kf.frame_id)  # must not raise
+    assert pt.num_observations == 0

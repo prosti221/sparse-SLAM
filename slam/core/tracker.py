@@ -204,28 +204,22 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _project_visible_map_points(self) -> List[Tuple[Point, np.ndarray]]:
-        # Phase 2c: batch-projected. The previous per-point loop called
+        # Phase 2c/2e: batch-projected. The original per-point loop called
         # project_point for every map point every frame (a 4x4 @ 4 GEMV
         # each, ~800 frames x 10k points on TUM); Frame.project_points
         # does the same math as one GEMM. In-front filtering matches the
         # old per-point semantics exactly (behind-camera -> skipped).
-        if not self.map.points:
+        points = self.map.points
+        if not points:
             return []
 
-        pts_3d = np.empty((len(self.map.points), 3), dtype=np.float64)
-        for i, mp in enumerate(self.map.points):
-            pts_3d[i] = mp.pt_3d
-
+        pts_3d = np.array([mp.pt_3d for mp in points], dtype=np.float64)
         uv = self.cur_frame.project_points(pts_3d, normalized=False)
 
-        projected_points = []
-        for mp, (u, v) in zip(self.map.points, uv):
-            # project_points writes NaN for behind-camera points.
-            if not (np.isfinite(u) and np.isfinite(v)):
-                continue
-            projected_points.append((mp, np.array([u, v])))
-
-        return projected_points
+        # Behind-camera rows are NaN; keep the rest as (point, pixel-row)
+        # pairs. The uv rows are read-only for consumers.
+        finite_idx = np.flatnonzero(np.isfinite(uv).all(axis=1))
+        return [(points[i], uv[i]) for i in finite_idx]
 
     def _match_projected_points(
         self, projected_points: List[Tuple[Point, np.ndarray]],
@@ -246,11 +240,16 @@ class Tracker:
         # coordinates (same margin-10 bounds semantics as the previous
         # is_point_visible call, which re-projected every map point a
         # second time per frame - the second of the projection costs).
+        # Phase 2e: pre-filter (bounds + not-yet-observed) so the KD-tree
+        # runs as ONE batched ball query instead of a per-point scipy call.
         H, W = self.cur_frame.image.shape[:2]
         margin = 10
 
-        for mp, (u_proj, v_proj) in projected_points:
-            # If the points are out of bounds, we skip.
+        candidates = []
+        centers = []
+        for mp, uv_proj in projected_points:
+            u_proj, v_proj = uv_proj
+            # Out-of-bounds projections are skipped.
             if not (margin <= u_proj < W - margin and
                     margin <= v_proj < H - margin):
                 continue
@@ -258,10 +257,22 @@ class Tracker:
             if self.cur_frame in mp.observations:
                 continue
 
-            # Find keypoints within threshold
-            nearby_indices = tree.query_ball_point(
-                [u_proj, v_proj], r=dist_thresh)
+            candidates.append((mp, u_proj, v_proj))
+            centers.append((u_proj, v_proj))
 
+        if not candidates:
+            debug_log(
+                LOG_TAG, f"Found {len(observations)} projected matches after filtering")
+            return observations
+
+        # Batched ball query: one scipy call for all candidates. Verified
+        # bit-identical against per-point calls on all four sequences
+        # (the initial suspicion that batched results differed was a
+        # false attribution - the real divergence was the observation-
+        # update order in _recompute_point_errors, fixed separately).
+        nearby_lists = tree.query_ball_point(centers, r=dist_thresh)
+
+        for (mp, u_proj, v_proj), nearby_indices in zip(candidates, nearby_lists):
             best_idx = -1
             best_dist = float('inf')
 

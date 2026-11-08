@@ -1,5 +1,6 @@
 import g2o
 import numpy as np
+from collections import defaultdict
 from slam.core.frame import Frame
 from slam.core.point import Point
 from slam.core.observation import Observation
@@ -336,22 +337,23 @@ class G2OBundleAdjustment:
 
             # Create point vertices with interleaved IDs
             point_to_vertex = {}
-            n = 5
-            best_indices = sorted(
-                range(len(points)), key=lambda i: points[i].average_reprojection_error, reverse=False)[:n]
-
             for i, point in enumerate(points):
                 v_point = g2o.VertexPointXYZ()
                 # Start after keyframe vertices
                 v_point.set_id(len(keyframes) + i)
                 v_point.set_estimate(point.pt_3d)
                 v_point.set_fixed(fix_points)
-                # v_point.set_fixed(fix_points or i in best_indices)
                 v_point.set_marginalized(True)
                 opt.add_vertex(v_point)
                 point_to_vertex[point] = v_point
 
-            # Add observation edges
+            # Add observation edges. Phase 2e: the 2x2 information matrix
+            # is constant across edges - hoisted out of the loop instead
+            # of allocating np.eye(2) once per edge (~700k allocations on
+            # TUM). The dead best_indices sort (top-5 lowest-error point
+            # indices, consumed by a commented-out set_fixed line) is
+            # gone too.
+            edge_information = np.eye(2)
             edge_count = 0
             for obs in observations:
                 if obs.frame.frame_id not in frame_to_vertex or obs.point not in point_to_vertex:
@@ -362,7 +364,7 @@ class G2OBundleAdjustment:
                 edge.set_vertex(0, point_to_vertex[obs.point])  # point
                 # camera pose
                 edge.set_vertex(1, frame_to_vertex[obs.frame.frame_id])
-                edge.set_information(np.eye(2))
+                edge.set_information(edge_information)
                 edge.set_measurement(obs.pt_2d_norm)
                 edge.set_robust_kernel(robust_kernel)
                 opt.add_edge(edge)
@@ -474,14 +476,42 @@ class G2OBundleAdjustment:
         self,
         observations: List[Observation]
     ) -> None:
+        # Phase 2e: batch the per-frame projection. The original loop
+        # re-projected every observed point individually (~1.5M single-
+        # point GEMVs on TUM per run); Frame.project_points does the
+        # same math as one GEMM per frame group.
+        #
+        # UPDATE ORDER IS LOAD-BEARING and is preserved exactly by the
+        # two-pass structure: Point.update_reprojection_error keeps a
+        # running average, so each point's own errors must be applied in
+        # the OBSERVATIONS-LIST order. A naive by-frame grouping changes
+        # that order (a later-listed point's earlier frame can be pulled
+        # forward by another point's grouping) and measurably diverges
+        # orbit/tum. Pass 1 only READS geometry (project + norm); pass 2
+        # applies the errors in the original order.
+        by_frame = defaultdict(list)
         for obs in observations:
-            projected_point = obs.frame.project_point(obs.pt_3d)
-            if projected_point is None:
-                continue
-            else:
-                error = np.linalg.norm(projected_point - obs.pt_2d_norm)
+            by_frame[obs.frame].append(obs)
 
-            obs.point.update_reprojection_error(error)
+        error_by_obs = {}
+        for frame, group in by_frame.items():
+            pts_3d = np.empty((len(group), 3), dtype=np.float64)
+            for i, obs in enumerate(group):
+                pts_3d[i] = obs.pt_3d
+
+            projected = frame.project_points(pts_3d, normalized=True)
+
+            for obs, proj in zip(group, projected):
+                # project_points writes NaN for behind-camera points;
+                # the old path skipped them (project_point -> None).
+                if not np.all(np.isfinite(proj)):
+                    continue
+                error_by_obs[obs] = np.linalg.norm(proj - obs.pt_2d_norm)
+
+        for obs in observations:
+            error = error_by_obs.get(obs)
+            if error is not None:
+                obs.point.update_reprojection_error(error)
 
     def _extract_camera_params(self):
         if self.map.cur_keyframe is None or not hasattr(self.map.cur_keyframe, 'K'):

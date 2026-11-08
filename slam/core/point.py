@@ -27,7 +27,11 @@ class Point:
     def remove_observation(self, frame_id: UUID):
         if frame_id in self.observations:
             del self.observations[frame_id]
-            self.num_observations = len(self.observations)
+            # NOTE (finding 16): this used to re-assign
+            # self.num_observations here - an AttributeError, since
+            # num_observations is a setter-less property that computes
+            # len(self.observations) live. The assignment is simply
+            # gone; the property reads through.
         self._update_observing_keyframe_quality()
 
     def is_observed_by(self, frame_id: UUID) -> bool:
