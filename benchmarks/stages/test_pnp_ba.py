@@ -282,3 +282,73 @@ def test_point_remove_observation_updates_count():
 
     pt.remove_observation(kf.frame_id)  # must not raise
     assert pt.num_observations == 0
+
+
+def test_filter_duplicate_registers_consistent_observations():
+    """Finding 17 (phase 2g): _filter_duplicate_keypoints must register
+    duplicate-keypoint matches CONSISTENTLY - point-side AND frame-side
+    with the SAME object (they used to be frame-side only, invisible to
+    BA), and must NOT overwrite an existing projection-matched
+    observation for the same (point, frame) - the projection match is
+    the better-anchored measurement."""
+    from types import SimpleNamespace
+
+    import cv2 as cv
+
+    from slam.core.map import Map
+    from slam.core.observation import Observation
+    from slam.core.point import Point
+    from slam.core.tracker import Tracker
+
+    K = make_K()
+    m = Map()
+    prev_kf = make_frame(yaw_pose(0.0, (0, 0, 0)), K)
+    cur = make_frame(yaw_pose(0.0, (0.5, 0, 0)), K)
+    set_keypoints(prev_kf, [(10.0, 10.0), (50.0, 50.0)])
+    set_keypoints(cur, [(12.0, 10.0), (52.0, 50.0)])
+
+    # pt_dedup: observed by prev_kf only - the dedup match must become a
+    # FULL observation (both registries, same object). Placed exactly on
+    # cur's keypoint-0 ray so it passes the geometric validation gate.
+    K_inv = np.linalg.inv(K)
+    Xc = 5.0 * (K_inv @ np.array([12.0, 10.0, 1.0]))
+    pt_dedup = Point((cur.pose @ np.append(Xc, 1.0))[:3], None,
+                     np.zeros(32, dtype=np.uint8))
+    pt_dedup.add_observation(Observation(prev_kf, pt_dedup, 0))
+
+    # pt_both: prev_kf obs + an EXISTING projection-matched obs on cur -
+    # the dedup match must keep the projection observation untouched.
+    pt_both = Point(np.array([1.0, 0.0, 5.0]), None,
+                    np.zeros(32, dtype=np.uint8))
+    pt_both.add_observation(Observation(prev_kf, pt_both, 1))
+    proj_obs = Observation(cur, pt_both, 1)
+    pt_both.add_observation(proj_obs)
+
+    m.add_keyframe(prev_kf)
+    m.add_points([pt_dedup, pt_both])
+
+    # cur matches: query 0 <-> prev train 0 (pt_dedup), query 1 <->
+    # prev train 1 (pt_both)
+    cur.set_match_data([cv.DMatch(0, 0, 0.0), cv.DMatch(1, 1, 0.0)])
+    cur.kp_unique_mask = [True, True]
+
+    tracker = SimpleNamespace(cur_frame=cur, map=m)
+    Tracker._filter_duplicate_keypoints(tracker)
+
+    # Dedup-only case: registers on the frame side ONLY (deliberate
+    # status quo - these are load-bearing for insertion-time PnP and
+    # tracking-quality counts, but were measured NOT to be reliable
+    # enough to promote to full point-side observations; see the 2g
+    # A/B record). The point side must NOT gain it.
+    assert not pt_dedup.is_observed_by(cur.frame_id), \
+        "dedup-only match leaked into the point-side registry"
+    frame_obs = cur.observed_points[pt_dedup.point_id]
+    assert frame_obs.kp_idx == 0
+
+    # Both-case: the projection observation survived, same object both
+    # sides, and no new observation replaced it.
+    assert pt_both.observations[cur.frame_id] is proj_obs
+    assert cur.observed_points[pt_both.point_id] is proj_obs
+
+    # Both matched keypoints masked for triangulation.
+    assert cur.kp_unique_mask == [False, False]

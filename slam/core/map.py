@@ -145,7 +145,18 @@ class Map:
 
         # Remove connections between all pairs of keyframes that observe this point
         for i, kf1_id in enumerate(observing_kfs):
-            # Remove point from kf observation (only for existing keyframes)
+            # Remove point from kf observation (only for existing
+            # keyframes). NOTE (phase 2g): a direct del leaves STALE
+            # keypoint_to_point_map entries that _filter_duplicate_
+            # keypoints can later match against, resurrecting pruned
+            # points as phantom observations. Cleaning them (via
+            # remove_point_observation) was MEASURED AND REJECTED: the
+            # stale entries act as a de facto "don't re-triangulate
+            # where a point already died" guard, and clearing them floods
+            # fast-rotation sequences with junk re-triangulations
+            # (orbit surf 50.8 -> 6.1, a baseline failure). The
+            # phantom-observation behavior stays until the map-management
+            # item replaces it with an explicit redetection policy.
             if kf1_id in self.keyframes_by_id:
                 del self.keyframes_by_id[kf1_id].observed_points[point.point_id]
 

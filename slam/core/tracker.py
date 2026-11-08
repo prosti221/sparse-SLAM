@@ -164,6 +164,33 @@ class Tracker:
 
             self.cur_frame.kp_unique_mask[match.queryIdx] = False
 
+            # Finding 17 fix - the CONSISTENCY CORE only. The old code
+            # unconditionally wrote the frame-side registry, which
+            # OVERWROTE the existing (projection-matched) observation
+            # for the same (point, frame) with a different measurement:
+            # the two registries then disagreed, and insertion-time PnP
+            # consumed a different pixel than BA's constraint for the
+            # same point. Now: if projection matching already
+            # registered this pair, keep its observation and only mask
+            # the keypoint.
+            if point.is_observed_by(self.cur_frame.frame_id):
+                telemetry.event("dedup_skip_existing")
+                continue
+
+            # Dedup-only matches stay FRAME-SIDE ONLY, exactly as
+            # before: they are load-bearing for insertion-time PnP and
+            # tracking-quality counts, but deliberately NOT promoted to
+            # full (point-side) observations. That promotion was
+            # measured across five configurations (no gate; 10/5/3 px
+            # geometric validation gates) and REJECTED: the raw chains
+            # gave tum its best-ever accuracy (ATE 0.038) but poisoned
+            # orbit's map below its surf baseline in every
+            # configuration that kept tum's win, and no gate value
+            # satisfied all four sequences (3px saved orbit but
+            # collapsed tum's tracker to 7 keyframes). The failure mode
+            # is descriptor-chain reliability under fast rotation,
+            # which a projection-distance gate cannot see. Full record
+            # in benchmarks/IMPROVEMENT.md "Phase 2g results".
             self.cur_frame.add_point_observation(
                 Observation(self.cur_frame, point, match.queryIdx))
 
@@ -254,7 +281,13 @@ class Tracker:
                     margin <= v_proj < H - margin):
                 continue
 
-            if self.cur_frame in mp.observations:
+            # Skip points this frame already observes (finding 17's
+            # latent bug: this compared a Frame object against UUID
+            # keys - always False, so the guard never fired; harmless
+            # today because nothing point-side-observes the current
+            # frame before projection matching within an update, but
+            # load-bearing now that the registries are consistent).
+            if self.cur_frame.frame_id in mp.observations:
                 continue
 
             candidates.append((mp, u_proj, v_proj))

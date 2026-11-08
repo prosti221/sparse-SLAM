@@ -27,6 +27,11 @@ Event keys (counted pipeline decisions - deterministic per run):
                               BA rejection reasons
   tri_accepted / tri_rejected / tri_reject_<CODE>
                               triangulation validation totals and reasons
+  dedup_skip_existing       duplicate-keypoint matches whose (point,
+                              frame) pair was already registered by
+                              projection matching - the projection
+                              observation is kept and only the keypoint
+                              is masked (phase 2g, finding 17)
   reloc_attempt / reloc_success / reloc_aggressive_attempt /
   reloc_aggressive_success / reloc_failed / system_reset
                               relocalization machinery

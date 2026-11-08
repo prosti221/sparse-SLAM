@@ -93,10 +93,14 @@ class Frame:
 
     def remove_point_observation(self, point_id: UUID) -> None:
         if point_id in self.observed_points:
-            keypoint_idx = self.observed_points[point_id].kp_idx
+            # Finding 17's latent bug: this probed keypoint_to_point_map
+            # with the int kp_idx, but the map keys are KeyPoint OBJECTS
+            # (see add_point_observation) - the cleanup never removed
+            # anything. Key by the observation's keypoint object.
+            keypoint = self.observed_points[point_id].keypoint
             del self.observed_points[point_id]
-            if keypoint_idx in self.keypoint_to_point_map:
-                del self.keypoint_to_point_map[keypoint_idx]
+            if keypoint in self.keypoint_to_point_map:
+                del self.keypoint_to_point_map[keypoint]
 
     def world_to_camera(self, point_3d: np.ndarray) -> np.ndarray:
         # Convert to homogeneous coordinates
