@@ -206,6 +206,9 @@ def normalize_vec(v):
 
 
 def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
+    # Constants are read through the module alias (phase 2i, Q2): the
+    # star-imported copies defeat --override, and this gate is the
+    # sweep target.
     # 1. Check if point is in front of both cameras
     point_3d = point_4d[:3]
 
@@ -219,11 +222,11 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     # return cur_error <= max_error and prev_error <= max_error
     validation_code = TRIANGULATION_VALIDATION_CODE['VALID']
 
-    if cur_cam_coords[2] <= MIN_DEPTH or prev_cam_coords[2] <= MIN_DEPTH:
+    if cur_cam_coords[2] <= const.MIN_DEPTH or prev_cam_coords[2] <= const.MIN_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MIN_DEPTH_VIOLATION']
 
     # 2. Check depth bounds
-    if cur_cam_coords[2] > MAX_DEPTH or prev_cam_coords[2] > MAX_DEPTH:
+    if cur_cam_coords[2] > const.MAX_DEPTH or prev_cam_coords[2] > const.MAX_DEPTH:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
 
     # 3. Check parallax angle
@@ -233,11 +236,14 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     cos_parallax = np.dot(vec1, vec2)
     parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax, -1.0, 1.0)))
 
-    if parallax_angle < MAX_PARALLAX:
+    if parallax_angle < const.MAX_PARALLAX:
         validation_code = TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION']
 
-    # 4. Check reprojection error
-    if cur_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > MAX_SQUARED_REPROJECTION_ERROR:
+    # 4. Check reprojection error. NOTE (phase 2i, Q2): despite the
+    # constant's name, this compares the PLAIN pixel norm (not squared)
+    # - the effective gate is this many PIXELS of triangulation
+    # consistency.
+    if cur_reprojection_error > const.MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > const.MAX_SQUARED_REPROJECTION_ERROR:
         validation_code = TRIANGULATION_VALIDATION_CODE['MAX_REPROJECTION_ERROR_VIOLATION']
 
     # 5. Check if point is well-conditioned (not at infinity)
