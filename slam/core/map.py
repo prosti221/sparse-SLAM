@@ -340,13 +340,20 @@ class Map:
         debug_log(LOG_TAG, "Map reset complete")
 
     def remove_keyframes_after(self, reference_keyframe_id: UUID):
-        keyframes_to_remove = []
-        for kf in reversed(self.keyframes):
-            if kf.frame_id <= reference_keyframe_id:
-                break
-            keyframes_to_remove.append(kf)
+        """Remove every keyframe inserted AFTER the reference keyframe
+        (aggressive relocalization drops the diverged branch it just
+        recovered from). Phase 2h repair: this used to compare frame_id
+        UUIDs with <= - frame ids are random uuid4 values, so their
+        ordering is meaningless and the backwards walk removed a RANDOM
+        suffix of the keyframe list. The keyframes list is insertion
+        ordered, so position IS the temporal order."""
+        try:
+            ref_idx = next(i for i, kf in enumerate(self.keyframes)
+                           if kf.frame_id == reference_keyframe_id)
+        except StopIteration:
+            return
 
-        for kf in keyframes_to_remove:
+        for kf in list(self.keyframes[ref_idx + 1:]):
             debug_log(
                 LOG_TAG, f"Removing bad keyframe {kf.frame_id} after relocalization")
             self.remove_keyframe_by_id(kf.frame_id)
@@ -398,29 +405,58 @@ class Map:
         return self._remove_keyframe(keyframe, idx)
 
     def _remove_keyframe(self, keyframe: Frame, idx: int) -> bool:
+        """Phase 2h machinery repair. Not invoked by the default
+        pipeline today (the redundancy-culling hook lands with step 3);
+        the live caller is the aggressive-relocalization reset path via
+        remove_keyframes_after. Repairs vs the draft:
+
+        - The orphan threshold is the MINIMUM_OBSERVATIONS_FOR_POINT
+          constant (was the literal 2 beside an "or whatever minimum
+          threshold you use" placeholder), counted over KEYFRAME
+          observations only: point.observations also accumulates
+          never-promoted tracker frames (their poses are never
+          optimized, and they are never removed), and those must not
+          mask a point that has lost its keyframe anchors - keyframes
+          are the only source of BA edges and covisibility.
+        - The KeyframeFeatureDatabase entry is removed (a culled
+          keyframe must stop being a loop-closure candidate).
+        - Orphan removal is a single reversed pass (was list.index per
+          orphan - O(n^2) on a growing map).
+        - The 2f persistent local-BA graph needs NO special handling:
+          its per-call reconcile rebuilds target membership from the
+          current map state, so this keyframe's vertex (and the
+          orphaned points' vertices) cascade-drop on the next local BA.
+        """
         keyframe_id = keyframe.frame_id
 
         # Remove observations of this keyframe from all points
-        points_to_remove = []
+        # (point-side is the authoritative registry - phase 2g; the
+        # keyframe's own frame-side entries, including dedup-only
+        # matches, die with it). Collect points that fall below the
+        # keyframe-observation minimum.
+        orphan_ids = set()
         for point in self.points:
             if keyframe_id in point.observations:
                 point.remove_observation(keyframe_id)
-                # If point has too few observations after removal, mark for deletion
-                if point.num_observations < 2:  # or whatever minimum threshold you use
-                    points_to_remove.append(point)
+                kf_observers = sum(
+                    1 for fid in point.observations
+                    if fid in self.keyframes_by_id)
+                if kf_observers < const.MINIMUM_OBSERVATIONS_FOR_POINT:
+                    orphan_ids.add(point.point_id)
 
-        # Remove points that no longer have enough observations
+        # Remove points that no longer have enough keyframe
+        # observations (single reversed pass: del by index only shifts
+        # the tail). This also drops them from the covisibility graph,
+        # points_by_id and point_coords via remove_point_by_index.
         removed_points_count = 0
-        for point in points_to_remove:
-            try:
-                point_idx = self.points.index(point)
+        for point_idx in reversed(range(len(self.points))):
+            if self.points[point_idx].point_id in orphan_ids:
                 if self.remove_point_by_index(point_idx):
                     removed_points_count += 1
-            except ValueError:
-                # Point was already removed
-                continue
 
-        # Remove from covisibility graph
+        # Remove from covisibility graph (the keyframe's own edges go
+        # wholesale; shared counts among survivors were already
+        # decremented for the removed points above)
         self._remove_keyframe_from_covisibility_graph(keyframe_id)
 
         # Remove from keyframes list
@@ -434,6 +470,11 @@ class Map:
         if keyframe_id in self.tracking_quality_history:
             del self.tracking_quality_history[keyframe_id]
 
+        # Stop being a loop-closure candidate
+        self.feature_db.remove_keyframe_features(keyframe_id)
+
+        telemetry.event("kf_culled")
+        telemetry.event("points_culled", removed_points_count)
         debug_log(
             LOG_TAG, f"Removed keyframe {keyframe_id} and {removed_points_count} associated points")
         return True

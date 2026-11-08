@@ -43,6 +43,16 @@ class KeyframeFeatureDatabase:
         debug_log(
             LOG_TAG, f"Stored features for keyframe {keyframe_id} ({len(descriptors)} features)")
 
+    def remove_keyframe_features(self, keyframe_id: UUID):
+        """Remove a keyframe's stored features (phase 2h keyframe
+        culling): a culled keyframe must stop being a loop-closure
+        candidate, or find_similar_keyframes would keep matching future
+        frames against a dead keyframe."""
+        if keyframe_id in self.feature_storage:
+            del self.feature_storage[keyframe_id]
+        if keyframe_id in self.keyframe_order:
+            self.keyframe_order.remove(keyframe_id)
+
     def get_keyframe_features(self, keyframe_id: UUID) -> Optional[np.ndarray]:
         """Retrieve features for a keyframe"""
         return self.feature_storage.get(keyframe_id)

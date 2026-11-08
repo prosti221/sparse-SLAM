@@ -36,6 +36,10 @@ Event keys (counted pipeline decisions - deterministic per run):
   reloc_aggressive_success / reloc_failed / system_reset
                               relocalization machinery
   points_pruned               outlier points removed by map pruning
+  kf_culled / points_culled   keyframes removed by map culling, and the
+                              map points orphan-removed with them
+                              (below the keyframe-observation minimum;
+                              phase 2h)
 """
 import time
 from contextlib import contextmanager
