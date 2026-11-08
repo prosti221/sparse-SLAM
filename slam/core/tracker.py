@@ -187,17 +187,30 @@ class Tracker:
             # Dedup-only matches stay FRAME-SIDE ONLY, exactly as
             # before: they are load-bearing for insertion-time PnP and
             # tracking-quality counts, but deliberately NOT promoted to
-            # full (point-side) observations. That promotion was
-            # measured across five configurations (no gate; 10/5/3 px
-            # geometric validation gates) and REJECTED: the raw chains
-            # gave tum its best-ever accuracy (ATE 0.038) but poisoned
-            # orbit's map below its surf baseline in every
-            # configuration that kept tum's win, and no gate value
-            # satisfied all four sequences (3px saved orbit but
-            # collapsed tum's tracker to 7 keyframes). The failure mode
-            # is descriptor-chain reliability under fast rotation,
-            # which a projection-distance gate cannot see. Full record
-            # in benchmarks/IMPROVEMENT.md "Phase 2g results".
+            # full (point-side) observations. The promotion was
+            # measured and REJECTED TWICE, in six configurations:
+            # - 2g (five configs: no gate; 10/5/3 px geometric gates):
+            #   the raw chains gave tum its best-ever ATE (0.038) but
+            #   poisoned orbit's map in every config that kept tum's
+            #   win.
+            # - 2i Q1 (rotation-gated, the reliability signal the 2g
+            #   record said was missing): the inter-frame rotation of
+            #   the chain hop DOES separate the regimes (orbit's chains
+            #   hop at 7.3-13.5 deg, every other sequence below
+            #   3.7 deg) - but the gate still fails: orbit's tail
+            #   leaks (262 promotions at <5 deg dropped its surf
+            #   50.8 -> 38.2), fr/translation's promotions are REAL
+            #   (sub-pixel geometric consistency) and still hurt them
+            #   deterministically (fr 0.0548 -> 0.1201, exactly the
+            #   2g-era value - the harm is not constraint-unreliability
+            #   but real constraints destabilizing insertion/pruning
+            #   dynamics, which no reliability gate can fix), and the
+            #   promotion x culling interaction destroys tum's win
+            #   (promoted observations inflate point-observer counts,
+            #   32 keyframes culled as redundant vs 2 in the control,
+            #   max_pose_jump 84 over its 50 baseline). Full record in
+            #   benchmarks/IMPROVEMENT.md "Phase 2g results" and
+            #   "Phase 2i record - Q1".
             self.cur_frame.add_point_observation(
                 Observation(self.cur_frame, point, match.queryIdx))
 

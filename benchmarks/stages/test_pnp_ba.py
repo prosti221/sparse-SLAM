@@ -286,11 +286,12 @@ def test_point_remove_observation_updates_count():
 
 def test_filter_duplicate_registers_consistent_observations():
     """Finding 17 (phase 2g): _filter_duplicate_keypoints must register
-    duplicate-keypoint matches CONSISTENTLY - point-side AND frame-side
-    with the SAME object (they used to be frame-side only, invisible to
-    BA), and must NOT overwrite an existing projection-matched
-    observation for the same (point, frame) - the projection match is
-    the better-anchored measurement."""
+    duplicate-keypoint matches CONSISTENTLY and must NOT overwrite an
+    existing projection-matched observation for the same (point,
+    frame) - the projection match is the better-anchored measurement.
+    Dedup-only matches stay FRAME-SIDE ONLY: promotion to full
+    point-side observations was measured and rejected twice (2g: five
+    configs; 2i Q1: rotation-gated - see the rejection record)."""
     from types import SimpleNamespace
 
     import cv2 as cv
@@ -307,13 +308,9 @@ def test_filter_duplicate_registers_consistent_observations():
     set_keypoints(prev_kf, [(10.0, 10.0), (50.0, 50.0)])
     set_keypoints(cur, [(12.0, 10.0), (52.0, 50.0)])
 
-    # pt_dedup: observed by prev_kf only - the dedup match must become a
-    # FULL observation (both registries, same object). Placed exactly on
-    # cur's keypoint-0 ray so it passes the geometric validation gate.
-    K_inv = np.linalg.inv(K)
-    Xc = 5.0 * (K_inv @ np.array([12.0, 10.0, 1.0]))
-    pt_dedup = Point((cur.pose @ np.append(Xc, 1.0))[:3], None,
-                     np.zeros(32, dtype=np.uint8))
+    # pt_dedup: observed by prev_kf only - the match must stay
+    # FRAME-SIDE ONLY (the deliberate status quo).
+    pt_dedup = Point(np.zeros(3), None, np.zeros(32, dtype=np.uint8))
     pt_dedup.add_observation(Observation(prev_kf, pt_dedup, 0))
 
     # pt_both: prev_kf obs + an EXISTING projection-matched obs on cur -
@@ -337,9 +334,9 @@ def test_filter_duplicate_registers_consistent_observations():
 
     # Dedup-only case: registers on the frame side ONLY (deliberate
     # status quo - these are load-bearing for insertion-time PnP and
-    # tracking-quality counts, but were measured NOT to be reliable
-    # enough to promote to full point-side observations; see the 2g
-    # A/B record). The point side must NOT gain it.
+    # tracking-quality counts; promotion was measured and rejected
+    # twice - see the 2g and 2i-Q1 records). The point side must NOT
+    # gain it.
     assert not pt_dedup.is_observed_by(cur.frame_id), \
         "dedup-only match leaked into the point-side registry"
     frame_obs = cur.observed_points[pt_dedup.point_id]
