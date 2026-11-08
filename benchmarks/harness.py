@@ -18,6 +18,7 @@ import slam.utils.logger as slam_logger
 from slam.core.frame import Frame
 from slam.core.map import Map
 from slam.core.tracker import Tracker
+from slam.utils import constants as const
 from slam.utils import telemetry
 
 
@@ -41,6 +42,11 @@ class RunResult:
 def load_calibration(dataset_dir: Path) -> np.ndarray:
     dataset_dir = Path(dataset_dir)
     fx, fy, cx, cy = np.loadtxt(dataset_dir / "calibration.txt")
+    # Phase 2j-0 diagnostic: perturb the focal length on demand
+    # (--override FOCAL_SCALE=0.8). Literal no-op at the default 1.0
+    # (the multiply is skipped) so default runs are bit-identical.
+    if const.FOCAL_SCALE != 1.0:
+        fx, fy = fx * const.FOCAL_SCALE, fy * const.FOCAL_SCALE
     return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
 
 

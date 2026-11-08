@@ -4,6 +4,17 @@ PNP_ITERATIONS_COUNT = 1000  # Iterations for PnP RANSAC
 PNP_REPROJECTION_ERROR = 8.0  # Reprojection error for PnP RANSAC
 PNP_MINIMUM_INLIERS = 10  # Minimum inliers for PnP
 
+### CAMERA INTRINSICS DIAGNOSTIC (phase 2j) ###
+# Benchmark-side diagnostic ONLY - the SLAM code never reads this.
+# benchmarks.harness.load_calibration multiplies fx/fy by this factor
+# (principal point untouched) to measure the pipeline's sensitivity to
+# wrong intrinsics and to validate the 2j calibration arc's recovery
+# (perturb f by +/-20-30%, check convergence to the true value; see
+# benchmarks/IMPROVEMENT.md "Phase 2j"). 1.0 is a LITERAL no-op (the
+# multiply is skipped) so default runs are bit-identical. Read through
+# the module alias so --override can sweep it.
+FOCAL_SCALE = 1.0
+
 ### KEYFRAME SELECTION CONSTANTS ###
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10
 MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe
