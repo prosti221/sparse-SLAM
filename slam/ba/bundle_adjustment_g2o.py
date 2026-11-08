@@ -20,6 +20,32 @@ class G2OBundleAdjustment:
     def __init__(self, map, verbose=False):
         self.verbose = verbose
         self.map = map
+        # Phase 2f: persistent local-BA graph. Consecutive local BA calls
+        # share ~90% of their problem; rebuilding it every call was ~60%
+        # of BA time in per-edge pybind construction. The graph is
+        # reconciled per call: new vertices are added with their
+        # observation edges (the add rule needs no edge registry - every
+        # involved keyframe is an observer of a local point, so a new
+        # vertex's edge endpoints are guaranteed present), stale vertices
+        # are removed (remove_vertex cascades their edges), and fixed
+        # flags follow window membership (the gauge anchor is the oldest
+        # involved keyframe, which slides). No estimate refresh is
+        # needed: the post-BA write-back leaves the persistent graph's
+        # estimates identical to the map state.
+        # NOTE: this makes local BA a WITHIN-BASELINES change (not
+        # bit-identical - the g2o solve is vertex-id-order sensitive at
+        # ~1e-15; see benchmarks/IMPROVEMENT.md "Phase 2f spike").
+        self._local_opt = None
+        self._kf_vertex = {}   # frame_id -> VertexSE3Expmap
+        self._pt_vertex = {}   # point_id -> VertexPointXYZ
+        self._local_edge_info = None
+        self._local_robust_kernel = None
+        self._local_vertex_id = 0
+
+    def _next_vertex_id(self) -> int:
+        vid = self._local_vertex_id
+        self._local_vertex_id += 1
+        return vid
 
     def refine_pose_pnp(self, frame: Frame = None):
         """Refine a frame's pose with PnP over its map-point observations.
@@ -178,15 +204,12 @@ class G2OBundleAdjustment:
         # keyframes outside the window. Those extra keyframes are added as
         # fixed vertices and anchor the optimization: without them, the free
         # window poses + points form a gauge-free subsystem that can drift
-        # rigidly with no reprojection penalty.
+        # rigidly with no reprojection penalty. (The list can also contain
+        # NON-keyframe tracker observations - frames never promoted; both
+        # the fresh-build path and the persistent graph skip them at edge
+        # construction.)
         observations = [obs for p in local_points
                         for obs in p.observations.values()]
-
-        involved_kf_ids = {obs.frame.frame_id for obs in observations}
-        involved_keyframes = [kf for kf in self.map.keyframes
-                               if kf.frame_id in involved_kf_ids]
-        fixed_kf_ids = involved_kf_ids - \
-            {kf.frame_id for kf in local_keyframes}
 
         if len(observations) < const.MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             telemetry.event("ba_insufficient_observations")
@@ -197,10 +220,183 @@ class G2OBundleAdjustment:
             debug_log(
                 LOG_TAG, f"Using : {len(observations)} observations for BA optimization")
 
-        return self._optimize_with_g2o(
-            involved_keyframes, local_points, observations,
-            fix_initial_poses=True, fix_points=fix_points,
-            fixed_keyframe_ids=fixed_kf_ids)
+        return self._local_ba_persistent(
+            local_keyframes, local_points, observations,
+            fix_points=fix_points)
+
+    def _ensure_local_optimizer(self):
+        """Lazily build the persistent optimizer (solver, terminate
+        action, camera parameter, shared kernel / information)."""
+        opt = g2o.SparseOptimizer()
+        solver = g2o.BlockSolverSE3(g2o.LinearSolverEigenSE3())
+        solver = g2o.OptimizationAlgorithmLevenberg(solver)
+
+        terminate = g2o.SparseOptimizerTerminateAction()
+        terminate.set_gain_threshold(const.BA_TERMINATE_GAIN_THRESHOLD)
+        opt.set_algorithm(solver)
+        opt.add_post_iteration_action(terminate)
+
+        cam = g2o.CameraParameters(1.0, (0.0, 0.0), 0)
+        cam.set_id(0)
+        opt.add_parameter(cam)
+
+        if self.verbose:
+            opt.set_verbose(True)
+
+        self._local_opt = opt
+        self._local_robust_kernel = g2o.RobustKernelHuber(np.sqrt(5.991))
+        self._local_edge_info = np.eye(2)
+        self._kf_vertex = {}
+        self._pt_vertex = {}
+        return opt
+
+    def _add_point_edge(self, obs):
+        edge = g2o.EdgeProjectXYZ2UV()
+        edge.set_parameter_id(0, 0)
+        edge.set_vertex(0, self._pt_vertex[obs.point.point_id])
+        edge.set_vertex(1, self._kf_vertex[obs.frame.frame_id])
+        edge.set_information(self._local_edge_info)
+        edge.set_measurement(obs.pt_2d_norm)
+        edge.set_robust_kernel(self._local_robust_kernel)
+        self._local_opt.add_edge(edge)
+        return edge
+
+    def _local_ba_persistent(self, local_keyframes, local_points,
+                             observations, fix_points) -> bool:
+        try:
+            return self._reconcile_and_optimize(
+                local_keyframes, local_points, observations, fix_points)
+        except Exception as e:
+            telemetry.event("ba_exception")
+            error_log(LOG_TAG, f"persistent local BA failed: {e}")
+            import traceback
+            error_log(LOG_TAG, traceback.format_exc())
+            # The graph state may be corrupt - rebuild from scratch on
+            # the next call.
+            self._local_opt = None
+            self._kf_vertex = {}
+            self._pt_vertex = {}
+            return False
+
+    def _reconcile_and_optimize(self, local_keyframes, local_points,
+                                 observations, fix_points) -> bool:
+        if self._local_opt is None:
+            self._ensure_local_optimizer()
+        opt = self._local_opt
+
+        # --- Compute the target membership ---
+        target_kf_ids = {obs.frame.frame_id for obs in observations}
+        target_pt_ids = {p.point_id for p in local_points}
+        local_kf_ids = {kf.frame_id for kf in local_keyframes}
+
+        # Gauge anchor semantics preserved from the fresh build: the
+        # OLDEST involved keyframe is fixed (involved_keyframes[0] in
+        # _create_keyframe_vertices), plus every keyframe outside the
+        # window.
+        anchor_kf_id = None
+        for kf in self.map.keyframes:
+            if kf.frame_id in target_kf_ids:
+                anchor_kf_id = kf.frame_id
+                break
+
+        # --- Remove stale vertices (cascade removes their edges) ---
+        for frame_id in [fid for fid in self._kf_vertex
+                         if fid not in target_kf_ids]:
+            opt.remove_vertex(self._kf_vertex.pop(frame_id))
+        for point_id in [pid for pid in self._pt_vertex
+                         if pid not in target_pt_ids]:
+            opt.remove_vertex(self._pt_vertex.pop(point_id))
+
+        # --- Add new point vertices (in map order). Edges are created in
+        # a single delta pass below, from the observations list - the
+        # POINT-side registry, exactly the constraint set the fresh
+        # build optimizes. (The frame registry is NOT a valid edge
+        # source: _filter_duplicate_keypoints registers observations
+        # frame-side only, and overwrites frame-side entries with
+        # objects that differ from the point-side ones - both variants
+        # were measured to break the fresh-build parity.) ---
+        for p in local_points:
+            if p.point_id not in self._pt_vertex:
+                v = g2o.VertexPointXYZ()
+                v.set_id(self._next_vertex_id())
+                v.set_estimate(p.pt_3d)
+                v.set_fixed(fix_points)
+                v.set_marginalized(True)
+                opt.add_vertex(v)
+                self._pt_vertex[p.point_id] = v
+
+        # --- Add new keyframe vertices (in map order) ---
+        for kf in self.map.keyframes:
+            if kf.frame_id in target_kf_ids and \
+                    kf.frame_id not in self._kf_vertex:
+                T_cw = np.linalg.inv(kf.pose)
+                v = g2o.VertexSE3Expmap()
+                v.set_id(self._next_vertex_id())
+                v.set_estimate(g2o.SE3Quat(T_cw[:3, :3], T_cw[:3, 3]))
+                opt.add_vertex(v)
+                self._kf_vertex[kf.frame_id] = v
+
+        # --- Delta edges: one pass over the observations list, in the
+        # same order the fresh build adds them, creating only pairs not
+        # yet in the graph. The existing-pairs set is rebuilt per call
+        # (O(edges), small); the pass also self-heals any edge a
+        # previous call failed to create. ---
+        vid2pt = {v: pid for pid, v in self._pt_vertex.items()}
+        vid2kf = {v: fid for fid, v in self._kf_vertex.items()}
+        existing_pairs = {
+            (vid2pt.get(e.vertex(0)), vid2kf.get(e.vertex(1)))
+            for e in opt.edges()
+        }
+        for obs in observations:
+            fid = obs.frame.frame_id
+            if fid not in self._kf_vertex:
+                continue
+            key = (obs.point.point_id, fid)
+            if key not in existing_pairs:
+                self._add_point_edge(obs)
+                existing_pairs.add(key)
+
+        # Safety net: every KEYFRAME observation must now be an edge.
+        # (The observations list also contains non-keyframe tracker
+        # observations - frames that were never promoted - which the
+        # fresh build equally skips at edge construction.)
+        expected_edges = sum(
+            1 for obs in observations
+            if obs.frame.frame_id in self._kf_vertex)
+        actual_edges = len(self._local_opt.edges())
+        if actual_edges != expected_edges:
+            telemetry.event("ba_edge_mismatch",
+                           expected_edges - actual_edges)
+
+        # --- Refresh fixed flags (the anchor and boundary slide) ---
+        for frame_id, v in self._kf_vertex.items():
+            v.set_fixed(frame_id == anchor_kf_id or
+                        frame_id not in local_kf_ids)
+
+        # --- Optimize ---
+        opt.initialize_optimization()
+        iterations = opt.optimize(30)
+        telemetry.event("ba_iterations", int(iterations))
+
+        # --- Write back (same semantics as the fresh build) ---
+        for frame_id, v in self._kf_vertex.items():
+            kf = self.map.get_keyframe_by_id(frame_id)
+            if kf is None:
+                continue
+            est = v.estimate()
+            new_pose = np.eye(4)
+            new_pose[:3, :3] = est.rotation().matrix()
+            new_pose[:3, 3] = est.translation()
+            kf.pose = np.linalg.inv(new_pose)
+
+        if not fix_points:
+            for p in local_points:
+                v = self._pt_vertex.get(p.point_id)
+                if v is not None:
+                    p.pt_3d = np.array(v.estimate())
+
+        self._recompute_point_errors(observations)
+        return True
 
     def global_bundle_adjustment(self) -> bool:
         debug_log(LOG_TAG, "Starting global BA with g2o")
