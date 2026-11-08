@@ -20,6 +20,17 @@ def load_video(config):
     Fy = config.get_video_property(video_tag, 'fy', default=Fx)
     Cx = config.get_video_property(video_tag, 'cx', default=W//2)
     Cy = config.get_video_property(video_tag, 'cy', default=H//2)
+
+    # Phase 2j-2: 'fx: auto' (or an absent/zero fx) switches the video
+    # path to GeoCalib auto-calibration - slam.py buffers the first
+    # ~CALIB_INIT_SECONDS from this capture and estimates shared
+    # intrinsics; the returned K is None until then.
+    if Fx in ("auto", 0, None):
+        info_log(LOG_TAG,
+                 f"Loaded video: {VIDEO_PATH} ({int(W)}x{int(H)}) - "
+                 "fx: auto -> GeoCalib intrinsics estimation")
+        return cap, None
+
     K = construct_K(Fx, Fy, Cx, Cy)
 
     info_log(LOG_TAG, f"Loaded video: {VIDEO_PATH} with properties:\n"

@@ -15,6 +15,20 @@ PNP_MINIMUM_INLIERS = 10  # Minimum inliers for PnP
 # the module alias so --override can sweep it.
 FOCAL_SCALE = 1.0
 
+### CAMERA AUTO-CALIBRATION (phase 2j) ###
+# The video-feed init batch: buffer roughly this many seconds of
+# frames for the GeoCalib shared-intrinsics estimate (ViPE-style),
+# clamped to [MIN, MAX] frames (FPS comes from the capture; 30
+# assumed when it reports none). The GeoCalib dependency itself is
+# the optional 'calib' extra - see slam/calibration/geocalib_init.py.
+CALIB_INIT_SECONDS = 2.0
+CALIB_INIT_MIN_FRAMES = 8
+CALIB_INIT_MAX_FRAMES = 32
+# GeoCalib reports no k1 uncertainty; the refit treats k1's prior as
+# soft with this 1-sigma (loose by design - the map must be able to
+# override it once the observability gate frees).
+CALIB_PRIOR_SIGMA_K1 = 0.02
+
 ### KEYFRAME SELECTION CONSTANTS ###
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10
 MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe

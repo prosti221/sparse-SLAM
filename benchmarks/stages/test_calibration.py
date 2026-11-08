@@ -154,3 +154,210 @@ def test_calib_k1_sequence_shares_trajectory_differs_frames(calib_seq,
         _md5(calib_k1_seq / "frames" / "frame_000100.png"), \
         "distortion had no effect on the rendered frames"
 
+
+# --- 2j-2: GeoCalib initializer (all pins mocked - no torch/network) ----
+
+import sys  # noqa: E402
+import types  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from slam.calibration import geocalib_init as gi
+from slam.utils import constants as calib_const
+from slam.utils.utils import load_video
+
+
+class _FT:
+    """Minimal torch-tensor stand-in for mocked GeoCalib results."""
+
+    def __init__(self, val):
+        self.val = np.asarray(val, dtype=np.float64)
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.val
+
+    def __getitem__(self, i):
+        return _FT(self.val[i])
+
+
+def _fake_result(fx=450.0, fy=455.0, k1=-0.05, rel_sigma=0.04):
+    """Mirrors the INSTALLED package's calibrate() return: uncertainties
+    at the TOP LEVEL (result["covariance"] is the raw matrix, not
+    key-addressable - pinned after a real-package smoke caught the
+    distinction)."""
+    cam = SimpleNamespace(f=_FT([[fx, fy]]), k1=_FT([[k1]]))
+    result = {"camera": cam, "covariance": _FT(np.zeros((1, 3, 3))),
+              "focal_uncertainty": _FT([rel_sigma])}
+    if rel_sigma is None:
+        del result["focal_uncertainty"]   # GeoCalib declined to report
+    return result
+
+
+def test_extract_prior_maps_geocalib_result():
+    """2j-2: the GeoCalib result maps to the prior: f (index 0 - the
+    shared-intrinsics convention), c PINNED AT THE IMAGE CENTER
+    (GeoCalib's own assumption), k1, and focal_uncertainty (TOP-LEVEL
+    key of the result; the "covariance" entry is the raw matrix)
+    interpreted as a RELATIVE 1-sigma of f."""
+    prior = gi._extract_prior(_fake_result(), img_w=640, img_h=480)
+
+    assert prior.fx == 450.0 and prior.fy == 455.0
+    assert prior.cx == 320.0 and prior.cy == 240.0  # image center
+    assert prior.k1 == -0.05
+    assert prior.sigma_f == pytest.approx(0.04 * 452.5)
+    assert prior.sigma_k1 == calib_const.CALIB_PRIOR_SIGMA_K1
+    assert prior.source == "geocalib"
+    # K is constructible directly (the slam.py wiring consumes this)
+    K = prior.K
+    assert K[0, 0] == 450.0 and K[1, 1] == 455.0
+    assert K[0, 2] == 320.0 and K[1, 2] == 240.0
+
+    # Absent uncertainty degrades the prior to anchor-only (no trust).
+    prior = gi._extract_prior(_fake_result(rel_sigma=None),
+                              img_w=640, img_h=480)
+    assert prior.sigma_f == float("inf")
+
+
+def test_estimate_intrinsics_prior_calls_geocalib_correctly(monkeypatch):
+    """2j-2: with a mocked geocalib module, the wrapper calls
+    calibrate(batch, shared_intrinsics=True, camera_model=...),
+    converts the caller's BGR frames, and returns the mapped prior."""
+    calls = {}
+
+    class _FakeGeoCalib:
+        def __init__(self, weights="pinhole"):
+            calls["weights"] = weights
+
+        def to(self, device):
+            calls["device"] = device
+            return self
+
+        def eval(self):
+            return self
+
+        def calibrate(self, batch, **kwargs):
+            calls["kwargs"] = kwargs
+            calls["batch_shape"] = tuple(batch.shape)
+            return _fake_result()
+
+    fake_mod = types.ModuleType("geocalib")
+    fake_mod.GeoCalib = _FakeGeoCalib
+    monkeypatch.setitem(sys.modules, "geocalib", fake_mod)
+
+    frames = [np.zeros((48, 64, 3), np.uint8) for _ in range(4)]
+    prior = gi.estimate_intrinsics_prior(frames)
+
+    assert calls["weights"] == "distorted"
+    assert calls["kwargs"]["shared_intrinsics"] is True
+    assert calls["kwargs"]["camera_model"] == "simple_radial"
+    assert calls["batch_shape"] == (4, 3, 48, 64)  # B, C, H, W
+    assert prior.fx == 450.0 and prior.cx == 32.0  # center of 64-wide
+
+
+def test_estimate_intrinsics_prior_requires_the_extra(monkeypatch):
+    """2j-2: without the geocalib package the error names the install
+    command (the optional 'calib' extra), not the raw ImportError."""
+    monkeypatch.setitem(sys.modules, "geocalib", None)
+    with pytest.raises(ImportError, match="uv sync --extra calib"):
+        gi.estimate_intrinsics_prior(
+            [np.zeros((48, 64, 3), np.uint8)])
+
+
+class _FakeCap:
+    def __init__(self, n_available, fps=10.0, w=64, h=48):
+        self.n_available = n_available
+        self.fps = fps
+        self.read_count = 0
+        self.size = (h, w)
+
+    def get(self, prop):
+        import cv2 as cv
+        return self.fps if prop == cv.CAP_PROP_FPS else 0.0
+
+    def read(self):
+        if self.read_count >= self.n_available:
+            return False, None
+        self.read_count += 1
+        return True, np.zeros((*self.size, 3), np.uint8)
+
+
+def test_estimate_video_intrinsics_buffers_and_replays(monkeypatch):
+    """2j-2: the video init buffers CALIB_INIT_SECONDS * fps frames
+    (clamped to [min, max]) and returns them for replay - they have
+    been consumed from the capture."""
+    seen = {}
+
+    def fake_estimate(frames):
+        seen["n"] = len(frames)
+        return gi.IntrinsicsPrior(500.0, 500.0, 32.0, 24.0,
+                                  source="mock")
+
+    monkeypatch.setattr(gi, "estimate_intrinsics_prior", fake_estimate)
+
+    cap = _FakeCap(n_available=50, fps=10.0)
+    prior, frames = gi.estimate_video_intrinsics(cap)
+
+    expected_n = int(np.clip(round(calib_const.CALIB_INIT_SECONDS * 10.0),
+                             calib_const.CALIB_INIT_MIN_FRAMES,
+                             calib_const.CALIB_INIT_MAX_FRAMES))
+    assert seen["n"] == expected_n
+    assert len(frames) == expected_n
+    assert cap.read_count == expected_n  # consumed from the capture
+    assert prior.fx == 500.0
+
+    # A video that ends before the minimum batch size fails loudly.
+    with pytest.raises(RuntimeError, match="too few frames"):
+        gi.estimate_video_intrinsics(_FakeCap(n_available=3, fps=10.0))
+
+
+def _write_tiny_video(path, n_frames=5):
+    import cv2 as cv
+    w, h = 64, 48
+    writer = cv.VideoWriter(str(path), cv.VideoWriter_fourcc(*"MJPG"),
+                            10.0, (w, h))
+    for i in range(n_frames):
+        writer.write(np.full((h, w, 3), 40 + 10 * i, np.uint8))
+    writer.release()
+    return str(path)
+
+
+class _FakeConfig:
+    def __init__(self, props):
+        self.props = props
+
+    def get_global_config_property(self, key):
+        return self.props.get(key)
+
+    def get_video_property(self, tag, key, default=None):
+        return self.props.get(key, default)
+
+
+def test_load_video_auto_signaling(tmp_path):
+    """2j-2: 'fx: auto' (or an absent fx) signals auto-calibration by
+    returning K=None - slam.py then runs estimate_video_intrinsics.
+    A numeric fx keeps today's behavior exactly."""
+    video = _write_tiny_video(tmp_path / "tiny.avi")
+
+    cap, K = load_video(_FakeConfig(
+        {"load_video": "v", "path": video, "fx": "auto"}))
+    assert K is None
+    cap.release()
+
+    cap, K = load_video(_FakeConfig(
+        {"load_video": "v", "path": video}))          # fx absent
+    assert K is None
+    cap.release()
+
+    cap, K = load_video(_FakeConfig(
+        {"load_video": "v", "path": video, "fx": 480}))
+    assert K[0, 0] == 480.0          # fy defaults to fx
+    assert K[1, 1] == 480.0
+    assert K[0, 2] == 32.0           # cx defaults to W // 2
+    assert K[1, 2] == 24.0           # cy defaults to H // 2
+    cap.release()
+
