@@ -91,6 +91,50 @@ def _forward_rotation_pose(i: int, n: int) -> Tuple[np.ndarray, np.ndarray]:
     return R, t
 
 
+def _calib_motion_pose(i: int, n: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Phase 2j-1: diverse-motion calibration path. Translation along
+    alternating axes (lateral -> vertical -> forward -> diagonal
+    return), rotation alternating pitch / yaw by segment - the
+    observability profile DroidCalib requires (translation + rotation
+    around different axes).
+
+    Probe-bisected design (full record in the 2j-1 record), three
+    rounds:
+    1. simultaneous yaw+pitch is CATASTROPHIC (RPE rot 41 deg/frame -
+       a discovered pipeline limitation under combined-axis rotation,
+       recorded as an open observation); each alone tracks.
+    2. PITCH dominates map quality: pitch-only builds the best map of
+       ANY sequence (surf 75-83; the floor/ceiling structure it brings
+       into parallax is close and well-conditioned), yaw-only builds a
+       weak map (side/far walls dominate; surf 16). So pitch carries
+       three segments, yaw the forward one (fr-proven combo).
+    3. The camera path must stay HIGH: the original drop to y=-3.0
+       collapsed surf to 5-31 (shallow floor geometry + far-wall
+       dominance). Raised to y >= -1.5, surf recovers to 72.6.
+    Final: ATE 0.249 / surf 72.6 - the healthiest diverse-motion
+    profile the suite has."""
+    seg = 4.0 * i / n
+    s = seg % 1.0                       # position within the segment
+    taper = np.sin(np.pi * s) ** 2      # rotation ramps in/out per segment
+    if seg < 1.0:                       # lateral (x) sweep + PITCH
+        t = np.array([-5.0 + 10.0 * s, 0.5 * s, 3.5 + 0.3 * s])
+        R = Rotation.from_euler(
+            "x", 0.15 * taper * np.sin(2.0 * np.pi * i / 60 + 1.0)).as_matrix()
+    elif seg < 2.0:                     # vertical (y) sweep + PITCH
+        t = np.array([5.0 + 0.15 * s, 0.5 - 2.0 * s, 3.8 + 0.4 * s])
+        R = Rotation.from_euler(
+            "x", 0.15 * taper * np.sin(2.0 * np.pi * i / 60 + 1.0)).as_matrix()
+    elif seg < 3.0:                     # forward (z) push + YAW (fr-proven)
+        t = np.array([5.15 - 5.15 * s, -1.5 + 0.5 * s, 4.2 + 3.4 * s])
+        R = Rotation.from_euler(
+            "y", 0.35 * taper * np.sin(2.0 * np.pi * i / 90)).as_matrix()
+    else:                               # diagonal return + PITCH
+        t = np.array([-0.15 * s, -1.0 + 1.5 * s, 7.6 + 2.6 * s])
+        R = Rotation.from_euler(
+            "x", 0.15 * taper * np.sin(2.0 * np.pi * i / 60 + 1.0)).as_matrix()
+    return R, t
+
+
 SEQUENCES = {
     "translation": {"pose_fn": _translation_pose, "n_frames": 120,
                     "description": "Pure lateral translation, constant orientation"},
@@ -98,6 +142,19 @@ SEQUENCES = {
               "description": "Circular path, radially outward-facing camera"},
     "forward_rotation": {"pose_fn": _forward_rotation_pose, "n_frames": 120,
                           "description": "Forward motion with oscillating yaw"},
+    # Phase 2j-1: the observability-POSITIVE testbed (the existing three
+    # are all critical-motion sequences by DroidCalib's list, where the
+    # 2j-0 pain data showed focal error being absorbed into the
+    # scale-ambiguous DOF). The k1 variant shares the same trajectory -
+    # only the rendered frames differ, which isolates distortion in the
+    # 2j-5b recovery test. DIAGNOSTIC-ONLY: deliberately NOT in
+    # DEFAULT_SEQUENCES, so these never enter the baseline battery.
+    "calib_motion": {"pose_fn": _calib_motion_pose, "n_frames": 200, "k1": 0.0,
+                     "description": "Diverse-motion calibration path (lateral/"
+                                    "vertical/forward/diagonal + yaw/pitch)"},
+    "calib_motion_k1": {"pose_fn": _calib_motion_pose, "n_frames": 200, "k1": -0.06,
+                        "description": "calib_motion under simple-radial distortion "
+                                       "(k1=-0.06); same trajectory"},
 }
 
 # --- World construction ----------------------------------------------------
@@ -138,16 +195,31 @@ def _build_world() -> List[dict]:
 
 
 def _project(points: np.ndarray, R_cw: np.ndarray, t_cw: np.ndarray,
-             K: np.ndarray) -> np.ndarray:
-    """World (N,3) -> pixel (N,2); assumes all z > 0."""
+             K: np.ndarray, k1: float = 0.0) -> np.ndarray:
+    """World (N,3) -> pixel (N,2); assumes all z > 0. With k1 != 0 the
+    simple-radial model is applied in NORMALIZED coordinates (phase
+    2j-1) - the same convention the SLAM side's undistort-at-
+    normalization assumes (phase 2j-3)."""
     cam = (R_cw @ points.T).T + t_cw
     z = cam[:, 2:3]
-    uv = (K @ (cam / z).T).T
+    if k1 == 0.0:
+        uv = (K @ (cam / z).T).T
+        return uv[:, :2]
+    xy = cam[:, :2] / z
+    r2 = xy[:, 0:1] ** 2 + xy[:, 1:2] ** 2
+    xy = xy * (1.0 + k1 * r2)
+    uv = (K @ np.column_stack([xy, np.ones(len(xy))]).T).T
     return uv[:, :2]
 
 
 def _paste_billboard(img: np.ndarray, pattern: np.ndarray, quad: np.ndarray) -> None:
-    """Perspective-warp a billboard texture into the image at its projected quad."""
+    """Perspective-warp a billboard texture into the image at its projected quad.
+
+    Phase 2j-1: the source rect is derived from pattern.shape (was the
+    PATTERN_SIZE constant) so this doubles as the per-tile warp for the
+    distorted render path; identical values for full patterns, so
+    regenerating an existing sequence is bit-identical.
+    """
     h, w = img.shape[:2]
     x0 = max(int(np.floor(quad[:, 0].min())) - 1, 0)
     y0 = max(int(np.floor(quad[:, 1].min())) - 1, 0)
@@ -156,21 +228,54 @@ def _paste_billboard(img: np.ndarray, pattern: np.ndarray, quad: np.ndarray) -> 
     if x1 <= x0 or y1 <= y0:
         return
 
-    src = np.float32([[0, 0], [PATTERN_SIZE, 0],
-                      [PATTERN_SIZE, PATTERN_SIZE], [0, PATTERN_SIZE]])
+    ph, pw = pattern.shape[:2]
+    src = np.float32([[0, 0], [pw, 0],
+                      [pw, ph], [0, ph]])
     dst = np.float32(quad - np.array([x0, y0]))
     M = cv.getPerspectiveTransform(src, dst)
 
     sub_w, sub_h = x1 - x0, y1 - y0
     warped = cv.warpPerspective(pattern, M, (sub_w, sub_h))
     mask = cv.warpPerspective(
-        np.full((PATTERN_SIZE, PATTERN_SIZE), 255, np.uint8), M, (sub_w, sub_h))
+        np.full(pattern.shape[:2], 255, np.uint8), M, (sub_w, sub_h))
     roi = img[y0:y1, x0:x1]
     roi[mask > 0] = warped[mask > 0]
 
 
+def _paste_billboard_distorted(img, bb: dict, R_cw: np.ndarray, t_cw: np.ndarray,
+                               K: np.ndarray, k1: float, tiles: int = 4) -> None:
+    """Phase 2j-1: paste a billboard under simple-radial distortion by
+    TILING its texture - each tile's corners are projected WITH the
+    distortion model and warped separately, so the interior follows the
+    distortion (a single homography from 4 distorted corners would not).
+    Approximation: within-tile curvature is neglected; at tiles=4 the
+    residual is well below a pixel for the mild |k1| the calib sequence
+    uses (cells are ~15-50 px; recorded in the 2j-1 record). The
+    billboard is a parallelogram in world space, so the grid is exact."""
+    TL, TR, _, BL = bb["corners"]
+    U, V = TR - TL, BL - TL
+    a = np.linspace(0.0, 1.0, tiles + 1)
+    grid = (TL[None, None, :]
+            + a[:, None, None] * U[None, None, :]
+            + a[None, :, None] * V[None, None, :])
+    proj = _project(grid.reshape(-1, 3), R_cw, t_cw, K, k1)
+    proj = proj.reshape(tiles + 1, tiles + 1, 2)
+
+    pattern = bb["pattern"]
+    s = PATTERN_SIZE // tiles
+    for ia in range(tiles):
+        for ib in range(tiles):
+            quad = np.float32([proj[ia, ib], proj[ia + 1, ib],
+                               proj[ia + 1, ib + 1], proj[ia, ib + 1]])
+            # Texture orientation: pattern x follows +u (TR direction),
+            # pattern y follows +v (BL direction) - the same convention
+            # as the single-quad path (_paste_billboard's src order).
+            patch = pattern[ib * s:(ib + 1) * s, ia * s:(ia + 1) * s]
+            _paste_billboard(img, patch, quad)
+
+
 def _render_frame(billboards: List[dict], R_wc: np.ndarray, t_wc: np.ndarray,
-                  K: np.ndarray) -> np.ndarray:
+                  K: np.ndarray, k1: float = 0.0) -> np.ndarray:
     img = np.full((IMG_H, IMG_W, 3), 40, np.uint8)
     R_cw = R_wc.T
     t_cw = -R_cw @ t_wc
@@ -189,7 +294,12 @@ def _render_frame(billboards: List[dict], R_wc: np.ndarray, t_wc: np.ndarray,
         if (quad[:, 0].max() - quad[:, 0].min()) < 5 \
                 or (quad[:, 1].max() - quad[:, 1].min()) < 5:
             continue  # sliver / too small
-        _paste_billboard(img, bb["pattern"], quad)
+        if k1 == 0.0:
+            _paste_billboard(img, bb["pattern"], quad)
+        else:
+            # Phase 2j-1: the culls above stay pinhole (margin-based
+            # heuristics; the mild |k1| shifts are absorbed by them).
+            _paste_billboard_distorted(img, bb, R_cw, t_cw, K, k1)
 
     return img
 
@@ -215,10 +325,11 @@ def generate_sequence(name: str, force: bool = False) -> Path:
         old.unlink()
 
     n = spec["n_frames"]
+    k1 = spec.get("k1", 0.0)
     with open(traj_file, "w") as traj:
         for i in range(n):
             R, t = spec["pose_fn"](i, n)
-            img = _render_frame(billboards, R, t, K)
+            img = _render_frame(billboards, R, t, K, k1)
             cv.imwrite(str(frames_dir / f"frame_{i:06d}.png"), img)
 
             quat = Rotation.from_matrix(R).as_quat()  # x y z w
@@ -245,6 +356,7 @@ def generate_sequence(name: str, force: bool = False) -> Path:
             "image_size": [IMG_W, IMG_H],
             "billboard_size": BILLBOARD_SIZE,
             "patches_per_wall": PATCHES_PER_WALL,
+            "k1": k1,
             "description": spec["description"],
         }, f, indent=2)
 
