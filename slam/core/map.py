@@ -41,6 +41,14 @@ class Map:
         # Bundle adjustment optimizer
         self.g2o_optimizer = G2OBundleAdjustment(self)
 
+        # Phase 2j-4: the LIVE intrinsics state. Set by the run entry
+        # points (harness/slam.py) from the dataset K or the GeoCalib
+        # prior; the frame-construction sites read it every frame so
+        # mid-run refits reach subsequent frames. The 2j-4 refiner
+        # mutates it; None means the run path never wired it (tests
+        # construct Frames directly).
+        self.intrinsics = None
+
         # Loop closure components
         self.feature_db = KeyframeFeatureDatabase()
         self.loop_detector = LoopClosureDetector(self, self.feature_db)

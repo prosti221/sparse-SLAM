@@ -56,6 +56,25 @@ class G2OBundleAdjustment:
         self._local_vertex_id += 1
         return vid
 
+    def reset_persistent_graph(self):
+        """Phase 2j-4: called when the intrinsics change mid-run (the
+        2j-4 refit's K/k1 propagation). The persistent graph's edge
+        MEASUREMENTS are normalized coordinates baked at edge creation
+        (set_measurement(obs.pt_2d_norm)) - stale under new
+        intrinsics - so the graph is dropped wholesale and the next
+        local BA call rebuilds it from the map (the pre-2f path: a
+        one-time rebuild cost per calibration round). The graph holds
+        no intrinsics of its own (CameraParameters(1,0,0)), so nothing
+        else needs invalidation."""
+        self._local_opt = None
+        self._kf_vertex = {}
+        self._pt_vertex = {}
+        self._graph_edges_by_pt = {}
+        self._graph_edges_by_kf = {}
+        self._local_edge_info = None
+        self._local_robust_kernel = None
+        self._local_vertex_id = 0
+
     def refine_pose_pnp(self, frame: Frame = None):
         """Refine a frame's pose with PnP over its map-point observations.
 

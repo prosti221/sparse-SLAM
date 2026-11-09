@@ -29,6 +29,45 @@ CALIB_INIT_MAX_FRAMES = 32
 # override it once the observability gate frees).
 CALIB_PRIOR_SIGMA_K1 = 0.02
 
+# --- Intrinsics refit in the BA loop (phase 2j-4, the DroidCalib port,
+# v3: BASIN SEARCH - the frozen-map least-squares refit (v1) is dead by
+# six-probe measurement; see slam/calibration/refit.py's design record
+# and the 2j-4 record in benchmarks/IMPROVEMENT.md). Read through the
+# module alias everywhere (--override-sweepable). The ENABLED flag is
+# an INT (0/1), not a bool: the --override parser is
+# type(current)(value) and bool("0") is True - the trap.
+CALIB_REFIT_ENABLED = 0
+# Per-candidate global-BA call cap when solving into a candidate's
+# basin (the crossing probe: one call lands 98% of the way - the floor
+# trajectories converge in ONE call at complete-map states), and the
+# relative cost-stabilization tolerance that ends a candidate's solve
+# early.
+CALIB_SEARCH_BA_CAP = 4
+CALIB_SEARCH_J_TOL = 0.02
+# The a-priori focal sigma for provided/dataset intrinsics: provenance
+# only in v3 (the search compares basins by data cost, not prior
+# weights; the GeoCalib uncertainty informed the INIT, which is where
+# it belongs - the 2j-2 record).
+CALIB_PRIOR_SIGMA_F_FRAC = 0.35
+# Diagnostic (benchmark experiments only): added to the dataset k1 at
+# estimate construction, so k1-recovery can be tested from perturbed
+# initializations too.
+CALIB_K1_INIT_OFFSET = 0.0
+
+# --- Observability gate (phase 2j-4). DroidCalib: "the video should
+# contain diverse camera motion (translation and rotations around the
+# different axes) for the intrinsics to be observable". The critical
+# motions (pure translation, orbital, planar rotation) are excluded by
+# construction: >= 2 translation eigen-axes excludes single-axis
+# translation; >= 2 accumulated-rotation axes excludes planar AND
+# orbital (yaw-only) motion.
+CALIB_GATE_MIN_KEYFRAMES = 12
+CALIB_GATE_MIN_POINTS = 300
+CALIB_GATE_MIN_TRANSL_AXES = 2
+CALIB_GATE_TRANSL_AXIS_RATIO = 0.05
+CALIB_GATE_MIN_ROT_AXES = 2
+CALIB_GATE_MIN_ROT_DEG = 15.0
+
 ### KEYFRAME SELECTION CONSTANTS ###
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10
 MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe

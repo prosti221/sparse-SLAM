@@ -39,6 +39,18 @@ class Tracker:
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
         self.feature_extractor.set_multiscale_enabled(enable_multiscale)
 
+        # Phase 2j-4: the intrinsics refiter (the DroidCalib port).
+        # Created ONLY when the flag is set AND the run path wired the
+        # live estimate onto the map - the module is not even imported
+        # otherwise, so the default pipeline's import graph and
+        # behavior are untouched. ENABLED is an int flag because the
+        # benchmark override parser is type(current)(value) and
+        # bool("0") would parse True.
+        self.calib_refiner = None
+        if const.CALIB_REFIT_ENABLED and map.intrinsics is not None:
+            from slam.calibration.refit import IntrinsicsRefiner
+            self.calib_refiner = IntrinsicsRefiner(map, map.intrinsics)
+
     def update(self, new_frame: Frame) -> bool:
         # Extract features from the new frame
         with telemetry.stage("extract"):
@@ -157,7 +169,21 @@ class Tracker:
         with telemetry.stage("cull"):
             self.map.cull_redundant_keyframe()
 
+        # Phase 2j-4: the intrinsics refit hook. Runs AFTER the local
+        # BA of this insertion (the refit alternates with it - see
+        # slam/calibration/refit.py), inside its own profile stage. A
+        # LOCKED gate or a frozen estimate is a no-op by construction.
+        if self.calib_refiner is not None:
+            with telemetry.stage("calib"):
+                self.calib_refiner.on_keyframe_inserted()
+
     def _filter_duplicate_keypoints(self):
+        # Latent empty-path bug (exposed by the 2j-4 volume-scene
+        # probe): a keyframe-insertion frame can carry no matches at
+        # all (sparse scenes; matches is None until set_match_data).
+        # Wall-textured benchmark sequences never hit this.
+        if self.cur_frame.matches is None:
+            return
         for match in self.cur_frame.matches:
             cur_keyframe_kp = self.map.cur_keyframe.keypoints[match.trainIdx]
             if cur_keyframe_kp not in self.map.cur_keyframe.keypoint_to_point_map:
@@ -279,7 +305,14 @@ class Tracker:
         if kp_coords is None or len(kp_coords) == 0:
             warning_log(
                 LOG_TAG, "No keypoints available for projection matching")
-            return np.array([]), np.array([])
+            # Latent bug (exposed by the 2j-4 volume-scene probe, whose
+            # sparse frames can have no keypoints): this path returned
+            # a TUPLE of arrays while the normal path returns a LIST of
+            # Observations - the caller then iterated ndarrays and
+            # crashed on obs.point. Wall-textured benchmark sequences
+            # never hit this (every frame sees billboards), so the fix
+            # is behavior-neutral for the suite.
+            return []
 
         tree = cKDTree(kp_coords)
 
@@ -363,6 +396,13 @@ class Tracker:
         # Triangulate points
         points_4d = compute_triangulation(
             self.map.cur_keyframe, self.map.prev_keyframe, use_optimization=False)
+
+        # Latent empty-path bug (exposed by the 2j-4 volume-scene
+        # probe): compute_triangulation returns a 1-D empty array on
+        # its no-matches warning path, and the [:, 3] indexing below
+        # then crashes. Wall-textured sequences never hit this.
+        if points_4d.size == 0:
+            return []
 
         valid_points = points_4d[:, 3] != 0
         points_4d = points_4d[valid_points]
@@ -528,14 +568,21 @@ class Tracker:
             debug_log(LOG_TAG, "Aggressive relocalization successful!")
             return
 
-        # Relocalization failed completely
-        self.map.consecutive_relocalization_failures += 1
+        # Relocalization failed completely. NOTE: latent bug fixed in
+        # 2j-4 (exposed by the sparse volume-scene probes): this
+        # counter was incremented through self.map - the attribute
+        # lives on the TRACKER (initialized next to the success
+        # counter). No benchmark sequence ever reached this path (it
+        # crashed on entry), so the fix is behavior-neutral for the
+        # suite; the reloc_failed telemetry event becomes observable
+        # for the first time.
+        self.consecutive_relocalization_failures += 1
         telemetry.event("reloc_failed")
         warning_log(
-            LOG_TAG, f"Relocalization failed - tracking lost ({self.map.consecutive_relocalization_failures}/{MAX_CONSECUTIVE_RELOCALIZATION_FAILURES})")
+            LOG_TAG, f"Relocalization failed - tracking lost ({self.consecutive_relocalization_failures}/{MAX_CONSECUTIVE_RELOCALIZATION_FAILURES})")
 
         # Check if we should reset the system due to consecutive failures
-        if self.map.consecutive_relocalization_failures >= MAX_CONSECUTIVE_RELOCALIZATION_FAILURES:
+        if self.consecutive_relocalization_failures >= MAX_CONSECUTIVE_RELOCALIZATION_FAILURES:
             self._reset_system()
             return
 

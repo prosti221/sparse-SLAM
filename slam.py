@@ -1,5 +1,6 @@
 import cv2 as cv
 
+from slam.calibration import IntrinsicsEstimate
 from slam.config.config_parser import ConfigParser
 from slam.core.frame import Frame
 from slam.core.map import Map
@@ -42,6 +43,16 @@ if __name__ == "__main__":
                  f"Auto-calibrated intrinsics: {intrinsics_prior}")
 
     global_map = Map()
+    # Phase 2j-2/2j-4: the live intrinsics estimate. From the GeoCalib
+    # prior when 'fx: auto' ran; otherwise from the provided K (a
+    # static estimate unless the refit is enabled). The frame loop
+    # reads it every frame.
+    if intrinsics_prior is not None:
+        global_map.intrinsics = IntrinsicsEstimate.from_prior(
+            intrinsics_prior)
+    else:
+        global_map.intrinsics = IntrinsicsEstimate.from_K(
+            K, source="config")
     renderer = Renderer(global_map, K, W=1920, H=1080)
 
     tracker = Tracker(global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
@@ -81,7 +92,8 @@ if __name__ == "__main__":
                 slam_in_progress = False
                 continue
 
-        frame = Frame(img, K)
+        frame = Frame(img, global_map.intrinsics.K,
+                       global_map.intrinsics.k1)
         is_new_keyframe = tracker.update(frame)
 
         if is_new_keyframe:

@@ -40,6 +40,26 @@ Event keys (counted pipeline decisions - deterministic per run):
                               map points orphan-removed with them
                               (below the keyframe-observation minimum;
                               phase 2h)
+  calib_gate_locked / calib_gate_freed / calib_gate_frozen
+                              the 2j intrinsics refit's observability
+                              gate: stays locked on critical-motion
+                              sequences (single-axis translation, less
+                              than 2 accumulated rotation axes - orbit,
+                              translation, forward_rotation by design),
+                              frees on diverse motion; the estimate
+                              freezes after the one-shot stream-end
+                              basin search
+  calib_hook_frozen / calib_hook_free / calib_final_gate_locked
+                              post-freeze hooks are no-ops; hooks after
+                              the gate freed (the hook never searches
+                              mid-stream - v3.1); the stream-end search
+                              skipped because the gate never freed
+  calib_search_done / calib_propagated / calib_search_failed
+                              a basin search completed (the estimate
+                              landed in the winning basin), a K/k1
+                              propagation ran (the two normalized-
+                              coordinate caches recomputed), or no
+                              candidate produced a usable solve
 """
 import time
 from contextlib import contextmanager

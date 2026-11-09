@@ -15,6 +15,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 import slam.utils.logger as slam_logger
+from slam.calibration.refit import IntrinsicsEstimate
 from slam.core.frame import Frame
 from slam.core.map import Map
 from slam.core.tracker import Tracker
@@ -26,13 +27,16 @@ from slam.utils import telemetry
 class RunResult:
     frames_processed: int
     poses: np.ndarray            # (N, 4, 4) per-frame Twc estimates
-    keyframe_indices: List[int]   # frame indices promoted to keyframe
+    keyframe_indices: List[int]  # frame indices promoted to keyframe
     map_points: np.ndarray        # (M, 3) final map points
     num_keyframes: int
     resets: int
     seconds: float
     telemetry: dict = field(default_factory=dict)
     # telemetry snapshot: stage_seconds / stage_calls / events
+    final_intrinsics: dict = field(default_factory=dict)
+    # phase 2j-4: the final intrinsics estimate (f, k1, frozen,
+    # source) - the recovery experiments' readout
 
     @property
     def fps(self) -> float:
@@ -50,8 +54,9 @@ def load_calibration(dataset_dir: Path):
     fx, fy, cx, cy = vals[:4]
     k1 = float(vals[4]) if len(vals) > 4 else 0.0
 
-    # Literal no-op at the default 1.0 (the multiply is skipped) so
-    # default runs are bit-identical.
+    # Phase 2j-0 diagnostic: perturb the focal length on demand
+    # (--override FOCAL_SCALE=0.8). Literal no-op at the default 1.0
+    # (the multiply is skipped) so default runs are bit-identical.
     if const.FOCAL_SCALE != 1.0:
         fx, fy = fx * const.FOCAL_SCALE, fy * const.FOCAL_SCALE
 
@@ -98,6 +103,13 @@ def run_slam(dataset_dir: Path,
     cv.setRNGSeed(seed)
 
     world_map = Map()
+    # Phase 2j-4: the live intrinsics estimate. Constructed from the
+    # (possibly FOCAL_SCALE-perturbed) dataset K; the frame loop reads
+    # it every frame so mid-run refits reach subsequent frames. The
+    # refit activates only via CALIB_REFIT_ENABLED (default 0 - the
+    # estimate is then static and the run is bit-identical).
+    world_map.intrinsics = IntrinsicsEstimate.from_K(
+        K, k1 + const.CALIB_K1_INIT_OFFSET)
     tracker = Tracker(world_map, extractor, multiscale, enable_ba)
 
     poses: List[np.ndarray] = []
@@ -116,13 +128,22 @@ def run_slam(dataset_dir: Path,
             img = cv.imread(str(frame_file))
             if img is None:
                 raise IOError(f"Failed to read frame: {frame_file}")
-            frame = Frame(img, K, k1)
+            frame = Frame(img, world_map.intrinsics.K,
+                          world_map.intrinsics.k1)
             is_new_keyframe = tracker.update(frame)
 
             poses.append(tracker.cur_frame.pose)
             steps.append(tracker.step)
             if is_new_keyframe:
                 keyframe_indices.append(i)
+
+        # Phase 2j-4 (v3.1): the one-shot basin search at STREAM END.
+        # The hook only gate-checks during the run; the search runs
+        # once here (inside the try so its stage timing is recorded),
+        # and freezes the estimate.
+        if tracker.calib_refiner is not None:
+            with telemetry.stage("calib"):
+                tracker.calib_refiner.final_search()
     finally:
         elapsed = time.perf_counter() - t_start
         # Always detach, even on crashes, so no recorder ever leaks into
@@ -144,4 +165,6 @@ def run_slam(dataset_dir: Path,
         resets=resets,
         seconds=elapsed,
         telemetry=recorder.snapshot(),
+        final_intrinsics=(world_map.intrinsics.as_dict()
+                          if world_map.intrinsics is not None else {}),
     )
