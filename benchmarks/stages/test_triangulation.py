@@ -171,3 +171,31 @@ def test_validation_codes_dict_is_consistent():
         assert codes[code] == name  # the reverse mapping (bidirectional)
     assert "MIN_BASELINE_VIOLATION" not in codes
     assert "WELL_CONDITIONED_VIOLATION" not in codes
+
+
+def test_zero_reprojection_error_does_not_prove_depth_accuracy():
+    """5d: epipolar-consistent image error can change depth, not residual.
+
+    A point reconstructed from the perturbed pair passes every current
+    gate but is >25% wrong in depth. Observed reprojection residual
+    cannot serve as the noise standard deviation for depth covariance.
+    """
+    prev = make_frame(yaw_pose(0.0, (0.0, 0.0, 0.0)), K)
+    cur = make_frame(yaw_pose(0.0, (0.1, 0.0, 0.0)), K)
+    truth = np.array([0.2, 0.1, 5.0])
+    uv_prev, _ = project_gt(prev.pose, truth, K)
+    uv_cur, _ = project_gt(cur.pose, truth, K)
+    uv_cur = uv_cur + np.array([2.0, 0.0])
+    set_keypoints(prev, [uv_prev])
+    set_keypoints(cur, [uv_cur])
+    cur.set_match_data([cv.DMatch(0, 0, 0.0)])
+
+    homogeneous = triangulate(
+        np.linalg.inv(cur.pose)[:3], np.linalg.inv(prev.pose)[:3],
+        np.array([_normalized(uv_cur)]), np.array([_normalized(uv_prev)]))[0]
+    recovered = homogeneous / homogeneous[3]
+    result = is_valid_triangulated_point(0, cur, prev, recovered)
+
+    assert result["validation_code"] == TRIANGULATION_VALIDATION_CODE["VALID"]
+    assert result["reprojection_error"] < 1e-8
+    assert abs(recovered[2] / truth[2] - 1.0) > 0.25

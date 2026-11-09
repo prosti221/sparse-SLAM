@@ -110,10 +110,10 @@ MINIMUM_NEW_POINTS_RATIO = 0.4
 MIN_DEPTH = 0.0  # Cheirality: minimum depth for valid points (z > 0)
 MAX_DEPTH = 1000  # Latent divergence guard; never binds on the battery (5a)
 # Parallax FLOOR in degrees (the former MAX_PARALLAX was a misnomer -
-# the check REJECTS parallax BELOW it). The physical content: it
-# bounds relative depth error sigma_z/z ~ e_px/(f*tan(theta)) at
-# ~0.196 for 1 px at fx 450 (5a measured the accepted population's
-# actual precision far better: medians 0.002-0.026).
+# the check REJECTS parallax BELOW it). Parallax controls depth
+# observability, not correspondence correctness. A depth-uncertainty
+# estimate additionally needs an independent image-noise model and
+# assumptions about pose accuracy (phase 5d).
 MIN_PARALLAX_DEG = 0.65
 # Creation-gate reprojection consistency, in PLAIN PIXELS, both frames
 # (the former MAX_SQUARED_REPROJECTION_ERROR was a misnomer - the
