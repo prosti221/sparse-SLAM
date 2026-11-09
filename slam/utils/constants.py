@@ -44,6 +44,13 @@ CALIB_REFIT_ENABLED = 0
 # early.
 CALIB_SEARCH_BA_CAP = 4
 CALIB_SEARCH_J_TOL = 0.02
+# The adopt-margin guard: the search only adopts a candidate whose
+# converged cost beats the INCUMBENT's by this relative margin. The
+# gross-error signal measured 20-46% (the wrong-f incumbent's floor);
+# the floor noise between plausible candidates is ~1-5% and biased -
+# the tum negative-control run moved a TRUE init +3.4% before this
+# guard. 10% separates the regimes.
+CALIB_SEARCH_ADOPT_MARGIN = 0.10
 # The a-priori focal sigma for provided/dataset intrinsics: provenance
 # only in v3 (the search compares basins by data cost, not prior
 # weights; the GeoCalib uncertainty informed the INIT, which is where
@@ -66,6 +73,12 @@ CALIB_GATE_MIN_POINTS = 300
 CALIB_GATE_MIN_TRANSL_AXES = 2
 CALIB_GATE_TRANSL_AXIS_RATIO = 0.05
 CALIB_GATE_MIN_ROT_AXES = 2
+# Rotation-axis criterion: per-pair DOMINANT-axis assignment (see
+# gate_metrics). Two prior designs failed on real orbit and are
+# recorded there: linear |rotvec| accumulation (sums pose noise
+# linearly) and the eigen form (real orbit's 15 deg RPE tracking
+# error is genuine rotation mass, not jitter). CALIB_GATE_MIN_ROT_DEG
+# doubles as the per-axis accumulated mass and the total floor.
 CALIB_GATE_MIN_ROT_DEG = 15.0
 
 ### KEYFRAME SELECTION CONSTANTS ###

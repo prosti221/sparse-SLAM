@@ -662,6 +662,84 @@ def test_gate_locks_critical_motion_and_frees_diverse():
     assert not gate_frees(diverse[:6], 1000)   # too few keyframes
 
 
+def test_gate_locks_noisy_orbit():
+    """2j-5 negative-control regression: orbit's rough tracking
+    accumulates pose-estimation NOISE on secondary rotation axes, and
+    the first gate design summed |rotvec| per axis - LINEARLY - so
+    the noise freed a gate that pure yaw must keep locked (Run A
+    measured orbit's gate freeing and the search adopting f=463.5).
+    The eigen form weighs each pair's rotation by its squared
+    magnitude, so the noise contributes quadratically less than the
+    real yaw rotation mass."""
+    rng = np.random.default_rng(3)
+    noisy_orbital = []
+    yaw = 0.0
+    for _ in range(16):
+        yaw += 2.0 * np.pi / 16.0
+        # The TRUE motion is pure yaw; pose-estimation noise adds a
+        # ~1.5 deg wobble on the other axes (orbit's per-KF reality).
+        R = Rotation.from_euler("xyz", [
+            np.deg2rad(rng.normal(0.0, 1.5)),
+            yaw + np.deg2rad(rng.normal(0.0, 1.5)),
+            np.deg2rad(rng.normal(0.0, 1.5))]).as_matrix()
+        noisy_orbital.append(make_frame(se3(
+            R, [4.0 * np.cos(yaw), 0.0, 4.0 * np.sin(yaw)])))
+    assert not gate_frees(noisy_orbital, 1000)
+
+
+def test_search_keeps_true_incumbent_and_adopts_gross_error():
+    """2j-5 regression: the adopt-margin guard. A TRUE init must be
+    KEPT (the floor noise between plausible candidates is ~1-5% and
+    biased - tum moved a true init +3.4% before the guard); a gross
+    error must still be adopted (the measured 20%+ signal clears the
+    10% margin)."""
+    # True init on a ground-truth fixture: kept exactly.
+    m, _, _ = _refit_fixture()
+    est = IntrinsicsEstimate(450.0, 450.0, 320.0, 240.0, -0.05,
+                             sigma_f=150.0, sigma_k1=0.02, source="test")
+    refiner = IntrinsicsRefiner(m, est)
+    refiner.phase = "free"
+    refiner.final_search()
+    assert est.f == 450.0 and est.k1 == -0.05, \
+        f"a true init must be kept (got f={est.f}, k1={est.k1})"
+    assert est.frozen
+
+    # Gross error: adopted (and frozen at the winning basin).
+    m, _, _ = _refit_fixture()
+    est = IntrinsicsEstimate(0.8 * 450.0, 0.8 * 450.0, 320.0, 240.0,
+                             -0.02, sigma_f=126.0, sigma_k1=0.02,
+                             source="test")
+    refiner = IntrinsicsRefiner(m, est)
+    refiner.phase = "free"
+    refiner.final_search()
+    assert abs(est.f - 450.0) / 450.0 < 0.02, \
+        f"a gross error must be adopted (got f={est.f})"
+    assert est.frozen
+
+
+def test_kept_incumbent_preserves_unequal_focals():
+    """2j-5 regression: the shared-f design averaged TUM's unequal
+    focals (517.31/516.47 -> 516.9) even on the KEPT path - a provided
+    fx != fy must survive untouched (caught by the TUM run's
+    final_intrinsics readout: f_final was 0.08% below the provided
+    init for no reason). The estimate here carries unequal focals
+    whose MEAN is the fixture's truth, so the incumbent is at the
+    noise floor and nothing can clear the adopt margin."""
+    m, _, _ = _refit_fixture()
+    est = IntrinsicsEstimate(460.0, 440.0, 320.0, 240.0, -0.05,
+                             sigma_f=150.0, sigma_k1=0.02, source="test")
+    refiner = IntrinsicsRefiner(m, est)
+    refiner.phase = "free"
+
+    refiner.final_search()
+
+    assert (est.fx == 460.0 and est.fy == 440.0
+            and est.k1 == -0.05), (
+        f"a kept incumbent must preserve fx/fy exactly "
+        f"(got {est.fx}/{est.fy})")
+    assert est.frozen
+
+
 def test_refit_locked_is_noop():
     """2j-4: with the gate locked (fewer keyframes than the floor), the
     hook changes NOTHING - the estimate, its values, and the phase are

@@ -133,9 +133,19 @@ def gate_metrics(keyframes):
     translation - a critical motion). NOTE: the components must be
     DECOUPLED - a straight diagonal line counts as one axis (the
     first gate pin caught exactly that).
-    rotation_axes: the number of axes whose accumulated |rotation
-    vector| exceeds CALIB_GATE_MIN_ROT_DEG (>= 2 excludes planar
-    rotation AND orbital motion, which is yaw-only).
+
+    rotation_axes: per consecutive-keyframe pair, the relative
+    rotation is assigned to its DOMINANT axis (argmax |rotvec
+    component|), accumulating the full angle; an axis counts when its
+    accumulated mass reaches CALIB_GATE_MIN_ROT_DEG. Two prior designs
+    failed on real data and are recorded: per-axis |rotvec| sums pose
+    noise LINEARLY (orbit's rough tracking freed a gate that pure yaw
+    must keep locked), and the eigen form of the accumulated second
+    moment still freed real orbit - its tracking error (15 deg RPE) is
+    genuine rotation mass, not jitter. The dominant-axis assignment
+    misassigns only when a pair's noise exceeds its true rotation,
+    which for a 7 deg/step yaw orbit essentially never happens.
+    CALIB_GATE_MIN_ROT_DEG doubles as the total-rotation floor.
     """
     n = len(keyframes)
     translation_axes = 0
@@ -146,13 +156,18 @@ def gate_metrics(keyframes):
         eig[eig < 0] = 0.0
         translation_axes = int(np.sum(
             eig >= const.CALIB_GATE_TRANSL_AXIS_RATIO * eig[-1]))
-    rot_acc = np.zeros(3)
+
+    rot_by_axis = np.zeros(3)
+    total_rot_deg = 0.0
     for a, b in zip(keyframes[:-1], keyframes[1:]):
         R_rel = a.pose[:3, :3].T @ b.pose[:3, :3]
-        rot_acc += np.abs(Rotation.from_matrix(R_rel).as_rotvec())
-    rotation_axes = int(np.sum(np.degrees(rot_acc)
-                               >= const.CALIB_GATE_MIN_ROT_DEG))
-    return translation_axes, rotation_axes, rot_acc
+        v = Rotation.from_matrix(R_rel).as_rotvec()
+        angle_deg = float(np.degrees(np.linalg.norm(v)))
+        rot_by_axis[int(np.argmax(np.abs(v)))] += angle_deg
+        total_rot_deg += angle_deg
+    rotation_axes = int(np.sum(
+        rot_by_axis >= const.CALIB_GATE_MIN_ROT_DEG))
+    return translation_axes, rotation_axes, total_rot_deg
 
 
 def gate_frees(keyframes, points_count):
@@ -161,10 +176,12 @@ def gate_frees(keyframes, points_count):
         return False
     if points_count < const.CALIB_GATE_MIN_POINTS:
         return False
-    translation_axes, rotation_axes, _ = gate_metrics(keyframes)
+    translation_axes, rotation_axes, total_rot_deg = gate_metrics(keyframes)
     if translation_axes < const.CALIB_GATE_MIN_TRANSL_AXES:
         return False
     if rotation_axes < const.CALIB_GATE_MIN_ROT_AXES:
+        return False
+    if total_rot_deg < 2.0 * const.CALIB_GATE_MIN_ROT_DEG:
         return False
     return True
 
@@ -316,17 +333,21 @@ class IntrinsicsRefiner:
         basin."""
         est = self.estimate
         f_init = est.f
+        fx_init, fy_init = est.fx, est.fy
         k1_init = est.k1
         incumbent = self._snapshot()
         obs_list = self._point_side_observations()
 
         # --- coarse f pass ---
         best_f, best_cost, best_k1 = f_init, None, k1_init
+        cost_init = None
         for scale in _COARSE_F_GRID:
             f_c = f_init * scale
             cost = self._evaluate_candidate(f_c, k1_init, incumbent,
                                              obs_list)
             info_log(LOG_TAG, f"  candidate f={f_c:.1f}: cost={cost}")
+            if scale == 1.0:
+                cost_init = cost
             if cost is not None and (best_cost is None or cost < best_cost):
                 best_f, best_cost = f_c, cost
         if best_cost is None:
@@ -365,6 +386,39 @@ class IntrinsicsRefiner:
                 if cost is not None and cost < best_cost:
                     best_k1, best_cost = k1_cand, cost
 
+        # --- adopt-margin guard (the 2j-5 negative-control lesson):
+        # the floor noise between plausible candidates is ~1-5% and
+        # BIASED (a TRUE init on tum moved +3.4% before this guard),
+        # while the gross-error signal is 20-46%. Only a candidate
+        # beating the incumbent by the margin is adopted; otherwise
+        # the provided intrinsics stand and the search is a pure
+        # gross-error guard. The winner EQUALING the incumbent's mean
+        # is the same case (nothing to correct) - and the landing path
+        # would otherwise COLLAPSE a provided fx != fy onto the shared
+        # mean (caught by the unequal-focals pin).
+        winner_is_incumbent = (best_f == f_init and best_k1 == k1_init)
+        margin_blocks = (cost_init is not None and best_cost
+                         > (1.0 - const.CALIB_SEARCH_ADOPT_MARGIN)
+                         * cost_init)
+        if winner_is_incumbent or margin_blocks:
+            self._restore(incumbent)
+            # Restore the ORIGINAL per-axis focals exactly: the
+            # shared-f design averages fx/fy (TUM: 517.31/516.47 ->
+            # 516.9), and a provided fx != fy must survive the kept
+            # path untouched (caught by the 2j-5 TUM run's
+            # final_intrinsics readout).
+            est.fx, est.fy = fx_init, fy_init
+            est.k1 = k1_init
+            self._propagate_map(est.K, k1_init)
+            telemetry.event("calib_search_kept_incumbent")
+            info_log(LOG_TAG,
+                     f"basin search: best candidate f={best_f:.1f} "
+                     f"(cost {best_cost:.4f}) does not beat the "
+                     f"incumbent (cost {cost_init}) by the "
+                     f"{const.CALIB_SEARCH_ADOPT_MARGIN:.0%} margin - "
+                     f"keeping the provided intrinsics")
+            return
+
         # --- land the winning basin from the incumbent state ---
         self._restore(incumbent)
         self._propagate(best_f, best_k1)
@@ -380,19 +434,22 @@ class IntrinsicsRefiner:
     # -- propagation -------------------------------------------------------
 
     def _propagate(self, f_new, k1_new):
-        """Land new intrinsics: update the estimate, every keyframe's
-        K/k1 + the two normalized-coordinate caches (kp_pts_norm,
+        """Land new (shared-f, k1) intrinsics: update the estimate,
+        then the map (see _propagate_map)."""
+        est = self.estimate
+        est.fx = est.fy = f_new
+        est.k1 = k1_new
+        self._propagate_map(est.K, k1_new)
+
+    def _propagate_map(self, K_new, k1_new):
+        """Land new intrinsics on the map: every keyframe's K/k1 + the
+        two normalized-coordinate caches (kp_pts_norm,
         Observation.pt_2d_norm), and drop the persistent local g2o
         graph (its edge MEASUREMENTS are normalized coords baked at
         edge creation - stale under new intrinsics; the next local BA
         call rebuilds from the map). The g2o graphs hold no intrinsics
         of their own (the 2j survey), so nothing else needs
         invalidation."""
-        est = self.estimate
-        est.fx = est.fy = f_new
-        est.k1 = k1_new
-        K_new = est.K
-
         for kf in self.map.keyframes:
             kf.K = K_new
             kf.k1 = k1_new
