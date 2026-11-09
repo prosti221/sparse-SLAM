@@ -50,6 +50,18 @@ class Tracker:
             from slam.calibration.refit import IntrinsicsRefiner
             self.calib_refiner = IntrinsicsRefiner(map, map.intrinsics)
 
+        # Phase 3c: set by the loop-closure hook when a correction
+        # moved keyframe poses mid-update; consumed AFTER the
+        # constant-velocity update in update() (which would otherwise
+        # bake the teleport into the next prediction - the reloc
+        # precedent, relocated because the hook runs at insertion
+        # time, before the velocity line).
+        self._loop_correction_applied = False
+        # Phase 3c: insertions since the last correction (the
+        # cooldown starts ARMED so a mid-run closure is never blocked;
+        # a correction resets it to 0).
+        self._loop_kfs_since_correction = const.LOOP_CORRECTION_COOLDOWN_KF
+
     def update(self, new_frame: Frame) -> bool:
         # Extract features from the new frame
         with telemetry.stage("extract"):
@@ -135,6 +147,16 @@ class Tracker:
         # Update the velocity based on the current and previous frame poses
         self.velocity = np.linalg.inv(
             self.prev_frame.pose) @ self.cur_frame.pose
+
+        # Phase 3c: a loop correction moved keyframe poses mid-update
+        # (including this frame's, if it was just inserted and queried
+        # as the loop keyframe) - the constant-velocity line above has
+        # the teleport baked in. Reset it (the reloc precedent): the
+        # next prediction is the corrected pose itself, and matching
+        # re-establishes motion from there.
+        if self._loop_correction_applied:
+            self.velocity = np.eye(4)
+            self._loop_correction_applied = False
 
         # Check for relocalization if tracking quality is consistently low
         with telemetry.stage("relocate"):
@@ -488,25 +510,36 @@ class Tracker:
         return self.prev_frame.pose @ Rt
 
     def _handle_loop_closure_detection(self):
-        """Phase 3b: the loop-closure DETECTION hook - TELEMETRY-ONLY
-        (the correction path lands in 3c: constraints -> pose graph ->
-        global BA -> motion-model consistency - the milestone-3 form
-        even had the post-graph global BA, restored deliberately
-        there). One query per NEW keyframe (the milestone-3 step%10
-        frame cadence re-queried the same cur_keyframe repeatedly);
-        the query is the freshly inserted keyframe, after
-        optimize/triangulate/cull so the candidate scan sees the
-        fresh map.
+        """Phase 3b/3c: the loop-closure hook at KEYFRAME cadence -
+        one query per insertion on the freshly inserted keyframe (the
+        milestone-3 step%10 frame cadence re-queried the same
+        cur_keyframe repeatedly). Detection -> reloc-grade PnP
+        verification (3a/3b) -> the drift-magnitude gate -> the
+        correction: pose graph (gauge at KF0) -> global BA (the
+        finding-13-justified trigger) -> the motion-model reset.
 
         The module is cv-RNG-transparent by construction (see
         slam/loop_closure.py: no cv RANSAC anywhere in the path), so
         the default pipeline's numerics are untouched wherever no
-        loop fires - the anchor sequences' bit-identity is a
-        construction property, not a calibration outcome.
-        LOOP_CLOSURE_ENABLED is an INT flag (the --override parser's
-        bool("0") trap)."""
+        loop verifies AND corrects. LOOP_CLOSURE_ENABLED is an INT
+        flag (the --override parser's bool("0") trap)."""
         if not const.LOOP_CLOSURE_ENABLED:
             return
+
+        # The correction cooldown (phase 3c, the tum runtime lesson):
+        # skip the whole detector - not just the correction - while
+        # armed, because the verification's BF matching is itself a
+        # per-frame cost at dense keyframe rates. The cooldown gates
+        # only when the correction path is ARMED: with the correction
+        # inert (LOOP_CORRECTION_ENABLED=0) detection runs
+        # unthrottled so 3d's chaos A/B sees the full landscape.
+        if const.LOOP_CORRECTION_ENABLED and (
+                self._loop_kfs_since_correction
+                < const.LOOP_CORRECTION_COOLDOWN_KF):
+            self._loop_kfs_since_correction += 1
+            telemetry.event("loop_hook_cooldown")
+            return
+        self._loop_kfs_since_correction += 1
 
         current_keyframe = self.map.cur_keyframe
         if current_keyframe is None:
@@ -522,11 +555,89 @@ class Tracker:
         if not verified_loops:
             debug_log(LOG_TAG, "No loop closures verified")
             return
-
-        # 3b stops here deliberately: verification is measured
-        # (telemetry loop_verified); the correction lands in 3c.
         info_log(LOG_TAG, f"Verified {len(verified_loops)} loop "
-                 f"closure(s) (correction path lands in phase 3c)")
+                 f"closure(s)")
+
+        # The correction flag (the 3c landing decision): everything
+        # above is live telemetry (RNG-transparent, zero numeric
+        # effect); everything below is the correction path, inert by
+        # default pending 3d's multi-seed chaos verdict (the boundary
+        # measurement: orbit's lone end-closure is out of rigid
+        # closure's regime; tum's dense corrections help).
+        if not const.LOOP_CORRECTION_ENABLED:
+            debug_log(LOG_TAG, "Correction inert "
+                      "(LOOP_CORRECTION_ENABLED=0)")
+            return
+
+        # --- the drift-magnitude gate then the correction ---
+        # A verified constraint that AGREES with the odometry chain is
+        # a no-op - closing it would be a harmless-but-wasteful pose
+        # graph + global BA (tum's 199 verified near-revisits, measured
+        # in 3b). Only DISAGREEMENT with the chain justifies the
+        # global rearrangement (finding 13's spirit).
+        constraints = []
+        for loop in verified_loops:
+            match_kf = self.map.get_keyframe_by_id(loop.match_keyframe_id)
+            if match_kf is None:
+                continue
+            # The constraint's implied pose of the query: M(q,m) @
+            # pose_m = pose_q_pnp (the fresh PnP estimate the
+            # measurement was built from).
+            implied = loop.relative_pose @ match_kf.pose
+            drift = float(np.linalg.norm(
+                implied[:3, 3] - current_keyframe.pose[:3, 3]))
+            if drift < const.LOOP_MIN_DRIFT_M:
+                telemetry.event("loop_correction_skipped")
+                debug_log(LOG_TAG, f"Verified loop agrees with the "
+                          f"chain (drift {drift:.3f} < "
+                          f"{const.LOOP_MIN_DRIFT_M}) - no correction")
+                continue
+            if drift > const.LOOP_MAX_DRIFT_M:
+                telemetry.event("loop_correction_out_of_regime")
+                debug_log(LOG_TAG, f"Verified loop drift {drift:.3f} "
+                          f"exceeds the closure regime "
+                          f"({const.LOOP_MAX_DRIFT_M}) - rigid SE3 "
+                          f"closure cannot help a map this far gone "
+                          f"(measured on orbit); skipping")
+                continue
+            constraints.append(
+                self.map.pose_graph_optimizer
+                .create_constraint_from_verified_loop(loop))
+
+        if not constraints:
+            return
+
+        # The pose graph distributes the loop error across the chain
+        # (odometry edges as the tautological prior, gauge at KF0).
+        if not self.map.pose_graph_optimizer.optimize_with_loop_constraints(
+                constraints):
+            telemetry.event("loop_correction_failed")
+            warning_log(LOG_TAG, "Pose graph optimization failed")
+            return
+        telemetry.event("loop_corrected")
+        info_log(LOG_TAG, f"Loop correction applied "
+                 f"({len(constraints)} constraint(s))")
+
+        # Re-align the map points: the pose graph moved keyframe
+        # poses, so the existing triangulations are stale - the global
+        # BA re-solves poses+points together (finding 13's reserved
+        # trigger: the global rearrangement justified by a genuine
+        # loop constraint; the milestone-3 disabled block had this
+        # exact call).
+        if self.map.g2o_optimizer.global_bundle_adjustment():
+            telemetry.event("loop_global_ba")
+        else:
+            warning_log(LOG_TAG, "Global BA after loop correction "
+                        "failed - map may be inconsistent")
+
+        # Motion-model consistency (the reloc precedent): this
+        # frame's pose just jumped. update()'s constant-velocity line
+        # runs AFTER this hook and would bake the teleport into the
+        # next prediction - the flag resets it there.
+        self._loop_correction_applied = True
+        # The cooldown restarts: no further corrections for
+        # LOOP_CORRECTION_COOLDOWN_KF insertions.
+        self._loop_kfs_since_correction = 0
 
     def _handle_relocalization_check(self):
         if not self.map.needs_recovery():

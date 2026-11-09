@@ -37,6 +37,15 @@ class RunResult:
     final_intrinsics: dict = field(default_factory=dict)
     # phase 2j-4: the final intrinsics estimate (f, k1, frozen,
     # source) - the recovery experiments' readout
+    keyframe_poses: np.ndarray = field(default_factory=lambda:
+                                       np.empty((0, 4, 4)))
+    # phase 3c: the FINAL map keyframe poses (post-correction,
+    # post-culling - loop closure rewrites the keyframe trajectory
+    # after the per-frame stream is history), paired with
+    keyframe_gt_indices: List[int] = field(default_factory=list)
+    # the frame indices of those same keyframes (the KF-trajectory
+    # ATE's pairing; the harness sets _bench_frame_index at insertion
+    # so culled keyframes drop out cleanly)
 
     @property
     def fps(self) -> float:
@@ -136,6 +145,12 @@ def run_slam(dataset_dir: Path,
             steps.append(tracker.step)
             if is_new_keyframe:
                 keyframe_indices.append(i)
+                # Phase 3c: the KF-trajectory ATE's pairing needs each
+                # FINAL map keyframe's frame index - keyframe_indices
+                # (above) is insertion-ordered and keeps culled
+                # entries, so the index rides on the frame itself and
+                # the post-loop gather drops culled keyframes cleanly.
+                tracker.cur_frame._bench_frame_index = i
 
         # Phase 2j-4 (v3.1): the one-shot basin search at STREAM END.
         # The hook only gate-checks during the run; the search runs
@@ -167,4 +182,11 @@ def run_slam(dataset_dir: Path,
         telemetry=recorder.snapshot(),
         final_intrinsics=(world_map.intrinsics.as_dict()
                           if world_map.intrinsics is not None else {}),
+        keyframe_poses=np.array([
+            kf.pose for kf in world_map.keyframes
+            if hasattr(kf, "_bench_frame_index")]),
+        keyframe_gt_indices=[
+            kf._bench_frame_index
+            for kf in world_map.keyframes
+            if hasattr(kf, "_bench_frame_index")],
     )

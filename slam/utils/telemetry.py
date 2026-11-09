@@ -72,6 +72,15 @@ Event keys (counted pipeline decisions - deterministic per run):
                               failure, inlier-ratio / reprojection
                               gates, or the two-view rotation
                               disagreement (the degeneracy guard)
+  loop_correction_skipped / loop_corrected / loop_global_ba /
+  loop_correction_failed
+                              phase 3c's correction: a verified
+                              constraint that AGREES with the odometry
+                              chain (drift below
+                              LOOP_MIN_DRIFT_M - tum's near-revisits);
+                              a correction applied (pose graph), the
+                              follow-up global BA re-aligning points,
+                              or a failed pose graph
 """
 import time
 from contextlib import contextmanager

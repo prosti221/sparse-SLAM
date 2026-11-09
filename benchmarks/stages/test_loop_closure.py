@@ -17,6 +17,7 @@ pipeline is untouched by this item (the tracker hook stays disabled).
 import cv2 as cv
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 import slam.utils.constants as const
 from benchmarks.stages.helpers import make_frame, project_gt, yaw_pose
@@ -26,6 +27,7 @@ from slam.core.point import Point
 from slam.core.tracker import Tracker
 from slam.loop_closure import LoopClosureCandidate
 from slam.utils import telemetry
+from benchmarks.harness import RunResult
 
 K = np.array([[450.0, 0.0, 320.0],
               [0.0, 450.0, 240.0],
@@ -111,10 +113,17 @@ def _loop_fixture(n_shared=60):
 
     # The query keyframe: the REVISIT of the match pose, at a known
     # relative pose. Its pose ATTRIBUTE is drifted far off truth (the
-    # independence pin); the true pose is returned in info.
+    # independence pin); the true pose is returned in info. Both
+    # revisit KFs anchor the cloud's points (3c: the correction's
+    # global BA needs observation edges on both sides; the
+    # observations are the TRUE pixel measurements, independent of the
+    # drifted pose attribute).
     true_pose = yaw_pose(0.17, [1.4, 0.25, 0.7])
     query_kf = make_frame(true_pose, K)
-    _see(query_kf, [("a", i) for i in range(n_shared)])
+    kept_q = _see(query_kf, [("a", i) for i in range(n_shared)])
+    for kp_idx, key in enumerate(kept_q):
+        pt = points[key]
+        pt.add_observation(Observation(query_kf, pt, kp_idx))
     drift = yaw_pose(0.60, [3.4, -2.1, 2.6])
     query_kf.pose = drift
     m.add_keyframe(query_kf)
@@ -264,20 +273,27 @@ def test_exclusion_window_and_no_self_candidate(monkeypatch):
     assert f["match"].frame_id in ids
 
 
-def test_tracker_hook_is_telemetry_only(monkeypatch):
-    """3b: the tracker's detection hook (keyframe cadence - the query
-    is the freshly inserted cur_keyframe) runs detection+verification
-    and STOPS: TELEMETRY-ONLY by construction (the correction path
-    lands in 3c). With a verified loop in hand, nothing numeric moves
-    - the query KF's (drifted) pose attribute and every map keyframe
-    pose are untouched."""
+def test_hook_correction_pulls_drifted_pose_to_truth(monkeypatch):
+    """3c, THE correction pin: the full hook path on the revisit
+    fixture - detection -> verification -> the drift gate (the
+    fixture's drift is ~4.3 units, far above LOOP_MIN_DRIFT_M) ->
+    pose graph -> global BA -> the motion-model flag. The query KF's
+    deliberately drifted pose attribute is pulled toward its TRUE
+    pose (the constraint's fresh estimate), and the correction flag
+    is set for update()'s velocity reset."""
     m, f, info = _loop_fixture()
+    monkeypatch.setattr(const, "LOOP_CORRECTION_ENABLED", 1)
     monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    # The fixture's drift (~4.7 units) exceeds the real ceiling - this
+    # pin exercises the correction MECHANISM, so lift the regime gate.
+    monkeypatch.setattr(const, "LOOP_MAX_DRIFT_M", 1e6)
     tracker = Tracker(m)
     assert m.cur_keyframe is f["query"], "the fixture's query is last"
 
-    poses_before = [kf.pose.copy() for kf in m.keyframes]
-    pts_before = [p.pt_3d.copy() for p in m.points]
+    drift_before = np.linalg.norm(
+        f["query"].pose[:3, 3] - info["query_true_pose"][:3, 3])
+    assert drift_before > 3.0  # the fixture's sanity: really drifted
+
     rec = telemetry.TelemetryRecorder()
     telemetry.set_recorder(rec)
     try:
@@ -285,16 +301,217 @@ def test_tracker_hook_is_telemetry_only(monkeypatch):
     finally:
         telemetry.set_recorder(None)
 
-    assert rec.events.get("loop_detected", 0) >= 1
+    assert rec.events.get("loop_verified", 0) >= 1
+    assert rec.events.get("loop_corrected", 0) >= 1, \
+        "the drifted revisit must trigger the correction"
+    assert tracker._loop_correction_applied, \
+        "the motion-model reset flag must be set for update()"
+    drift_after = np.linalg.norm(
+        f["query"].pose[:3, 3] - info["query_true_pose"][:3, 3])
+    assert drift_after < 0.25 * drift_before, \
+        f"correction must recover the drift (was {drift_before:.2f}, " \
+        f"now {drift_after:.2f})"
+    # The gauge anchor never moves.
+    assert np.allclose(f["match"].pose, np.eye(4), atol=1e-9) or \
+        np.array_equal(f["match"].pose, make_frame(np.eye(4)).pose)
+    assert np.allclose(f["match"].pose[:3, 3], [0.0, 0.0, 0.0], atol=1e-9)
+
+
+def test_hook_skips_constraint_that_agrees_with_chain(monkeypatch):
+    """3c: the drift-magnitude gate - a verified constraint whose
+    implied pose AGREES with the chain (drift below the threshold) is
+    a no-op: telemetry loop_correction_skipped, nothing moves, the
+    motion-model flag untouched (tum's 199 near-revisits are this
+    population on real data)."""
+    m, f, info = _loop_fixture()
+    monkeypatch.setattr(const, "LOOP_CORRECTION_ENABLED", 1)
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    monkeypatch.setattr(const, "LOOP_MIN_DRIFT_M", 1e6)
+    tracker = Tracker(m)
+
+    poses_before = [kf.pose.copy() for kf in m.keyframes]
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+
     assert rec.events.get("loop_verified", 0) >= 1, \
-        "the true revisit must verify through the hook"
-    # Telemetry-only: nothing moved (the query pose stays DRIFTED -
-    # the correction is 3c's to land).
-    assert np.array_equal(f["query"].pose, info["drift"])
+        "the revisit verifies; the GATE decides, not verification"
+    assert rec.events.get("loop_correction_skipped", 0) >= 1
+    assert "loop_corrected" not in rec.events
+    assert not tracker._loop_correction_applied
     for kf, pose in zip(m.keyframes, poses_before):
-        assert np.array_equal(kf.pose, pose)
-    for p, pt in zip(m.points, pts_before):
-        assert np.array_equal(p.pt_3d, pt)
+        assert np.array_equal(kf.pose, pose), \
+            "a skipped correction must move nothing"
+
+
+def test_correction_cooldown_blocks_then_releases(monkeypatch):
+    """3c: the correction cooldown - after a correction, the whole
+    DETECTOR skips for LOOP_CORRECTION_COOLDOWN_KF insertions (the
+    verification's BF matching is itself a per-frame cost at tum's
+    keyframe density), then releases. The counter starts ARMED so a
+    mid-run closure is never blocked."""
+    m, f, _ = _loop_fixture()
+    monkeypatch.setattr(const, "LOOP_CORRECTION_ENABLED", 1)
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    monkeypatch.setattr(const, "LOOP_MAX_DRIFT_M", 1e6)
+    tracker = Tracker(m)
+
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        # Armed at start: the first hook call corrects.
+        tracker._handle_loop_closure_detection()
+        assert rec.events.get("loop_corrected", 0) == 1
+        assert "loop_hook_cooldown" not in rec.events
+
+        # In cooldown: the detector is skipped entirely - no
+        # verification attempts, no corrections.
+        tracker._handle_loop_closure_detection()
+        assert rec.events.get("loop_hook_cooldown", 0) == 1
+        assert rec.events.get("loop_corrected", 0) == 1
+        assert rec.events.get("loop_verified", 0) == 1, \
+            "no second verification may happen during cooldown"
+    finally:
+        telemetry.set_recorder(None)
+
+    # The counter exhausts: release the detector again (simulate the
+    # remaining cooldown insertions without re-running the map).
+    tracker._loop_kfs_since_correction = const.LOOP_CORRECTION_COOLDOWN_KF
+    rec2 = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec2)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+    assert rec2.events.get("loop_verified", 0) == 1, \
+        "after the cooldown, the detector must run again"
+    # The correction itself is now SKIPPED BY THE DRIFT GATE - the
+    # first correction already pulled the pose to truth, so the same
+    # loop agrees with the chain. Cooldown gates the DETECTOR; the
+    # drift gate gates the CORRECTION; both are visible separately.
+    assert rec2.events.get("loop_correction_skipped", 0) == 1
+    assert "loop_corrected" not in rec2.events
+
+
+def test_kf_trajectory_ate_pairing():
+    """3c: the KF-trajectory ATE's pairing - the FINAL map keyframe
+    poses vs GT at those keyframes' frame indices (culled keyframes
+    drop out cleanly), in the same alignment convention as the
+    per-frame ATE. Exact recovery on a synthetic case."""
+    from benchmarks import metrics as M
+
+    n = 40
+    gt = np.array([yaw_pose(0.02 * i, [0.1 * i, 0.0, 0.0])
+                   for i in range(n)])
+    # 8 keyframes at frames 0, 5, ..., 35; estimated poses = GT with a
+    # GROWING lateral drift (a constant offset is pure gauge
+    # translation - the alignment absorbs it exactly; the drift must
+    # be non-absorbable, and orthogonal to the trajectory's x axis so
+    # scale can't eat it either).
+    kf_idx = list(range(0, n, 5))
+    kf_poses = np.array([yaw_pose(0.02 * i, [0.1 * i, 0.002 * i, 0.0])
+                         for i in kf_idx])
+
+    result = RunResult(
+        frames_processed=n,
+        poses=gt.copy(),
+        keyframe_indices=[],
+        map_points=np.empty((0, 3)),
+        num_keyframes=len(kf_idx),
+        resets=0,
+        seconds=1.0,
+        telemetry={},
+        final_intrinsics={},
+        keyframe_poses=kf_poses,
+        keyframe_gt_indices=kf_idx,
+    )
+    metrics = M.evaluate(result, gt, None, None)
+
+    # Exact GT keyframe poses -> the KF ATE is 0 by construction.
+    result.keyframe_poses = gt[kf_idx].copy()
+    metrics_exact = M.evaluate(result, gt, None, None)
+    assert metrics_exact["ate_kf_rmse"] == 0.0
+
+    # The perturbed case reports a small positive residual, and the
+    # metric pairs the RIGHT frames (not the first-k or insertion
+    # order): the perturbation is uniform 0.01 rad per KF.
+    assert 0.0 < metrics["ate_kf_rmse"] < 0.1
+
+
+def test_hook_skips_out_of_regime_closure(monkeypatch):
+    """3c: the drift CEILING (the orbit boundary measurement): a
+    verified constraint whose drift exceeds LOOP_MAX_DRIFT_M skips the
+    correction entirely - rigid SE3 closure cannot help a map that
+    far gone (measured on orbit: every correction variant degraded
+    the aligned KF-trajectory). Nothing moves."""
+    m, f, _ = _loop_fixture()
+    monkeypatch.setattr(const, "LOOP_CORRECTION_ENABLED", 1)
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    monkeypatch.setattr(const, "LOOP_MAX_DRIFT_M", 1e-6)
+    tracker = Tracker(m)
+
+    poses_before = [kf.pose.copy() for kf in m.keyframes]
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+
+    assert rec.events.get("loop_verified", 0) >= 1, \
+        "verification is pure geometry; the REGIME gate decides"
+    assert rec.events.get("loop_correction_out_of_regime", 0) >= 1
+    assert "loop_corrected" not in rec.events
+    assert not tracker._loop_correction_applied
+    for kf, pose in zip(m.keyframes, poses_before):
+        assert np.array_equal(kf.pose, pose), \
+            "an out-of-regime closure must move nothing"
+
+
+def test_pose_graph_recovers_drifted_chain():
+    """3c: the pose graph itself - a linear chain whose later poses
+    carry injected lateral drift, closed by a TRUE loop constraint,
+    recovers: the loop keyframe lands within 25% of its injected
+    error, the gauge anchor never moves, and the mid-chain error is
+    distributed (smaller than the endpoint's)."""
+    from benchmarks.stages.helpers import se3
+    n = 8
+    m = Map()
+    kfs = []
+    true_poses = [se3(np.eye(3), np.array([0.5 * i, 0.0, 0.0]))
+                  for i in range(n)]
+    for i, tp in enumerate(true_poses):
+        kf = make_frame(tp, K)
+        # inject: growing lateral offset from KF1 on
+        kf.pose = se3(np.eye(3), tp[:3, 3] + np.array([0.0, 0.12 * i, 0.0]))
+        kfs.append(kf)
+        m.add_keyframe(kf)
+
+    q, anchor = kfs[-1], kfs[0]
+    injected = np.linalg.norm(q.pose[:3, 3] - true_poses[-1][:3, 3])
+    assert injected > 0.5
+
+    M = true_poses[-1] @ np.linalg.inv(true_poses[0])
+    ok = m.g2o_optimizer.pose_graph_optimization(
+        [(q.frame_id, anchor.frame_id, M)])
+
+    assert ok
+    # gauge: the anchor never moves
+    assert np.allclose(anchor.pose[:3, 3], true_poses[0][:3, 3], atol=1e-9)
+    # the loop keyframe recovers
+    residual = np.linalg.norm(q.pose[:3, 3] - true_poses[-1][:3, 3])
+    assert residual < 0.25 * injected, \
+        f"chain must absorb the loop error (injected {injected:.2f}, " \
+        f"residual {residual:.2f})"
+    # the mid-chain error is distributed (not dumped on one vertex)
+    mid_residual = np.linalg.norm(
+        kfs[4].pose[:3, 3] - true_poses[4][:3, 3])
+    assert mid_residual < 0.25 * (0.12 * 4), \
+        f"mid-chain drift must distribute, not concentrate " \
+        f"(got {mid_residual:.2f})"
 
 
 def test_tracker_hook_disabled_by_flag(monkeypatch):
@@ -314,3 +531,34 @@ def test_tracker_hook_disabled_by_flag(monkeypatch):
         telemetry.set_recorder(None)
 
     assert rec.events == {}
+
+
+def test_hook_default_is_telemetry_only(monkeypatch):
+    """3c, the LANDING pin: with the correction flag at its DEFAULT
+    (LOOP_CORRECTION_ENABLED=0 - the boundary-measurement decision,
+    pending 3d's chaos verdict), the hook detects and VERIFIES the
+    drifted revisit but nothing moves: no pose graph, no global BA, no
+    motion-model flag. The default battery is bit-identical by
+    construction."""
+    m, f, info = _loop_fixture()
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    tracker = Tracker(m)
+    assert const.LOOP_CORRECTION_ENABLED == 0, \
+        "the default must stay OFF until 3d's verdict flips it"
+
+    poses_before = [kf.pose.copy() for kf in m.keyframes]
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+
+    assert rec.events.get("loop_verified", 0) >= 1, \
+        "detection + verification are live telemetry"
+    assert "loop_corrected" not in rec.events
+    assert not tracker._loop_correction_applied
+    assert np.array_equal(f["query"].pose, info["drift"])
+    for kf, pose in zip(m.keyframes, poses_before):
+        assert np.array_equal(kf.pose, pose), \
+            "the inert correction must move nothing"

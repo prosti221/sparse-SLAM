@@ -92,7 +92,7 @@ def _cell(value, spec: str) -> str:
 def print_table(results: dict) -> None:
     columns = [
         ("sequence", 18), ("keyframes", 10), ("map_pts", 8),
-        ("ATE rmse", 9), ("s", 7), ("scale dev", 10),
+        ("ATE rmse", 9), ("ATEkf rmse", 10), ("s", 7), ("scale dev", 10),
         ("RPE t", 8), ("RPE r deg", 10),
         ("surf %", 7), ("near %", 7), ("resets", 7), ("fps", 6),
     ]
@@ -102,7 +102,8 @@ def print_table(results: dict) -> None:
     for seq, m in results.items():
         row = [
             seq, str(m["keyframes"]), str(m["map_points"]),
-            _cell(m["ate_rmse"], ".4f"), _cell(m["scale"], ".4f"),
+            _cell(m["ate_rmse"], ".4f"), _cell(m["ate_kf_rmse"], ".4f"),
+            _cell(m["scale"], ".4f"),
             _cell(m["scale_consistency"], ".3f"),
             _cell(m["rpe_trans_rmse"], ".4f"), _cell(m["rpe_rot_rmse"], ".2f"),
             _cell(m["map_on_surface_pct"], ".1f"), _cell(m["map_near_scene_pct"], ".1f"),

@@ -143,6 +143,25 @@ def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
     s, R, t = metrics["alignment"]
     metrics.pop("alignment")
 
+    # Phase 3c: the KEYFRAME-trajectory ATE - the FINAL map keyframe
+    # poses vs GT at their frame indices (the ORB-SLAM-standard
+    # loop-closure evaluation: an end-of-run closure rewrites the
+    # keyframe trajectory AFTER the per-frame stream is history - a
+    # corrected map is invisible to the per-frame ATE by construction).
+    # Same alignment convention as the per-frame ATE (comparable
+    # numbers); the culled keyframes dropped out of the pairing at
+    # capture time.
+    if (len(result.keyframe_gt_indices) >= 2
+            and len(result.keyframe_poses) == len(result.keyframe_gt_indices)):
+        kf_metrics = ate(
+            result.keyframe_poses,
+            gt_poses[np.asarray(result.keyframe_gt_indices)])
+        metrics["ate_kf_rmse"] = kf_metrics["ate_rmse"]
+        metrics["ate_kf_max"] = kf_metrics["ate_max"]
+    else:
+        metrics["ate_kf_rmse"] = None
+        metrics["ate_kf_max"] = None
+
     metrics.update(rpe(result.poses, gt_poses, s))
     metrics["scale_consistency"] = scale_consistency(result.poses, gt_poses)
     if scene_points is not None and len(scene_points) > 0:

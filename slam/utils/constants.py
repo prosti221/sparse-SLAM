@@ -259,6 +259,17 @@ MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS = 5
 # star-import trap). The ENABLED flag is an INT (0/1), not a bool: the
 # --override parser is type(current)(value) and bool("0") is True.
 LOOP_CLOSURE_ENABLED = 1
+# The CORRECTION flag (the 3c landing decision, user-selected): the
+# boundary measurement showed orbit's lone end-closure is OUT of
+# rigid closure's regime (every correction variant degraded its
+# KF-trajectory fidelity - five variants, see the 3c record) while
+# tum's dense mid-run corrections measurably help but their
+# single-run margins need 3d's multi-seed chaos verdict. The
+# correction is INERT by default; 3d's verdict flips this
+# deliberately. Detection + verification + telemetry always run
+# (RNG-transparent, zero numeric effect wherever no correction
+# applies). An INT flag - the --override parser's bool("0") trap.
+LOOP_CORRECTION_ENABLED = 0
 # Candidate retrieval: brute-force descriptor similarity over the
 # feature DB (BF cross-check; populated at add_keyframe, culled by the
 # 2h machinery). The threshold was never calibrated by milestone 3 -
@@ -304,7 +315,47 @@ LOOP_RANSAC_ITERATIONS = 50
 LOOP_MAX_ROTATION_DISAGREEMENT_DEG = 20.0
 # Pose-graph edge information weights. The odometry edges are the
 # tautological-but-correct chain prior (computed from current poses -
-# by design the loop edge is the graph's only corrective information).
+# by design the loop edge is the graph's only corrective
+# information). Weights: the loop edge is a FRESH, verified PnP
+# constraint; the odometry chain carries accumulated error - the
+# loop edge must DOMINATE for the chain to absorb the correction
+# (with softer-than-odometry loop weights the loop edge would simply
+# stretch and absorb its own residual, correcting nothing - the
+# milestone-3 values 5/1 vs odometry 10 were backwards; 3d sweeps).
 LOOP_INFO_ODOMETRY = 10.0
-LOOP_INFO_ROTATION = 5.0        # loop edge rotation information
-LOOP_INFO_TRANSLATION = 1.0     # loop edge translation information
+LOOP_INFO_ROTATION = 100.0      # loop edge rotation information
+LOOP_INFO_TRANSLATION = 100.0    # loop edge translation information
+# The drift-magnitude gate (phase 3c, shaped by the 3b calibration):
+# a verified constraint that AGREES with the odometry chain is a
+# no-op - closing it would be a harmless-but-wasteful pose graph +
+# global BA. Only DISAGREEMENT with the chain justifies the global
+# rearrangement (finding 13's spirit). Measured regimes: tum's
+# near-revisits sit well below 0.3 (2 s of desk motion); orbit's
+# true revisit drifts ~25 units over its lap. In world units.
+LOOP_MIN_DRIFT_M = 0.30
+# The drift CEILING (phase 3c, the orbit boundary measurement): rigid
+# SE3 closure fixes ARRANGEMENT of an approximately-right map - it
+# cannot recover a scale-broken, shape-wrong one. Measured on orbit's
+# true revisit (rotation-true constraint, 0.95 deg vs GT): every
+# correction variant DEGRADED the aligned KF-trajectory (control 1.208;
+# Huber-damped graph 1.243; full-pull 1.340; +global BA 1.407/1.881) -
+# the ~28-unit drift on a ~15-unit path is out of the closure regime,
+# the spiral between the anchors cannot be rigidly deformed into the
+# circle. tum's near-revisit corrections fire at drift 0.3-1.0 and
+# measurably HELP. The ceiling keeps the correction inside the
+# measured-helpful regime; out-of-regime closures skip with telemetry
+# (loop_correction_out_of_regime) and the sequence stays numerically
+# untouched.
+LOOP_MAX_DRIFT_M = 2.0
+# The correction cooldown (phase 3c, the tum runtime lesson): with
+# only the drift gate, tum's near-revisits correct at every
+# opportunity (163 corrections measured, ATE 0.165 -> 0.043 - genuine
+# continuous re-anchoring - at 1.7 fps, a 17x runtime regression).
+# After a correction, the hook skips detection entirely for this many
+# keyframe insertions (the whole detector: the verification's BF
+# matching is itself a per-frame cost at tum's keyframe density).
+# tum: ~11 corrections instead of 163; the drift re-accumulates
+# between corrections so the quality/runtime tradeoff is measured in
+# the 3d A/B. orbit's single end-closure is unaffected (the counter
+# starts armed).
+LOOP_CORRECTION_COOLDOWN_KF = 20
