@@ -533,20 +533,22 @@ def test_tracker_hook_disabled_by_flag(monkeypatch):
     assert rec.events == {}
 
 
-def test_hook_default_is_telemetry_only(monkeypatch):
-    """3c, the LANDING pin: with the correction flag at its DEFAULT
-    (LOOP_CORRECTION_ENABLED=0 - the boundary-measurement decision,
-    pending 3d's chaos verdict), the hook detects and VERIFIES the
-    drifted revisit but nothing moves: no pose graph, no global BA, no
-    motion-model flag. The default battery is bit-identical by
-    construction."""
+def test_hook_default_corrects_within_regime(monkeypatch):
+    """3d, the LANDING pin: with the DEFAULT constants (the chaos-
+    matrix verdict: LOOP_CORRECTION_ENABLED=1, ceiling 20), the hook
+    corrects the fixture's drifted revisit - the drift (4.7 units)
+    sits inside the measured beneficial regime (floor 0.3, ceiling
+    20). The default battery: tum corrects (its 12-correction
+    plateau), orbit / fr / translation stay bit-identical (blocked
+    or silent)."""
     m, f, info = _loop_fixture()
     monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
     tracker = Tracker(m)
-    assert const.LOOP_CORRECTION_ENABLED == 0, \
-        "the default must stay OFF until 3d's verdict flips it"
+    assert const.LOOP_CORRECTION_ENABLED == 1, \
+        "3d's verdict landed the correction ON; this pin guards the flag"
 
-    poses_before = [kf.pose.copy() for kf in m.keyframes]
+    drift_before = np.linalg.norm(
+        f["query"].pose[:3, 3] - info["query_true_pose"][:3, 3])
     rec = telemetry.TelemetryRecorder()
     telemetry.set_recorder(rec)
     try:
@@ -554,11 +556,10 @@ def test_hook_default_is_telemetry_only(monkeypatch):
     finally:
         telemetry.set_recorder(None)
 
-    assert rec.events.get("loop_verified", 0) >= 1, \
-        "detection + verification are live telemetry"
-    assert "loop_corrected" not in rec.events
-    assert not tracker._loop_correction_applied
-    assert np.array_equal(f["query"].pose, info["drift"])
-    for kf, pose in zip(m.keyframes, poses_before):
-        assert np.array_equal(kf.pose, pose), \
-            "the inert correction must move nothing"
+    assert rec.events.get("loop_verified", 0) >= 1
+    assert rec.events.get("loop_corrected", 0) >= 1, \
+        "the default must correct the in-regime drifted revisit"
+    assert tracker._loop_correction_applied
+    drift_after = np.linalg.norm(
+        f["query"].pose[:3, 3] - info["query_true_pose"][:3, 3])
+    assert drift_after < 0.25 * drift_before

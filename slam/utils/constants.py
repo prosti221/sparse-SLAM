@@ -259,17 +259,17 @@ MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS = 5
 # star-import trap). The ENABLED flag is an INT (0/1), not a bool: the
 # --override parser is type(current)(value) and bool("0") is True.
 LOOP_CLOSURE_ENABLED = 1
-# The CORRECTION flag (the 3c landing decision, user-selected): the
-# boundary measurement showed orbit's lone end-closure is OUT of
-# rigid closure's regime (every correction variant degraded its
-# KF-trajectory fidelity - five variants, see the 3c record) while
-# tum's dense mid-run corrections measurably help but their
-# single-run margins need 3d's multi-seed chaos verdict. The
-# correction is INERT by default; 3d's verdict flips this
-# deliberately. Detection + verification + telemetry always run
-# (RNG-transparent, zero numeric effect wherever no correction
-# applies). An INT flag - the --override parser's bool("0") trap.
-LOOP_CORRECTION_ENABLED = 0
+# The CORRECTION flag (3d's verdict, 2026-11-09): the chaos-protocol
+# matrix (finding 14's tool) found the zero-regression configuration -
+# correction ON with the ceiling at the measured regime boundary (see
+# LOOP_MAX_DRIFT_M): tum improves materially, orbit / fr / translation
+# stay bit-identical (blocked or silent), and the whole matrix is
+# SEED-FLAT (all four seeds bit-identical per config - the phase-2
+# determinism work plus robust RANSAC make the pipeline
+# seed-insensitive; the finding-14 chaos lives on the CONFIG axis).
+# The flip was the landing decision the 3c boundary deferred to this
+# verdict. An INT flag - the --override parser's bool("0") trap.
+LOOP_CORRECTION_ENABLED = 1
 # Candidate retrieval: brute-force descriptor similarity over the
 # feature DB (BF cross-check; populated at add_keyframe, culled by the
 # 2h machinery). The threshold was never calibrated by milestone 3 -
@@ -333,20 +333,20 @@ LOOP_INFO_TRANSLATION = 100.0    # loop edge translation information
 # near-revisits sit well below 0.3 (2 s of desk motion); orbit's
 # true revisit drifts ~25 units over its lap. In world units.
 LOOP_MIN_DRIFT_M = 0.30
-# The drift CEILING (phase 3c, the orbit boundary measurement): rigid
-# SE3 closure fixes ARRANGEMENT of an approximately-right map - it
-# cannot recover a scale-broken, shape-wrong one. Measured on orbit's
-# true revisit (rotation-true constraint, 0.95 deg vs GT): every
-# correction variant DEGRADED the aligned KF-trajectory (control 1.208;
-# Huber-damped graph 1.243; full-pull 1.340; +global BA 1.407/1.881) -
-# the ~28-unit drift on a ~15-unit path is out of the closure regime,
-# the spiral between the anchors cannot be rigidly deformed into the
-# circle. tum's near-revisit corrections fire at drift 0.3-1.0 and
-# measurably HELP. The ceiling keeps the correction inside the
-# measured-helpful regime; out-of-regime closures skip with telemetry
-# (loop_correction_out_of_regime) and the sequence stays numerically
-# untouched.
-LOOP_MAX_DRIFT_M = 2.0
+# The drift CEILING (3d's verdict: the measured regime boundary). The
+# 3c story was "drift magnitude is not the separator" (tum's
+# beneficial corrections reach 10-40 units, orbit's harmful closure is
+# ~28 - the distributions overlap); the chaos matrix then measured
+# the CEILING SWEEP on tum and found the boundary anyway: corrections
+# above ~22 are harmful even on TUM (ceiling 25: ate 0.175 vs the
+# plateau's 0.1335), the [18, 22] band is a stable plateau (identical
+# numbers - the same 12 corrections fire, the same 8 block), and
+# orbit's lone ~28-unit closure sits on the blocked side (bit-identical
+# to control at ceiling 20). tum's landed readout: ate 0.165 -> 0.1335,
+# ate_kf 0.166 -> 0.041. The regime separator exists - it just was not
+# where the first measurement looked (tum's FULL distribution overlaps
+# orbit's closure; tum's BENEFICIAL band does not).
+LOOP_MAX_DRIFT_M = 20.0
 # The correction cooldown (phase 3c, the tum runtime lesson): with
 # only the drift gate, tum's near-revisits correct at every
 # opportunity (163 corrections measured, ATE 0.165 -> 0.043 - genuine
