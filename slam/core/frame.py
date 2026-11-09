@@ -4,7 +4,7 @@ import cv2 as cv
 import uuid
 from uuid import UUID
 from slam.utils.logger import debug_log, error_log, warning_log
-from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
+from slam.utils.constants import MAX_POINT_AVG_REPROJECTION_ERROR
 from slam.utils.utils import normalize, undistort_points_norm
 from slam.core.point import Point
 from slam.core.observation import Observation
@@ -247,7 +247,7 @@ class Frame:
         high_quality_count = 0
         for observation in self.observed_points.values():
             # Check if point has good quality (multiple observations, low reprojection error)
-            if observation.point.num_observations >= 2 and observation.point.average_reprojection_error < MAX_SQUARED_REPROJECTION_ERROR:
+            if observation.point.num_observations >= 2 and observation.point.average_reprojection_error < MAX_POINT_AVG_REPROJECTION_ERROR:
                 high_quality_count += 1
 
         # Quality score combines visibility ratio and point quality

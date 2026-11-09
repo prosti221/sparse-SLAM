@@ -102,12 +102,35 @@ MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.01  # Minimum quality for new keyframe
 # Minimum number of new points for keyframe selection
 MINIMUM_NEW_POINTS_RATIO = 0.4
 
-# Triangulation constants
-MIN_DEPTH = 0.0  # Minimum depth for valid points
-MAX_DEPTH = 1000  # 1000.0  # Maximum depth for valid points
-MIN_BASELINE_RATIO = 0.04
-MAX_SQUARED_REPROJECTION_ERROR = 1.0
-MAX_PARALLAX = 0.65
+# Triangulation gates. The VALUES are the measured local optimum from
+# BOTH directions (2i loosening: orbit collapses; 5b tightening:
+# every config degrades at least one sequence, several break
+# baselines outright). Phase 5c names say what the checks are (the
+# misnomers they replace are recorded in the phase 5c record).
+MIN_DEPTH = 0.0  # Cheirality: minimum depth for valid points (z > 0)
+MAX_DEPTH = 1000  # Latent divergence guard; never binds on the battery (5a)
+# Parallax FLOOR in degrees (the former MAX_PARALLAX was a misnomer -
+# the check REJECTS parallax BELOW it). The physical content: it
+# bounds relative depth error sigma_z/z ~ e_px/(f*tan(theta)) at
+# ~0.196 for 1 px at fx 450 (5a measured the accepted population's
+# actual precision far better: medians 0.002-0.026).
+MIN_PARALLAX_DEG = 0.65
+# Creation-gate reprojection consistency, in PLAIN PIXELS, both frames
+# (the former MAX_SQUARED_REPROJECTION_ERROR was a misnomer - the
+# comparison was never squared). Read through the module alias in the
+# validator (the --override sweep target); the point-health path reads
+# its OWN constant below (the 2i isolation property).
+MAX_TRI_REPROJECTION_PX = 1.0
+# Point-health threshold for the pruning path (Point.is_good and the
+# frame tracking-quality counts). Deliberately a SEPARATE name from
+# the creation gate's constant (phase 5c): the paths compare
+# different things (the creation gate: plain pixels of two-view
+# consistency; this path: a running average over a pixel/normalized
+# unit mixture - documented in the 2i Q2 record, re-designed by 5e).
+# Same value 1.0 as before the split - behavior-preserving. The
+# name-bound imports in point.py/frame.py isolate this path from
+# --override sweeps of the creation gate (and vice versa).
+MAX_POINT_AVG_REPROJECTION_ERROR = 1.0
 
 # Window size for local bundle adjustment (number of recent keyframes
 # whose poses are optimized together, with older keyframes fixed as
@@ -148,14 +171,18 @@ MINIMUM_OBSERVATIONS_FOR_POINT = 3
 CULL_REDUNDANCY_RATIO = 0.9
 CULL_MIN_OTHER_OBSERVERS = 3
 
-# Bidirectional validation codes
+# Validation codes (phase 5c: per-gate reporting - the cascade is
+# gone; validation_code is the FIRST failing check, failed_codes
+# carries all). The historical numbers are kept for cross-referencing
+# old reports: 3 (MIN_BASELINE) and 5 (WELL_CONDITIONED) are retired
+# with their dead checks - neither was ever emitted (MIN_BASELINE was
+# never implemented; WELL_CONDITIONED was unreachable: the tracker
+# de-homogenizes candidates before the gate).
 TRIANGULATION_VALIDATION_CODE = {
     'VALID': 0,
     'MIN_DEPTH_VIOLATION': 1,
     'MAX_DEPTH_VIOLATION': 2,
-    'MIN_BASELINE_VIOLATION': 3,
     'MAX_REPROJECTION_ERROR_VIOLATION': 4,
-    'WELL_CONDITIONED_VIOLATION': 5,
     'MIN_PARALLAX_VIOLATION': 6,
 }
 TRIANGULATION_VALIDATION_CODE.update(

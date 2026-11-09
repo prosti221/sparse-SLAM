@@ -451,9 +451,15 @@ class Tracker:
             point_validation_result = is_valid_triangulated_point(
                 idx, self.map.cur_keyframe, self.map.prev_keyframe, point_4d)
 
-            if (code := point_validation_result['validation_code']) != TRIANGULATION_VALIDATION_CODE["VALID"]:
+            failed_codes = point_validation_result['failed_codes']
+            if failed_codes:
                 rejected_points += 1
-                validation_results[TRIANGULATION_VALIDATION_CODE[code]] += 1
+                # Phase 5c: PER-GATE counts (multi-failures count in
+                # every bucket - the former cascade hid all but the
+                # last failure, making cheirality unreachable in
+                # telemetry; the 5a probe had to re-derive this).
+                for c in failed_codes:
+                    validation_results[TRIANGULATION_VALIDATION_CODE[c]] += 1
                 continue
 
             point = self._create_point_and_register_observations(
@@ -464,10 +470,11 @@ class Tracker:
             points.append(point)
 
         validation_str = "".join(
-            [f'{k}: {v / rejected_points * 100:.2f}%, ' for k, v in validation_results.items()])
+            [f'{k}: {v}, ' for k, v in validation_results.items()])
         debug_log(
             LOG_TAG,
-            f"Triangulated {len(points)} points, rejected {rejected_points} points. Validation results: {validation_str}"
+            f"Triangulated {len(points)} points, rejected {rejected_points} points. "
+            f"Per-gate failure counts (multi-failures count in every bucket): {validation_str}"
         )
         telemetry.event("tri_accepted", len(points))
         telemetry.event("tri_rejected", rejected_points)

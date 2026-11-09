@@ -2,7 +2,7 @@ import uuid
 import numpy as np
 from typing import List, Tuple, Dict
 from uuid import UUID
-from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
+from slam.utils.constants import MAX_POINT_AVG_REPROJECTION_ERROR
 from slam.core.observation import Observation
 
 
@@ -70,7 +70,10 @@ class Point:
 
     @property
     def is_good(self) -> bool:
-        return self.average_reprojection_error < MAX_SQUARED_REPROJECTION_ERROR
+        # The point-health path's OWN threshold (phase 5c split; the
+        # unit-mixture caveat is recorded in the 2i Q2 record until 5e
+        # re-designs this path).
+        return self.average_reprojection_error < MAX_POINT_AVG_REPROJECTION_ERROR
 
     @property
     def num_observations(self) -> int:

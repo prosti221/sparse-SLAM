@@ -230,10 +230,33 @@ def normalize_vec(v):
 
 
 def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
+    """Gate every triangulation candidate against geometry and
+    consistency. ACCEPTANCE is unchanged from the original: VALID iff
+    every gate passes.
+
+    Phase 5c: ALL failures are reported. The original cascaded (last
+    failing check won), so a behind-camera point reported as a
+    reprojection failure, MIN_DEPTH_VIOLATION was unreachable in
+    telemetry, and per-gate rejection attribution was impossible (the
+    5a probe had to re-derive it). `validation_code` is the FIRST
+    failing check in the fixed priority order (cheirality, depth,
+    parallax, reprojection) - the root-cause reading; `failed_codes`
+    carries all of them for telemetry.
+
+    The phase-1 well-conditioned check (|point_4d[3]| < 1e-6) is
+    REMOVED: dead at the only production call site - the tracker
+    de-homogenizes candidates (w normalized to exactly 1.0) before
+    this gate, and w == 0 candidates are dropped by the tracker's
+    pre-filter (the real guard, in _triangulate). No NaN candidates
+    exist on the battery (5a measured: the "non-finite" rows were
+    behind-camera points with inf reprojection errors).
+
+    `reprojection_error` is the mean of the two PIXEL reprojection
+    errors, consumed at creation (arithmetic unchanged).
+    """
     # Constants are read through the module alias (phase 2i, Q2): the
     # star-imported copies defeat --override, and this gate is the
     # sweep target.
-    # 1. Check if point is in front of both cameras
     point_3d = point_4d[:3]
 
     # Transform to camera coordinates for both frames
@@ -243,39 +266,45 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     cur_reprojection_error, prev_reprojection_error = get_reprojection_error(
         point_idx, cur_frame, prev_frame, point_3d)
 
-    # return cur_error <= max_error and prev_error <= max_error
-    validation_code = TRIANGULATION_VALIDATION_CODE['VALID']
+    failed_codes = []
 
+    # 1. Cheirality: the point must be in front of both cameras.
     if cur_cam_coords[2] <= const.MIN_DEPTH or prev_cam_coords[2] <= const.MIN_DEPTH:
-        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_DEPTH_VIOLATION']
+        failed_codes.append(
+            TRIANGULATION_VALIDATION_CODE['MIN_DEPTH_VIOLATION'])
 
-    # 2. Check depth bounds
+    # 2. Depth ceiling - a latent divergence guard. 5a measured it
+    #    never binds on the battery (its candidates always co-fail
+    #    parallax/reprojection); it stays as cheap insurance.
     if cur_cam_coords[2] > const.MAX_DEPTH or prev_cam_coords[2] > const.MAX_DEPTH:
-        validation_code = TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION']
+        failed_codes.append(
+            TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION'])
 
-    # 3. Check parallax angle
+    # 3. Parallax floor (MIN_PARALLAX_DEG - the former MAX_PARALLAX
+    #    was a misnomer: the check REJECTS parallax below it).
     vec1 = normalize_vec(point_3d - cur_frame.pose[:3, 3])
     vec2 = normalize_vec(point_3d - prev_frame.pose[:3, 3])
 
     cos_parallax = np.dot(vec1, vec2)
     parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax, -1.0, 1.0)))
 
-    if parallax_angle < const.MAX_PARALLAX:
-        validation_code = TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION']
+    if parallax_angle < const.MIN_PARALLAX_DEG:
+        failed_codes.append(
+            TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION'])
 
-    # 4. Check reprojection error. NOTE (phase 2i, Q2): despite the
-    # constant's name, this compares the PLAIN pixel norm (not squared)
-    # - the effective gate is this many PIXELS of triangulation
-    # consistency.
-    if cur_reprojection_error > const.MAX_SQUARED_REPROJECTION_ERROR or prev_reprojection_error > const.MAX_SQUARED_REPROJECTION_ERROR:
-        validation_code = TRIANGULATION_VALIDATION_CODE['MAX_REPROJECTION_ERROR_VIOLATION']
+    # 4. Reprojection consistency, in PLAIN PIXELS in both frames (the
+    #    former MAX_SQUARED_REPROJECTION_ERROR was a misnomer - the
+    #    comparison was never squared; see MAX_TRI_REPROJECTION_PX).
+    if cur_reprojection_error > const.MAX_TRI_REPROJECTION_PX or prev_reprojection_error > const.MAX_TRI_REPROJECTION_PX:
+        failed_codes.append(
+            TRIANGULATION_VALIDATION_CODE['MAX_REPROJECTION_ERROR_VIOLATION'])
 
-    # 5. Check if point is well-conditioned (not at infinity)
-    if np.abs(point_4d[3]) < 1e-6:
-        validation_code = TRIANGULATION_VALIDATION_CODE['WELL_CONDITIONED_VIOLATION']
+    validation_code = (failed_codes[0] if failed_codes
+                       else TRIANGULATION_VALIDATION_CODE['VALID'])
 
     result = {
         'validation_code': validation_code,
+        'failed_codes': failed_codes,
         'reprojection_error': (cur_reprojection_error + prev_reprojection_error) / 2,
     }
 
