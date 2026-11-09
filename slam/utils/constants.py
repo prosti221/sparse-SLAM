@@ -249,3 +249,45 @@ MIN_AGGRESSIVE_RELOCALIZATION_INLIERS = 8
 MAX_CONSECUTIVE_RELOCALIZATION_FAILURES = 2  # Reset after 3 failed attempts
 # Reset after 5 successful relocs in a row
 MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS = 5
+
+# --- Loop closure (phase 3). 3a repairs the dormant milestone-3
+# machinery (the E-matrix loop edge carried UNIT-SCALE translation -
+# dimensionally wrong against the metric pose graph - plus a
+# camera-frame convention bug; see slam/loop_closure.py's design
+# record); 3b wires the detector into the tracker. All constants read
+# via the module alias everywhere (--override-sweepable; the
+# star-import trap). The ENABLED flag is an INT (0/1), not a bool: the
+# --override parser is type(current)(value) and bool("0") is True.
+LOOP_CLOSURE_ENABLED = 1
+# Candidate retrieval: brute-force descriptor similarity over the
+# feature DB (BF cross-check; populated at add_keyframe, culled by the
+# 2h machinery). The threshold was never calibrated by milestone 3 -
+# 3b calibrates it on orbit (the true revisit must fire) and tum
+# (must stay silent) telemetry. The exclusion window is in KEYFRAMES
+# (the milestone-3 detector called the same number "frames"; resolved
+# to keyframes - one query per new keyframe).
+LOOP_SIMILARITY_THRESHOLD = 0.3
+LOOP_EXCLUDE_RECENT_KF = 20
+LOOP_MAX_CANDIDATES = 5
+# Geometric verification (reloc-grade PnP against the match KF's map
+# points - the metric fix; finding 12's map-anchored cure applied to
+# the loop pair):
+LOOP_MIN_CORRESPONDENCES = 30   # descriptor-matched map points entering PnP
+LOOP_MIN_INLIERS = 15           # PnP RANSAC inliers
+LOOP_MIN_INLIER_RATIO = 0.75    # inliers / correspondences
+LOOP_MAX_MEDIAN_REPROJ_PX = 3.0  # TRUE pixels (median over inliers)
+# PnP RANSAC inlier marking threshold, in pixels (converted to the
+# normalized-coordinate units of the solve at the call site: the
+# codebase's PnP works on undistorted normalized coords with eye(3) -
+# the 2j-3 survey).
+LOOP_PNP_RANSAC_THRESHOLD_PX = 5.0
+# PnP vs two-view relative-rotation agreement: the E-matrix rotation
+# (independent of the map) vs the PnP rotation; catches mirrored /
+# degenerate PnP solutions that reproject well.
+LOOP_MAX_ROTATION_DISAGREEMENT_DEG = 20.0
+# Pose-graph edge information weights. The odometry edges are the
+# tautological-but-correct chain prior (computed from current poses -
+# by design the loop edge is the graph's only corrective information).
+LOOP_INFO_ODOMETRY = 10.0
+LOOP_INFO_ROTATION = 5.0        # loop edge rotation information
+LOOP_INFO_TRANSLATION = 1.0     # loop edge translation information

@@ -60,6 +60,18 @@ Event keys (counted pipeline decisions - deterministic per run):
                               propagation ran (the two normalized-
                               coordinate caches recomputed), or no
                               candidate produced a usable solve
+  loop_detected / loop_verified
+                              phase 3 loop closure: the detector found
+                              similarity candidates for a new keyframe;
+                              a candidate PASSED the reloc-grade PnP
+                              verification (the metric constraint)
+  loop_rejected_correspondences / loop_rejected_pnp /
+  loop_rejected_gates / loop_rejected_rotation
+                              the verification rejection reasons: too
+                              few map-point correspondences, PnP
+                              failure, inlier-ratio / reprojection
+                              gates, or the two-view rotation
+                              disagreement (the degeneracy guard)
 """
 import time
 from contextlib import contextmanager

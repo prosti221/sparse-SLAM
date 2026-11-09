@@ -485,7 +485,16 @@ class G2OBundleAdjustment:
             frame_to_vertex = self._create_keyframe_vertices(
                 opt, self.map.keyframes, vertex_id_offset=0, fix_first=True)
 
-            # Add odometry edges (sequential constraints between keyframes)
+            # Add odometry edges (sequential constraints between
+            # keyframes - the tautological-by-design CHAIN PRIOR:
+            # computed from the current estimated poses, so they are
+            # exact by construction and carry no corrective
+            # information; the loop edge is the graph's only source of
+            # correction. Phase 3a: the comments used to invert the
+            # Frame convention - frame.pose IS camera-to-world (Twc),
+            # and the edge measurement form is M(a,b) =
+            # pose_a @ inv(pose_b), matching the g2o ideal
+            # inv(V_a) @ V_b with V = the vertex estimate.)
             odometry_edge_count = 0
             for i in range(len(self.map.keyframes) - 1):
                 kf1 = self.map.keyframes[i]
@@ -494,11 +503,9 @@ class G2OBundleAdjustment:
                 if kf1.frame_id not in frame_to_vertex or kf2.frame_id not in frame_to_vertex:
                     continue
 
-                # Compute relative pose between consecutive keyframes
-                # kf.pose = world-to-camera (Twc), we need camera-to-world (Tcw)
-                Tcw1 = np.linalg.inv(kf1.pose)  # camera-to-world for kf1
-                Tcw2 = np.linalg.inv(kf2.pose)  # camera-to-world for kf2
-                relative_pose = np.linalg.inv(Tcw1) @ Tcw2  # Tcw2 @ inv(Tcw1)
+                # The relative pose kf1 -> kf2 in the graph's
+                # measurement form: pose_1 @ inv(pose_2).
+                relative_pose = kf1.pose @ np.linalg.inv(kf2.pose)
                 R_rel = relative_pose[:3, :3]
                 t_rel = relative_pose[:3, 3]
                 se3_rel = g2o.SE3Quat(R_rel, t_rel)
@@ -509,7 +516,7 @@ class G2OBundleAdjustment:
                 edge.set_vertex(1, frame_to_vertex[kf2.frame_id])
                 edge.set_measurement(se3_rel)
                 # Odometry edges have moderate information
-                edge.set_information(np.eye(6) * 10.0)
+                edge.set_information(np.eye(6) * const.LOOP_INFO_ODOMETRY)
 
                 # Add robust kernel to handle odometry outliers gracefully
                 edge.set_robust_kernel(g2o.RobustKernelHuber(np.sqrt(5.991)))
@@ -533,10 +540,17 @@ class G2OBundleAdjustment:
                 edge.set_vertex(0, frame_to_vertex[from_id])
                 edge.set_vertex(1, frame_to_vertex[to_id])
                 edge.set_measurement(se3_rel)
-                # Use softer constraints - rotation especially should be flexible
-                # Lower information = higher uncertainty = more flexible
-                loop_info = np.diag([5, 5, 5, 1, 1, 1])  # Softer than odometry
-                edge.set_information(loop_info)
+                # Loop-edge information: in the g2o SE3Expmap error
+                # order (rotation, translation), rotation information
+                # > translation (a PnP constraint's rotation is
+                # typically the more reliable part). Phase 3a: the
+                # values moved to the LOOP_INFO_* constants (the
+                # milestone-3 comment claimed "rotation should be
+                # flexible" while setting rotation information HIGHER
+                # - contradictory; the VALUES are unchanged).
+                edge.set_information(np.diag(
+                    [const.LOOP_INFO_ROTATION] * 3
+                    + [const.LOOP_INFO_TRANSLATION] * 3))
 
                 # Add robust kernel to handle outliers gracefully
                 edge.set_robust_kernel(g2o.RobustKernelHuber(np.sqrt(5.991)))
