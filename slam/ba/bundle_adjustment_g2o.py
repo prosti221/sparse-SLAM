@@ -29,9 +29,11 @@ class G2OBundleAdjustment:
         # vertex's edge endpoints are guaranteed present), stale vertices
         # are removed (remove_vertex cascades their edges), and fixed
         # flags follow window membership (the gauge anchor is the oldest
-        # involved keyframe, which slides). No estimate refresh is
-        # needed: the post-BA write-back leaves the persistent graph's
-        # estimates identical to the map state.
+        # involved keyframe, which slides). Between LOCAL solves no
+        # estimate refresh is needed: local write-back leaves graph
+        # and map equal. External pose-graph/global-BA write-back must
+        # invalidate this cache (phase 5e prerequisite), otherwise the
+        # next local solve starts from pre-correction estimates.
         # NOTE: this makes local BA a WITHIN-BASELINES change (not
         # bit-identical - the g2o solve is vertex-id-order sensitive at
         # ~1e-15; see benchmarks/IMPROVEMENT.md "Phase 2f spike").
@@ -57,8 +59,14 @@ class G2OBundleAdjustment:
         return vid
 
     def reset_persistent_graph(self):
-        """Phase 2j-4: called when the intrinsics change mid-run (the
-        2j-4 refit's K/k1 propagation). The persistent graph's edge
+        """Invalidate after an external state/measurement change.
+
+        Pose-graph and fresh/global BA invalidate BEFORE write-back:
+        the next local solve must rebuild from the corrected map,
+        including after a partial write failure (phase 5e prerequisite).
+
+        Also called when intrinsics change mid-run (phase 2j-4 K/k1
+        propagation). The persistent graph's edge
         MEASUREMENTS are normalized coordinates baked at edge creation
         (set_measurement(obs.pt_2d_norm)) - stale under new
         intrinsics - so the graph is dropped wholesale and the next
@@ -568,6 +576,11 @@ class G2OBundleAdjustment:
             opt.initialize_optimization()
             opt.optimize(50)
 
+            # The local graph still holds pre-correction estimates.
+            # Invalidate BEFORE any map write, including a partial
+            # failure; later global BA may fail or be skipped.
+            self.reset_persistent_graph()
+
             # Update keyframe poses using shared helper
             self._update_keyframe_poses_from_vertices(frame_to_vertex)
 
@@ -647,6 +660,11 @@ class G2OBundleAdjustment:
             opt.initialize_optimization()
             iterations = opt.optimize(30)
             telemetry.event("ba_iterations", int(iterations))
+
+            # This fresh solve rewrites state outside the persistent
+            # local graph. Drop that cache before write-back so the
+            # next local solve cannot restore pre-correction estimates.
+            self.reset_persistent_graph()
 
             # Update keyframe poses
             self._update_keyframe_poses_from_vertices(frame_to_vertex)

@@ -1,6 +1,6 @@
 {
  "seed": 42,
- "note": "Phase 3e re-record (2026-11-09): loop closure landed (correction ON at the measured regime boundary, LOOP_MAX_DRIFT_M=20). tum_xyz tightened from its correction: ate 0.25 -> 0.20 and rpe_rot 25 -> 8 (the observed loop-config sweep range is ate 0.133-0.181 / rpe_rot 4.98-5.52 - thresholds carry margin above the worst observed config, per the 2f protocol), max_pose_jump 50 -> 45 (the corrections' teleports ARE the jump source: 36.1 observed, deterministic; a doubled correction would trip 45). The NEW ate_kf_rmse metric (the KF-trajectory ATE - the ORB-SLAM-standard loop-closure readout; phase 3c) is gated from this re-record: thresholds at ~2x the observed values with the config range in mind. fr / orbit / translation are BIT-IDENTICAL to the phase-2 control (orbit's lone closure blocks as out-of-regime - the boundary finding) and their thresholds are unchanged except the added ate_kf gates. The whole phase-3 matrix was SEED-FLAT (four seeds, bit-identical per config), so these are deterministic config values, not samples.",
+ "note": "Phase 5e-0 (2026-11-09), USER-ACCEPTED tradeoff: invalidate persistent local BA before external pose-graph/global-BA write-back. tum_xyz per-frame ATE improves 0.1335 -> 0.0671, rotation 4.98 -> 2.92 and jump 36.1 -> 15.1, but KF-ATE regresses 0.0406 -> 0.1069. The user explicitly accepted that regression in exchange for trajectory quality and cache correctness. ONLY tum_xyz ate_kf_rmse changes, 0.10 -> 0.15: a hand-curated margin above observed 0.1069 that still rejects the alternative synchronization variant's 0.1792. No raw --update-baselines write, no loop/triangulation/pruning threshold changes. All other gates remain at phase 3e values; fr/orbit/translation stay bit-identical. The phase-3 seed-flat results are deterministic config values, not statistical samples. Full candidate results and the explicit acceptance are recorded in benchmarks/IMPROVEMENT.md.",
  "thresholds": {
   "forward_rotation": {
    "ate_rmse": 0.2,
@@ -34,7 +34,7 @@
   },
   "tum_xyz": {
    "ate_rmse": 0.2,
-   "ate_kf_rmse": 0.1,
+   "ate_kf_rmse": 0.15,
    "rpe_trans_rmse": 0.2,
    "rpe_rot_rmse": 8.0,
    "max_pose_jump": 45.0,

@@ -1,6 +1,6 @@
 """Stage tests: PnP pose refinement and local bundle adjustment.
 
-Regressions for three fixed bugs:
+Regressions for pose-refinement, anchoring and graph-cache bugs:
 - refine_pose_pnp must be seeded with the world-to-camera transform
   (the inverse of the stored Twc) and must write back camera-to-world.
 - refine_pose_pnp must refine the frame it is GIVEN (the tracker passes
@@ -12,6 +12,8 @@ Regressions for three fixed bugs:
 - Divergent PnP solutions (unexplainable observations, teleporting
   refinements) must be rejected by the guards, keeping the seed pose
   (phase 1b).
+- External pose-graph/global-BA write-back must invalidate the local
+  graph, without disabling ordinary local graph reuse (phase 5e-0).
 """
 import numpy as np
 import pytest
@@ -258,6 +260,119 @@ def test_timer_global_ba_disabled_by_default():
     assert m.should_perform_global_bundle_adjustment(4)      # 12 % 4 == 0
     assert not m.should_perform_global_bundle_adjustment(5)  # 12 % 5 != 0
     assert not m.should_perform_global_bundle_adjustment(0)
+
+
+def _seed_persistent_graph():
+    """A clean graph whose membership stays unchanged across a rewrite."""
+    m, kfs = _build_trajectory_map(6, make_world_points(32), make_K())
+    ba = m.g2o_optimizer
+    assert ba.local_bundle_adjustment(kfs[-1].frame_id, window_size=3,
+                                      fix_points=False)
+    assert ba._local_opt is not None
+    assert ba._kf_vertex and ba._pt_vertex
+    return m, kfs, ba
+
+
+def _assert_persistent_graph_invalidated(ba):
+    assert ba._local_opt is None
+    assert ba._kf_vertex == {}
+    assert ba._pt_vertex == {}
+    assert ba._graph_edges_by_pt == {}
+    assert ba._graph_edges_by_kf == {}
+
+
+def _assert_persistent_estimates_match_map(ba):
+    assert ba._local_opt is not None
+    for fid, vertex in ba._kf_vertex.items():
+        kf = ba.map.keyframes_by_id.get(fid)
+        if kf is not None:
+            live = np.linalg.inv(kf.pose)
+            est = vertex.estimate()
+            assert np.allclose(est.rotation().matrix(), live[:3, :3], atol=1e-9, rtol=0)
+            assert np.allclose(est.translation(), live[:3, 3], atol=1e-9, rtol=0)
+    for pid, vertex in ba._pt_vertex.items():
+        point = ba.map.points_by_id.get(pid)
+        if point is not None:
+            assert np.allclose(vertex.estimate(), point.pt_3d, atol=1e-9, rtol=0)
+
+
+def test_global_ba_invalidates_local_cache_and_preserves_corrected_gauge():
+    """5e prerequisite: global write-back must invalidate local estimates.
+
+    Apply a rigid world-gauge change to poses AND points, leaving every
+    image observation unchanged. Fresh global BA preserves that gauge.
+    A retained pre-change local graph would restore its old fixed anchor
+    on the next solve even though membership has not changed.
+    """
+    m, kfs, ba = _seed_persistent_graph()
+    S = yaw_pose(0.17, (2.0, -1.0, 0.5))
+    for kf in kfs:
+        kf.pose = S @ kf.pose
+    for point in m.points:
+        point.pt_3d = S[:3, :3] @ point.pt_3d + S[:3, 3]
+
+    assert ba.global_bundle_adjustment()
+    corrected_anchor = kfs[0].pose.copy()
+    corrected_points = np.array([point.pt_3d for point in m.points])
+    _assert_persistent_graph_invalidated(ba)
+
+    assert ba.local_bundle_adjustment(kfs[-1].frame_id, window_size=3,
+                                      fix_points=False)
+    assert np.allclose(kfs[0].pose, corrected_anchor, atol=1e-9)
+    assert np.allclose(kfs[0].pose, S, atol=1e-9)
+    assert np.allclose([point.pt_3d for point in m.points], corrected_points,
+                       atol=1e-4)
+    _assert_persistent_estimates_match_map(ba)
+
+
+def test_pose_graph_invalidates_local_cache_without_requiring_global_ba():
+    """The cache must already be invalid if later global BA fails/skips."""
+    m, kfs, ba = _seed_persistent_graph()
+    relative = kfs[-1].pose @ np.linalg.inv(kfs[0].pose)
+    relative[0, 3] += 0.3  # force a real external pose change
+    assert ba.pose_graph_optimization(
+        [(kfs[-1].frame_id, kfs[0].frame_id, relative)])
+    _assert_persistent_graph_invalidated(ba)
+
+
+def test_no_write_paths_keep_persistent_graph(monkeypatch):
+    """No loops / rejected global BA must not cause a needless rebuild."""
+    from slam.utils import constants as const
+
+    m, _, ba = _seed_persistent_graph()
+    graph = ba._local_opt
+    assert ba.pose_graph_optimization([])
+    assert ba._local_opt is graph
+    monkeypatch.setattr(const, "MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT", 10**9)
+    assert not ba.global_bundle_adjustment()
+    assert ba._local_opt is graph
+
+
+def test_local_ba_still_reuses_its_graph():
+    """Invalidation is for external write-back, not every local solve."""
+    _, kfs, ba = _seed_persistent_graph()
+    graph = ba._local_opt
+    assert ba.local_bundle_adjustment(kfs[-1].frame_id, window_size=3,
+                                      fix_points=False)
+    assert ba._local_opt is graph
+
+
+def test_partial_external_write_failure_cannot_reuse_stale_graph(monkeypatch):
+    """Invalidate BEFORE write-back, so partial failures cannot retain it."""
+    _, kfs, ba = _seed_persistent_graph()
+    relative = kfs[-1].pose @ np.linalg.inv(kfs[0].pose)
+
+    def partial_write_then_fail(vertices):
+        moved = kfs[-1].pose
+        moved[0, 3] += 1.0
+        kfs[-1].pose = moved
+        raise RuntimeError("injected partial external write failure")
+
+    monkeypatch.setattr(ba, "_update_keyframe_poses_from_vertices",
+                        partial_write_then_fail)
+    assert not ba.pose_graph_optimization(
+        [(kfs[-1].frame_id, kfs[0].frame_id, relative)])
+    _assert_persistent_graph_invalidated(ba)
 
 
 def test_point_remove_observation_updates_count():
