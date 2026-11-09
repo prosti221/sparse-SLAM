@@ -195,20 +195,11 @@ def _build_world() -> List[dict]:
 
 
 def _project(points: np.ndarray, R_cw: np.ndarray, t_cw: np.ndarray,
-             K: np.ndarray, k1: float = 0.0) -> np.ndarray:
-    """World (N,3) -> pixel (N,2); assumes all z > 0. With k1 != 0 the
-    simple-radial model is applied in NORMALIZED coordinates (phase
-    2j-1) - the same convention the SLAM side's undistort-at-
-    normalization assumes (phase 2j-3)."""
+             K: np.ndarray) -> np.ndarray:
+    """World (N,3) -> pixel (N,2); assumes all z > 0."""
     cam = (R_cw @ points.T).T + t_cw
     z = cam[:, 2:3]
-    if k1 == 0.0:
-        uv = (K @ (cam / z).T).T
-        return uv[:, :2]
-    xy = cam[:, :2] / z
-    r2 = xy[:, 0:1] ** 2 + xy[:, 1:2] ** 2
-    xy = xy * (1.0 + k1 * r2)
-    uv = (K @ np.column_stack([xy, np.ones(len(xy))]).T).T
+    uv = (K @ (cam / z).T).T
     return uv[:, :2]
 
 
@@ -242,66 +233,87 @@ def _paste_billboard(img: np.ndarray, pattern: np.ndarray, quad: np.ndarray) -> 
     roi[mask > 0] = warped[mask > 0]
 
 
-def _paste_billboard_distorted(img, bb: dict, R_cw: np.ndarray, t_cw: np.ndarray,
-                               K: np.ndarray, k1: float, tiles: int = 4) -> None:
-    """Phase 2j-1: paste a billboard under simple-radial distortion by
-    TILING its texture - each tile's corners are projected WITH the
-    distortion model and warped separately, so the interior follows the
-    distortion (a single homography from 4 distorted corners would not).
-    Approximation: within-tile curvature is neglected; at tiles=4 the
-    residual is well below a pixel for the mild |k1| the calib sequence
-    uses (cells are ~15-50 px; recorded in the 2j-1 record). The
-    billboard is a parallelogram in world space, so the grid is exact."""
-    TL, TR, _, BL = bb["corners"]
-    U, V = TR - TL, BL - TL
-    a = np.linspace(0.0, 1.0, tiles + 1)
-    grid = (TL[None, None, :]
-            + a[:, None, None] * U[None, None, :]
-            + a[None, :, None] * V[None, None, :])
-    proj = _project(grid.reshape(-1, 3), R_cw, t_cw, K, k1)
-    proj = proj.reshape(tiles + 1, tiles + 1, 2)
-
-    pattern = bb["pattern"]
-    s = PATTERN_SIZE // tiles
-    for ia in range(tiles):
-        for ib in range(tiles):
-            quad = np.float32([proj[ia, ib], proj[ia + 1, ib],
-                               proj[ia + 1, ib + 1], proj[ia, ib + 1]])
-            # Texture orientation: pattern x follows +u (TR direction),
-            # pattern y follows +v (BL direction) - the same convention
-            # as the single-quad path (_paste_billboard's src order).
-            patch = pattern[ib * s:(ib + 1) * s, ia * s:(ia + 1) * s]
-            _paste_billboard(img, patch, quad)
+# Phase 2j-3: the k1 path renders a WIDER-FOV pinhole image (same
+# focal, larger canvas) and distorts it per-pixel. The 2j-1 tiled
+# pasting was REPLACED by this: the tiles approximated the distortion
+# inside each billboard with piecewise homographies, leaving seam and
+# up-sampling artifacts at the frame edge; the pipeline's TRUE-k1
+# handling associates edge content EXACTLY (whereas the pinhole fiction
+# quietly dropped it via the 5 px projection-matching radius), so the
+# artifacts poisoned the true handling worst of all - the 2j-3 record
+# has the differential probe table. The per-pixel remap is exact, and
+# the wider source canvas means the output corners are real scene
+# content (the undistorted corner radius is covered).
+_K1_RENDER_FOV_MARGIN = 1.2
 
 
-def _render_frame(billboards: List[dict], R_wc: np.ndarray, t_wc: np.ndarray,
-                  K: np.ndarray, k1: float = 0.0) -> np.ndarray:
-    img = np.full((IMG_H, IMG_W, 3), 40, np.uint8)
+def _build_distortion_map(K: np.ndarray, k1: float, K_hi: np.ndarray):
+    """Per-pixel inverse of the simple-radial forward model
+    (x_d = x_u (1 + k1 r_u^2)): for each OUTPUT pixel (distorted,
+    under K), the SOURCE pixel (undistorted, under the wider-FOV K_hi).
+    Vectorized fixed point; |k1| r^2 << 1 here, so 12 iterations reach
+    machine precision. Exposed for the closed-form stage pin."""
+    H_out, W_out = IMG_H, IMG_W
+    u = np.tile(np.arange(W_out, dtype=np.float64), H_out).reshape(H_out, W_out)
+    v = np.repeat(np.arange(H_out, dtype=np.float64), W_out).reshape(H_out, W_out)
+    x_d = (u - K[0, 2]) / K[0, 0]
+    y_d = (v - K[1, 2]) / K[1, 1]
+    x_u, y_u = x_d.copy(), y_d.copy()
+    for _ in range(12):
+        scale = 1.0 + k1 * (x_u ** 2 + y_u ** 2)
+        x_u = x_d / scale
+        y_u = y_d / scale
+    map_x = (K_hi[0, 0] * x_u + K_hi[0, 2]).astype(np.float32)
+    map_y = (K_hi[1, 1] * y_u + K_hi[1, 2]).astype(np.float32)
+    return map_x, map_y
+
+
+def _render_pinhole(billboards: List[dict], R_wc: np.ndarray, t_wc: np.ndarray,
+                    K: np.ndarray, W: int, H: int) -> np.ndarray:
+    """The frame-render loop, canvas/K-parameterized (phase 2j-3: the
+    k1 path renders a wider-FOV source image to distort per-pixel).
+    For the default canvas and K this is the exact original code path
+    (the FX/CX cull constants become K-derived reads of identical
+    values) - regeneration is byte-identical (md5 tree hash pinned)."""
+    img = np.full((H, W, 3), 40, np.uint8)
     R_cw = R_wc.T
     t_cw = -R_cw @ t_wc
     margin = 80
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
 
     for bb in billboards:
         corners_cam = (R_cw @ bb["corners"].T).T + t_cw
         if np.any(corners_cam[:, 2] <= 0.2):
             continue  # partially behind camera
         center_cam = R_cw @ bb["center"] + t_cw
-        if not (-margin < center_cam[0] / center_cam[2] * FX + CX < IMG_W + margin
-                and -margin < center_cam[1] / center_cam[2] * FY + CY < IMG_H + margin):
+        if not (-margin < center_cam[0] / center_cam[2] * fx + cx < W + margin
+                and -margin < center_cam[1] / center_cam[2] * fy + cy < H + margin):
             continue  # center far out of view
 
         quad = _project(bb["corners"], R_cw, t_cw, K)
         if (quad[:, 0].max() - quad[:, 0].min()) < 5 \
                 or (quad[:, 1].max() - quad[:, 1].min()) < 5:
             continue  # sliver / too small
-        if k1 == 0.0:
-            _paste_billboard(img, bb["pattern"], quad)
-        else:
-            # Phase 2j-1: the culls above stay pinhole (margin-based
-            # heuristics; the mild |k1| shifts are absorbed by them).
-            _paste_billboard_distorted(img, bb, R_cw, t_cw, K, k1)
+        _paste_billboard(img, bb["pattern"], quad)
 
     return img
+
+
+def _render_frame(billboards: List[dict], R_wc: np.ndarray, t_wc: np.ndarray,
+                  K: np.ndarray, k1: float = 0.0) -> np.ndarray:
+    if k1 == 0.0:
+        return _render_pinhole(billboards, R_wc, t_wc, K, IMG_W, IMG_H)
+
+    # Phase 2j-3: wider-FOV pinhole render, then per-pixel distortion.
+    W_hi = int(np.ceil(IMG_W * _K1_RENDER_FOV_MARGIN))
+    H_hi = int(np.ceil(IMG_H * _K1_RENDER_FOV_MARGIN))
+    K_hi = np.array([[FX, 0.0, W_hi / 2.0],
+                     [0.0, FY, H_hi / 2.0],
+                     [0.0, 0.0, 1.0]])
+    img_hi = _render_pinhole(billboards, R_wc, t_wc, K_hi, W_hi, H_hi)
+    map_x, map_y = _build_distortion_map(K, k1, K_hi)
+    return cv.remap(img_hi, map_x, map_y, cv.INTER_LINEAR,
+                    borderMode=cv.BORDER_CONSTANT, borderValue=(40, 40, 40))
 
 
 def generate_sequence(name: str, force: bool = False) -> Path:
@@ -337,7 +349,13 @@ def generate_sequence(name: str, force: bool = False) -> Path:
                        f"{quat[0]:.9f} {quat[1]:.9f} {quat[2]:.9f} {quat[3]:.9f}\n")
 
     with open(out_dir / "calibration.txt", "w") as f:
-        f.write(f"{FX} {FY} {CX} {CY}\n")
+        # Phase 2j-3: the 5th value (simple-radial k1) is written ONLY
+        # when nonzero - existing sequences' files stay byte-identical
+        # (verified for 'translation' by md5 tree hash).
+        if k1 == 0.0:
+            f.write(f"{FX} {FY} {CX} {CY}\n")
+        else:
+            f.write(f"{FX} {FY} {CX} {CY} {k1}\n")
 
     with open(out_dir / "scene_points.txt", "w") as f:
         for bb in billboards:

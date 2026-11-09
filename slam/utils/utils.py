@@ -65,6 +65,19 @@ def normalize(pts, Kinv):
     return np.dot(Kinv, add_ones(pts).T).T[:, :2]
 
 
+def undistort_points_norm(pts, K, k1):
+    """Pixel (N,2) -> UNDISTORTED normalized (N,2) under the
+    simple-radial model (phase 2j-3). cv.undistortPoints implements the
+    exact inverse of the generator's forward model
+    (x_d = x_u * (1 + k1 * r_u^2)) - locked by the round-trip pin in
+    benchmarks/stages/test_calibration.py. The k1 == 0 case never
+    reaches this helper: the identity path stays the literal
+    `normalize` (the default pipeline is bit-identical)."""
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 1, 2)
+    und = cv.undistortPoints(pts, K, np.array([k1, 0.0, 0.0, 0.0, 0.0]))
+    return und.reshape(-1, 2)
+
+
 def _prior_t_flip_penalty(t, prior):
     """Penalty (0 or 180 degrees) for a candidate translation opposing the
     motion prior's direction.

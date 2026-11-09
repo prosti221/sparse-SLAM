@@ -5,7 +5,7 @@ import uuid
 from uuid import UUID
 from slam.utils.logger import debug_log, error_log, warning_log
 from slam.utils.constants import MAX_SQUARED_REPROJECTION_ERROR
-from slam.utils.utils import normalize
+from slam.utils.utils import normalize, undistort_points_norm
 from slam.core.point import Point
 from slam.core.observation import Observation
 from typing import List, Tuple, Dict
@@ -15,12 +15,18 @@ LOG_TAG = 'Frame'
 
 
 class Frame:
-    def __init__(self, image: np.ndarray, K: np.ndarray):
+    def __init__(self, image: np.ndarray, K: np.ndarray, k1: float = 0.0):
         self.frame_id: UUID = uuid.uuid4()
         self.image = image
         self.H, self.W = image.shape[:2]
 
         self.K = K
+        # Phase 2j-3: one simple-radial distortion parameter, kept
+        # PER FRAME next to K (the 2j-4 refit updates both and
+        # propagates). 0.0 is the default and the LITERAL identity
+        # path everywhere it is read: the default pipeline is
+        # bit-identical to the pre-2j pipeline.
+        self.k1 = float(k1)
 
         self.keypoints = None
         self.kp_pts = None
@@ -81,7 +87,17 @@ class Frame:
         self.descriptors = descriptors
         if len(keypoints) > 0:
             self.kp_pts = cv.KeyPoint.convert(keypoints)
-            self.kp_pts_norm = normalize(self.kp_pts, self.Kinv)
+            # Phase 2j-3: k1 == 0 keeps the literal identity path
+            # (bit-identical to the pre-2j pipeline). k1 != 0
+            # undistorts at the normalization boundary - the ONLY
+            # change the downstream needs: matching, triangulation,
+            # PnP and the g2o BA all work in undistorted normalized
+            # coordinates and are untouched.
+            if self.k1 != 0.0:
+                self.kp_pts_norm = undistort_points_norm(
+                    self.kp_pts, self.K, self.k1)
+            else:
+                self.kp_pts_norm = normalize(self.kp_pts, self.Kinv)
             self.kp_unique_mask = [True] * len(self.kp_pts)
 
     def set_match_data(self, matches: List[cv.DMatch]) -> None:
@@ -129,7 +145,16 @@ class Frame:
         if normalized:
             return np.array([x, y])
 
-        # Pixel coordinates (u, v)
+        # Pixel coordinates (u, v). Phase 2j-3: with k1 != 0 the pixel
+        # prediction applies the simple-radial forward model - the 1px
+        # triangulation gate compares in PIXEL space (the Q2 record),
+        # and every other pixel-domain consumer must see the same
+        # model. k1 == 0 is the literal pinhole path (bit-identical).
+        if self.k1 != 0.0:
+            scale = 1.0 + self.k1 * (x * x + y * y)
+            x *= scale
+            y *= scale
+
         u = self.K[0, 0] * x + self.K[0, 2]
         v = self.K[1, 1] * y + self.K[1, 2]
         return np.array([u, v])
@@ -167,6 +192,14 @@ class Frame:
             if normalized:
                 result[valid_mask] = np.column_stack([x_norm, y_norm])
             else:
+                # Phase 2j-3: pixel mode applies the simple-radial
+                # forward model (same as project_point; see the note
+                # there). k1 == 0 is the literal pinhole path.
+                if self.k1 != 0.0:
+                    scale = 1.0 + self.k1 * (x_norm ** 2 + y_norm ** 2)
+                    x_norm = x_norm * scale
+                    y_norm = y_norm * scale
+
                 # Convert to pixel coordinates
                 u = self.K[0, 0] * x_norm + self.K[0, 2]
                 v = self.K[1, 1] * y_norm + self.K[1, 2]
@@ -227,6 +260,14 @@ class Frame:
     def normalize_keypoint(self, pt_2d: np.ndarray) -> np.ndarray:
         if self.Kinv is None:
             raise ValueError("Camera intrinsic matrix Kinv is not set.")
+
+        # Phase 2j-3: k1 != 0 undistorts at this boundary too (the
+        # same convention as set_features); k1 == 0 is the literal
+        # legacy path.
+        if self.k1 != 0.0:
+            return undistort_points_norm(
+                np.asarray(pt_2d, dtype=np.float64).reshape(1, 2),
+                self.K, self.k1)[0]
 
         return (self.Kinv @ np.array([pt_2d[0], pt_2d[1], 1.0])).astype(np.float32)[:2]
 

@@ -39,15 +39,24 @@ class RunResult:
         return self.frames_processed / self.seconds if self.seconds > 0 else 0.0
 
 
-def load_calibration(dataset_dir: Path) -> np.ndarray:
+def load_calibration(dataset_dir: Path):
+    """Dataset calibration -> (K, k1). Phase 2j-3: the calibration file
+    may carry a 5th value, the simple-radial k1 (the generator writes
+    it only when nonzero, so existing sequences' files are unchanged).
+    The phase-2j-0 FOCAL_SCALE diagnostic perturbs the focal on demand;
+    k1 lives in normalized units and is untouched by it."""
     dataset_dir = Path(dataset_dir)
-    fx, fy, cx, cy = np.loadtxt(dataset_dir / "calibration.txt")
-    # Phase 2j-0 diagnostic: perturb the focal length on demand
-    # (--override FOCAL_SCALE=0.8). Literal no-op at the default 1.0
-    # (the multiply is skipped) so default runs are bit-identical.
+    vals = np.atleast_1d(np.loadtxt(dataset_dir / "calibration.txt"))
+    fx, fy, cx, cy = vals[:4]
+    k1 = float(vals[4]) if len(vals) > 4 else 0.0
+
+    # Literal no-op at the default 1.0 (the multiply is skipped) so
+    # default runs are bit-identical.
     if const.FOCAL_SCALE != 1.0:
         fx, fy = fx * const.FOCAL_SCALE, fy * const.FOCAL_SCALE
-    return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
+
+    K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
+    return K, k1
 
 
 def load_trajectory(dataset_dir: Path) -> np.ndarray:
@@ -80,7 +89,7 @@ def run_slam(dataset_dir: Path,
     slam_logger.DEBUG = debug
 
     dataset_dir = Path(dataset_dir)
-    K = load_calibration(dataset_dir)
+    K, k1 = load_calibration(dataset_dir)
     frame_files = sorted((dataset_dir / "frames").glob("*.png"))
     if not frame_files:
         raise FileNotFoundError(f"No frames found in {dataset_dir / 'frames'}")
@@ -107,7 +116,7 @@ def run_slam(dataset_dir: Path,
             img = cv.imread(str(frame_file))
             if img is None:
                 raise IOError(f"Failed to read frame: {frame_file}")
-            frame = Frame(img, K)
+            frame = Frame(img, K, k1)
             is_new_keyframe = tracker.update(frame)
 
             poses.append(tracker.cur_frame.pose)

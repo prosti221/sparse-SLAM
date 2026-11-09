@@ -45,7 +45,7 @@ def _frame_pair(seq_dir, K, extractor, i):
 
 
 def test_relative_pose_convention(translation_seq, extractor):
-    K = load_calibration(translation_seq)
+    K, _k1 = load_calibration(translation_seq)
     gt = load_trajectory(translation_seq)
     cv.setRNGSeed(42)
 
@@ -66,7 +66,7 @@ def test_relative_pose_convention(translation_seq, extractor):
 def test_composition_matches_ground_truth(translation_seq, extractor):
     """The tracker's exact usage: Twc_cur = Twc_prev @ Rt must reproduce the
     GT motion (rotation exactly; translation direction, monocular scale)."""
-    K = load_calibration(translation_seq)
+    K, _k1 = load_calibration(translation_seq)
     gt = load_trajectory(translation_seq)
     cv.setRNGSeed(42)
 
@@ -83,7 +83,7 @@ def test_composition_matches_ground_truth(translation_seq, extractor):
 
 def test_matching_is_deterministic(translation_seq, extractor):
     """OpenCV's RANSAC must be seedable: same seed, same result."""
-    K = load_calibration(translation_seq)
+    K, _k1 = load_calibration(translation_seq)
     cv.setRNGSeed(123)
     prev_a, cur_a = _frame_pair(translation_seq, K, extractor, 30)
     Rt_a = match_features_between_frames(cur_a, prev_a, "ORB")

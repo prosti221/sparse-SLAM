@@ -19,7 +19,8 @@ import pytest
 import slam.utils.constants as const
 from benchmarks.harness import load_calibration
 from benchmarks.synthetic.generator import (FX, FY, CX, CY, SEQUENCES,
-                                            _calib_motion_pose, _project,
+                                            _build_distortion_map,
+                                            _calib_motion_pose,
                                             ensure_sequence)
 
 
@@ -40,30 +41,32 @@ def calib_k1_seq():
 
 def test_focal_scale_perturbs_focal_only(translation_seq, monkeypatch):
     """2j-0: --override FOCAL_SCALE=0.8 multiplies fx and fy by 0.8 and
-    leaves the principal point untouched."""
-    base = load_calibration(translation_seq)
+    leaves the principal point (and k1 - normalized units, not a
+    focal) untouched."""
+    base_K, base_k1 = load_calibration(translation_seq)
 
     monkeypatch.setattr(const, "FOCAL_SCALE", 0.8, raising=True)
-    scaled = load_calibration(translation_seq)
+    scaled_K, scaled_k1 = load_calibration(translation_seq)
 
-    assert scaled[0, 0] == pytest.approx(base[0, 0] * 0.8, rel=1e-12)
-    assert scaled[1, 1] == pytest.approx(base[1, 1] * 0.8, rel=1e-12)
+    assert scaled_K[0, 0] == pytest.approx(base_K[0, 0] * 0.8, rel=1e-12)
+    assert scaled_K[1, 1] == pytest.approx(base_K[1, 1] * 0.8, rel=1e-12)
     # Principal point untouched: the perturbation is focal-only by
     # design (the 2j refit keeps c pinned at the center).
-    assert scaled[0, 2] == base[0, 2]
-    assert scaled[1, 2] == base[1, 2]
+    assert scaled_K[0, 2] == base_K[0, 2]
+    assert scaled_K[1, 2] == base_K[1, 2]
+    assert scaled_k1 == base_k1 == 0.0
 
 
 def test_focal_scale_default_is_literal_noop(translation_seq, monkeypatch):
     """2j-0: at the default 1.0 the multiply is SKIPPED entirely - the
     returned calibration is bit-identical to the uninstrumented one
     (the default battery must never move)."""
-    base = load_calibration(translation_seq)
+    base_K, _ = load_calibration(translation_seq)
 
     monkeypatch.setattr(const, "FOCAL_SCALE", 1.0, raising=True)
-    scaled = load_calibration(translation_seq)
+    scaled_K, _ = load_calibration(translation_seq)
 
-    assert np.array_equal(scaled, base)
+    assert np.array_equal(scaled_K, base_K)
 
 
 # --- 2j-1: generator k1 render path + calib_motion sequences -----------
@@ -71,32 +74,37 @@ def test_focal_scale_default_is_literal_noop(translation_seq, monkeypatch):
 K_450 = np.array([[FX, 0.0, CX], [0.0, FY, CY], [0.0, 0.0, 1.0]])
 
 
-def test_generator_projection_distortion_closed_form():
-    """2j-1: _project at k1=0 is the exact pinhole closed form (the
-    legacy path), and at k1 != 0 applies the simple-radial model in
-    NORMALIZED coordinates - the same convention the SLAM side's
-    undistort-at-normalization assumes (2j-3)."""
-    pts = np.array([[0.30, -0.20, 4.0],
-                    [-0.50, 0.40, 2.0],
-                    [0.00, 0.00, 3.0],
-                    [0.65, 0.50, 1.5]])   # near the image corner
-    R_cw, t_cw = np.eye(3), np.zeros(3)
-
-    xy = pts[:, :2] / pts[:, 2:3]
-    expect_pinhole = np.column_stack(
-        [xy[:, 0] * K_450[0, 0] + K_450[0, 2],
-         xy[:, 1] * K_450[1, 1] + K_450[1, 2]])
-    assert np.allclose(
-        _project(pts, R_cw, t_cw, K_450, 0.0), expect_pinhole, atol=1e-12)
-
+def test_generator_distortion_map_closed_form():
+    """2j-3: the per-pixel render distortion map is the exact inverse
+    of the simple-radial forward model (x_d = x_u (1 + k1 r_u^2)): for
+    sampled OUTPUT pixels, the map's source coordinate (undistorted,
+    under the wider-FOV K_hi) must reproduce the output pixel under the
+    forward model. (Replaces the 2j-1 tiled-render pin: the per-pixel
+    remap superseded the tiling - see the 2j-3 record.)"""
+    K = K_450
     k1 = -0.06
-    r2 = xy[:, 0] ** 2 + xy[:, 1] ** 2
-    d = xy * (1.0 + k1 * r2[:, None])
-    expect_distorted = np.column_stack(
-        [d[:, 0] * K_450[0, 0] + K_450[0, 2],
-         d[:, 1] * K_450[1, 1] + K_450[1, 2]])
-    assert np.allclose(
-        _project(pts, R_cw, t_cw, K_450, k1), expect_distorted, atol=1e-12)
+    W_hi = int(np.ceil(640 * 1.2))
+    H_hi = int(np.ceil(480 * 1.2))
+    K_hi = np.array([[FX, 0.0, W_hi / 2.0],
+                     [0.0, FY, H_hi / 2.0],
+                     [0.0, 0.0, 1.0]])
+
+    map_x, map_y = _build_distortion_map(K, k1, K_hi)
+
+    for u_out, v_out in ((0, 0), (639, 479), (320, 240),
+                         (100, 400), (500, 50), (1, 478)):
+        x_u = (map_x[v_out, u_out] - K_hi[0, 2]) / K_hi[0, 0]
+        y_u = (map_y[v_out, u_out] - K_hi[1, 2]) / K_hi[1, 1]
+        x_d = (u_out - K[0, 2]) / K[0, 0]
+        y_d = (v_out - K[1, 2]) / K[1, 1]
+        scale = 1.0 + k1 * (x_u * x_u + y_u * y_u)
+        assert np.isclose(x_u * scale, x_d, atol=1e-9)
+        assert np.isclose(y_u * scale, y_d, atol=1e-9)
+
+    # Coverage: every output pixel's source lies inside the hi-res
+    # canvas (the wider FOV exists for exactly this).
+    assert np.all((map_x >= 0) & (map_x <= W_hi - 1)
+                  & (map_y >= 0) & (map_y <= H_hi - 1))
 
 
 def test_calib_motion_pose_is_diverse_and_in_room():
@@ -144,8 +152,13 @@ def test_calib_k1_sequence_shares_trajectory_differs_frames(calib_seq,
     assert traj_a == traj_b, "the k1 variant must share the trajectory"
 
     for seq in (calib_seq, calib_k1_seq):
-        assert (seq / "calibration.txt").read_text().strip() == \
-            f"{FX} {FY} {CX} {CY}"
+        assert (seq / "calibration.txt").read_text().strip().split()[:4] == \
+            [str(FX), str(FY), str(CX), str(CY)]
+
+    # Phase 2j-3: the k1 variant's file additionally carries the true
+    # k1 as the 5th token (the generator writes it only when nonzero).
+    assert (calib_k1_seq / "calibration.txt").read_text().strip().split()[4] \
+        == "-0.06"
 
     def _md5(path):
         return hashlib.md5(path.read_bytes()).hexdigest()
@@ -360,4 +373,97 @@ def test_load_video_auto_signaling(tmp_path):
     assert K[0, 2] == 32.0           # cx defaults to W // 2
     assert K[1, 2] == 24.0           # cy defaults to H // 2
     cap.release()
+
+
+# --- 2j-3: the distortion boundaries in Frame ---------------------------
+
+import cv2 as cv  # noqa: E402
+
+from benchmarks.harness import load_calibration as _load_calibration  # noqa: E402
+from slam.core.frame import Frame  # noqa: E402
+from slam.utils.utils import normalize  # noqa: E402
+
+
+def _mk_frame(K, k1=0.0):
+    return Frame(np.zeros((48, 64, 3), np.uint8), K, k1)
+
+
+def test_frame_undistortion_round_trip():
+    """2j-3: the undistort-at-normalization boundary is the EXACT
+    inverse of the generator's forward model (x_d = x_u (1 + k1 r_u^2))
+    - cv.undistortPoints implements that inverse. Round-tripped through
+    PIXEL keypoints and set_features, the way the pipeline sees it."""
+    K = K_450
+    k1 = -0.06
+    x_u = np.array([[0.30, -0.20], [-0.55, 0.40], [0.62, 0.47],
+                    [0.0, 0.0], [-0.1, 0.33]])
+    r2 = x_u[:, 0] ** 2 + x_u[:, 1] ** 2
+    x_d = x_u * (1.0 + k1 * r2)[:, None]
+    pixels = np.column_stack([x_d[:, 0] * K[0, 0] + K[0, 2],
+                              x_d[:, 1] * K[1, 1] + K[1, 2]])
+
+    frame = _mk_frame(K, k1)
+    frame.set_features([cv.KeyPoint(float(p[0]), float(p[1]), 31.0)
+                        for p in pixels], np.zeros((5, 32), np.uint8))
+
+    assert np.allclose(frame.kp_pts_norm, x_u, atol=1e-6)
+
+
+def test_frame_k1_zero_is_literal_identity():
+    """2j-3: at k1=0 the normalization path IS the legacy `normalize`
+    call - the default pipeline stays bit-identical (pinned at the
+    array level, not just approximately)."""
+    pixels = np.array([[100.0, 50.0], [320.0, 240.0], [500.0, 300.0]])
+    frame = _mk_frame(K_450, 0.0)
+    frame.set_features([cv.KeyPoint(float(p[0]), float(p[1]), 31.0)
+                        for p in pixels], np.zeros((3, 32), np.uint8))
+
+    assert np.array_equal(frame.kp_pts_norm, normalize(pixels, frame.Kinv))
+
+
+def test_frame_pixel_projection_applies_distortion():
+    """2j-3: pixel-mode projection applies the simple-radial forward
+    model (the 1px triangulation gate compares in pixel space - the Q2
+    record verified that gate load-bearing); k1=0 stays the exact
+    pinhole path."""
+    K = K_450
+    k1 = -0.06
+    frame = _mk_frame(K, k1)  # identity pose: world == camera coords
+    Xs = np.array([[0.3, -0.2, 2.0], [-0.55, 0.4, 1.0], [0.0, 0.25, 4.0]])
+
+    for X in Xs:
+        x, y = X[0] / X[2], X[1] / X[2]
+        s = 1.0 + k1 * (x * x + y * y)
+        expect = np.array([K[0, 0] * x * s + K[0, 2],
+                          K[1, 1] * y * s + K[1, 2]])
+        assert np.allclose(frame.project_point(X, normalized=False),
+                           expect, atol=1e-12)
+
+    # The batch path matches the single-point path under k1.
+    batch = frame.project_points(Xs, normalized=False)
+    for i, X in enumerate(Xs):
+        assert np.allclose(batch[i],
+                           frame.project_point(X, normalized=False),
+                           atol=1e-12)
+
+    # k1 = 0 -> the exact pinhole closed form (the identity regression).
+    frame0 = _mk_frame(K, 0.0)
+    for X in Xs:
+        x, y = X[0] / X[2], X[1] / X[2]
+        expect = np.array([K[0, 0] * x + K[0, 2], K[1, 1] * y + K[1, 2]])
+        assert np.allclose(frame0.project_point(X, normalized=False),
+                           expect, atol=1e-12)
+
+
+def test_load_calibration_k1_token(calib_k1_seq, translation_seq):
+    """2j-3: the 5th calibration value carries k1 (the generator
+    writes it only when nonzero); 4-value files parse to k1=0
+    (backward compatible - existing sequences' files unchanged)."""
+    K_k1, k1 = _load_calibration(calib_k1_seq)
+    assert k1 == -0.06
+    assert K_k1[0, 0] == FX
+
+    K_pin, k1_pin = _load_calibration(translation_seq)
+    assert k1_pin == 0.0
+    assert K_pin[0, 0] == FX
 
