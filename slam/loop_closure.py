@@ -21,9 +21,15 @@ with the PnP rotation cross-checked against the independent two-view
 E rotation (catches mirrored / degenerate PnP solutions that reproject
 well). See LoopClosureDetector._estimate_loop_constraint.
 
-RANSAC determinism: solvePnPRansac / findEssentialMat draw from
-OpenCV's global RNG (seeded per run by the entry points; the call
-order is deterministic at keyframe cadence).
+RANSAC determinism / RNG transparency (phase 3b): the module NEVER
+draws from OpenCV's global RNG - solvePnPRansac / findEssentialMat
+would advance the stream for every subsequent tracker RANSAC call,
+breaking default-path bit-identity wherever the module merely runs
+(a data-dependent no-op is not a no-op). The PnP RANSAC here draws
+from a per-call numpy Generator seeded from a constant, and the
+rotation cross-check's essential matrix is a normalized 8-point over
+the (already clean) PnP inlier set. The module is deterministic AND
+cv-RNG-transparent by construction.
 """
 from typing import List, Tuple, Dict, Optional, NamedTuple, TYPE_CHECKING
 from uuid import UUID
@@ -35,6 +41,7 @@ if TYPE_CHECKING:
 from slam.utils import constants as const
 from slam.utils import telemetry
 from slam.utils.logger import debug_log, warning_log, error_log
+from slam.utils.utils import extractRtFromE
 
 LOG_TAG = 'LoopClosure'
 
@@ -330,20 +337,17 @@ class LoopClosureDetector:
                       f"{const.LOOP_MIN_CORRESPONDENCES})")
             return None
 
-        # --- unseeded PnP RANSAC over the correspondences ---
+        # --- deterministic PnP RANSAC over the correspondences (see
+        #     the module docstring: cv.solvePnPRansac would advance
+        #     OpenCV's global RNG stream; this one draws from a
+        #     per-call numpy Generator) ---
         obj = np.asarray([corr[c][0] for c in c_idx], dtype=np.float32)
         img = query_kf.kp_pts_norm[q_idx].astype(np.float32)
-        # Normalized coordinates: the RANSAC threshold converts from
-        # pixels at the call site (the codebase's PnP convention - the
-        # 2j-3 survey).
-        ok, rvec, tvec, inliers = cv.solvePnPRansac(
-            obj, img, np.eye(3), np.zeros(5),
-            reprojectionError=const.LOOP_PNP_RANSAC_THRESHOLD_PX
-            / query_kf.K[0, 0])
-        if not ok or inliers is None or len(inliers) < const.LOOP_MIN_INLIERS:
+        rvec, tvec, inliers = self._pnp_ransac(obj, img,
+                                               query_kf.K[0, 0])
+        if rvec is None or len(inliers) < const.LOOP_MIN_INLIERS:
             telemetry.event("loop_rejected_pnp")
             return None
-        inliers = inliers.ravel()
         if len(inliers) / len(q_idx) < const.LOOP_MIN_INLIER_RATIO:
             telemetry.event("loop_rejected_gates")
             debug_log(LOG_TAG, f"PnP inlier ratio "
@@ -392,6 +396,114 @@ class LoopClosureDetector:
         T_cw[:3, 3] = tvec.ravel()
         return np.linalg.inv(T_cw)
 
+    def _pnp_ransac(self, obj: np.ndarray, img: np.ndarray,
+                    fx: float):
+        """Deterministic PnP RANSAC (phase 3b). cv.solvePnPRansac
+        draws from OpenCV's GLOBAL RNG, and any mid-run draw would
+        shift the stream for every subsequent tracker RANSAC call -
+        breaking default-path bit-identity wherever the module merely
+        runs (a data-dependent no-op is not a no-op). This RANSAC
+        draws from a per-call numpy Generator seeded from a constant:
+        the module is cv-RNG-transparent by construction and its own
+        behavior is deterministic across runs. Minimal samples solve
+        EPNP (deterministic, closed-form); the winner refines
+        iteratively over its inliers. Returns (rvec, tvec, inlier
+        indices); (None, None, None) when no sample yields a pose."""
+        rng = np.random.default_rng(const.LOOP_RANSAC_SEED)
+        n = len(obj)
+        if n < 4:
+            return None, None, None
+        thresh = const.LOOP_PNP_RANSAC_THRESHOLD_PX / fx
+
+        def _mark(rvec, tvec):
+            R, _ = cv.Rodrigues(rvec)
+            Xc = (R @ obj.T).T + tvec.ravel()
+            z = Xc[:, 2]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                proj = np.where((z > 1e-9)[:, None],
+                                Xc[:, :2] / np.where(
+                                    z > 1e-9, z, 1.0)[:, None], 1e9)
+            err = np.linalg.norm(proj - img, axis=1)
+            return np.where((z > 1e-9) & (err < thresh))[0]
+
+        best_rvec = best_tvec = None
+        best_inliers = None
+        best_count = 0
+        for _ in range(const.LOOP_RANSAC_ITERATIONS):
+            idx = rng.choice(n, size=4, replace=False)
+            try:
+                ok, rvec, tvec = cv.solvePnP(
+                    obj[idx], img[idx], np.eye(3), np.zeros(5),
+                    flags=cv.SOLVEPNP_EPNP)
+            except cv.error:
+                continue
+            if not ok:
+                continue
+            inliers = _mark(rvec, tvec)
+            if len(inliers) > best_count:
+                best_count = len(inliers)
+                best_rvec, best_tvec, best_inliers = rvec, tvec, inliers
+
+        if best_inliers is None or len(best_inliers) < 4:
+            return None, None, None
+
+        # Refine on the winner's inliers (iterative LM from the
+        # sample solution - deterministic), then re-mark so the
+        # returned inlier set matches the refined pose.
+        try:
+            ok, rvec, tvec = cv.solvePnP(
+                obj[best_inliers], img[best_inliers], np.eye(3),
+                np.zeros(5), rvec=best_rvec, tvec=best_tvec,
+                useExtrinsicGuess=True, flags=cv.SOLVEPNP_ITERATIVE)
+        except cv.error:
+            ok = False
+        if ok:
+            inliers = _mark(rvec, tvec)
+            if len(inliers) >= len(best_inliers):
+                return rvec, tvec, inliers
+        return best_rvec, best_tvec, best_inliers
+
+    def _essential_8point(self, pts_q: np.ndarray,
+                          pts_m: np.ndarray) -> Optional[np.ndarray]:
+        """Normalized 8-point essential matrix over an already-clean
+        inlier set (Hartley normalization, SVD, essential-matrix
+        projection). No RANSAC - the PnP inlier set IS the filter
+        (phase 3b's RNG-transparency note). Both inputs are
+        undistorted normalized coordinates, so the result composes
+        directly with extractRtFromE(K = eye(3))."""
+        pts_q = np.asarray(pts_q, dtype=np.float64)
+        pts_m = np.asarray(pts_m, dtype=np.float64)
+        if len(pts_q) < 8:
+            return None
+
+        def _hartley(pts):
+            c = pts.mean(axis=0)
+            mean_d = np.linalg.norm(pts - c, axis=1).mean()
+            if mean_d < 1e-12:
+                return np.eye(3), pts
+            s = np.sqrt(2.0) / mean_d
+            T = np.array([[s, 0.0, -s * c[0]],
+                          [0.0, s, -s * c[1]],
+                          [0.0, 0.0, 1.0]])
+            homo = T @ np.column_stack([pts, np.ones(len(pts))]).T
+            return T, homo.T[:, :2]
+
+        _, q = _hartley(pts_q)
+        _, m = _hartley(pts_m)
+        # x_match^T E x_query = 0 (the f2<-f1 convention of
+        # extractRtFromE).
+        A = np.column_stack([
+            m[:, 0] * q[:, 0], m[:, 0] * q[:, 1], m[:, 0],
+            m[:, 1] * q[:, 0], m[:, 1] * q[:, 1], m[:, 1],
+            q[:, 0], q[:, 1], np.ones(len(q))])
+        try:
+            _, _, Vt = np.linalg.svd(A)
+            F = Vt[-1].reshape(3, 3)
+            U, _, Vt2 = np.linalg.svd(F)
+            return U @ np.diag([1.0, 1.0, 0.0]) @ Vt2
+        except np.linalg.LinAlgError:
+            return None
+
     def _rotation_agrees(self, match_kf: Frame, img: np.ndarray,
                          inliers: np.ndarray, corr_inlier_rows,
                          R_pnp_rel: np.ndarray) -> bool:
@@ -402,9 +514,12 @@ class LoopClosureDetector:
         match KF's pose), the E rotation is estimated independently of
         the map, and a mirrored / degenerate PnP shows up as a
         rotation disagreement. The threshold is generous - this is a
-        degeneracy guard, not a precision gate."""
-        from slam.features.matcher import (estimate_essential_matrix,
-                                           extractRtFromE)
+        degeneracy guard, not a precision gate.
+
+        The essential matrix is the normalized 8-POINT over the
+        already-clean PnP inlier set (phase 3b: findEssentialMat's
+        RANSAC draws from OpenCV's global RNG - see the module
+        docstring's RNG-transparency note)."""
         pts_q = img[inliers]
         pts_m = []
         for _, _, pt in corr_inlier_rows:
@@ -413,13 +528,13 @@ class LoopClosureDetector:
                 return False
             pts_m.append(obs.pt_2d_norm)
         pts_m = np.asarray(pts_m, dtype=np.float64)
-
-        E, mask, _ = estimate_essential_matrix(pts_q, pts_m)
-        if E is None or mask is None or int(np.sum(mask)) < 5:
+        if len(pts_q) < 8:
             return False
-        inlier_mask = mask.ravel() == 1
-        Rt2 = extractRtFromE(pts_q[inlier_mask], pts_m[inlier_mask],
-                             E, np.eye(3))
+
+        E = self._essential_8point(pts_q, pts_m)
+        if E is None:
+            return False
+        Rt2 = extractRtFromE(pts_q, pts_m, E, np.eye(3))
         if Rt2 is None:
             return False
         # Rt2 is T_{match<-query} (the f2<-f1 convention of

@@ -23,6 +23,7 @@ from benchmarks.stages.helpers import make_frame, project_gt, yaw_pose
 from slam.core.map import Map
 from slam.core.observation import Observation
 from slam.core.point import Point
+from slam.core.tracker import Tracker
 from slam.loop_closure import LoopClosureCandidate
 from slam.utils import telemetry
 
@@ -261,3 +262,55 @@ def test_exclusion_window_and_no_self_candidate(monkeypatch):
            for c in m.loop_detector.detect_potential_loops(f["query"])}
     assert f["query"].frame_id not in ids, "never a self-candidate"
     assert f["match"].frame_id in ids
+
+
+def test_tracker_hook_is_telemetry_only(monkeypatch):
+    """3b: the tracker's detection hook (keyframe cadence - the query
+    is the freshly inserted cur_keyframe) runs detection+verification
+    and STOPS: TELEMETRY-ONLY by construction (the correction path
+    lands in 3c). With a verified loop in hand, nothing numeric moves
+    - the query KF's (drifted) pose attribute and every map keyframe
+    pose are untouched."""
+    m, f, info = _loop_fixture()
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    tracker = Tracker(m)
+    assert m.cur_keyframe is f["query"], "the fixture's query is last"
+
+    poses_before = [kf.pose.copy() for kf in m.keyframes]
+    pts_before = [p.pt_3d.copy() for p in m.points]
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+
+    assert rec.events.get("loop_detected", 0) >= 1
+    assert rec.events.get("loop_verified", 0) >= 1, \
+        "the true revisit must verify through the hook"
+    # Telemetry-only: nothing moved (the query pose stays DRIFTED -
+    # the correction is 3c's to land).
+    assert np.array_equal(f["query"].pose, info["drift"])
+    for kf, pose in zip(m.keyframes, poses_before):
+        assert np.array_equal(kf.pose, pose)
+    for p, pt in zip(m.points, pts_before):
+        assert np.array_equal(p.pt_3d, pt)
+
+
+def test_tracker_hook_disabled_by_flag(monkeypatch):
+    """3b: LOOP_CLOSURE_ENABLED=0 (an INT flag - the --override parser's
+    bool("0") trap) short-circuits the hook BEFORE any detection - no
+    telemetry, no matching, no map access."""
+    m, f, _ = _loop_fixture()
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    monkeypatch.setattr(const, "LOOP_CLOSURE_ENABLED", 0)
+    tracker = Tracker(m)
+
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+
+    assert rec.events == {}

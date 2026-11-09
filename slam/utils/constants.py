@@ -274,13 +274,30 @@ LOOP_MAX_CANDIDATES = 5
 # the loop pair):
 LOOP_MIN_CORRESPONDENCES = 30   # descriptor-matched map points entering PnP
 LOOP_MIN_INLIERS = 15           # PnP RANSAC inliers
-LOOP_MIN_INLIER_RATIO = 0.75    # inliers / correspondences
+# Measured 2026-11-09 (3b calibration): the true orbit revisit carries
+# Lowe-passed correspondences that are HALF wrong - the synthetic
+# wall's repetitive texture matches similar-looking patches, and the
+# PnP RANSAC separates them cleanly (42 inliers at 0.66px median
+# reprojection, ratio 0.46). The 0.75 first guess (calibrated on clean
+# fixtures) killed the target sequence's own closure; the degeneracy
+# protection lives in the inlier count + true-pixel median + the
+# rotation cross-check, not the ratio.
+LOOP_MIN_INLIER_RATIO = 0.40
 LOOP_MAX_MEDIAN_REPROJ_PX = 3.0  # TRUE pixels (median over inliers)
 # PnP RANSAC inlier marking threshold, in pixels (converted to the
 # normalized-coordinate units of the solve at the call site: the
 # codebase's PnP works on undistorted normalized coords with eye(3) -
 # the 2j-3 survey).
 LOOP_PNP_RANSAC_THRESHOLD_PX = 5.0
+# The in-module PnP RANSAC (phase 3b): cv.solvePnPRansac draws from
+# OpenCV's GLOBAL RNG, and any mid-run draw would shift the stream for
+# every subsequent tracker RANSAC call - breaking default-path
+# bit-identity wherever the loop module merely runs (a data-dependent
+# no-op is not a no-op). The deterministic replacement draws from a
+# per-call numpy Generator with this seed, this many minimal-sample
+# iterations (EPnP per sample, iterative refine on the winner).
+LOOP_RANSAC_SEED = 1701
+LOOP_RANSAC_ITERATIONS = 50
 # PnP vs two-view relative-rotation agreement: the E-matrix rotation
 # (independent of the map) vs the PnP rotation; catches mirrored /
 # degenerate PnP solutions that reproject well.

@@ -53,7 +53,11 @@ def evaluate_sequence(name: str, seed: int) -> dict:
         scene_points, planes = load_scene(seq_dir)
 
     result = run_slam(seq_dir, seed=seed)
-    return metrics.evaluate(result, gt_poses, scene_points, planes)
+    metrics_dict = metrics.evaluate(result, gt_poses, scene_points, planes)
+    # Phase 2j-4: the final intrinsics estimate rides along (the
+    # recovery experiments' readout: initial vs recovered f/k1).
+    metrics_dict["final_intrinsics"] = result.final_intrinsics
+    return metrics_dict
 
 
 def check_baselines(results: dict, baselines: dict) -> dict:
@@ -110,8 +114,8 @@ def print_table(results: dict) -> None:
 # Non-overlapping pipeline stages (see benchmarks/IMPROVEMENT.md phase 0);
 # "other" = measured wall time not covered by any stage.
 PROFILE_STAGES = ["extract", "match", "project", "proj_match", "pnp",
-                   "kf_match", "map_optimize", "triangulate", "cull",
-                   "relocate", "other"]
+                 "kf_match", "map_optimize", "triangulate", "cull",
+                 "calib", "loop", "relocate", "other"]
 
 
 def print_profile_table(results: dict) -> None:

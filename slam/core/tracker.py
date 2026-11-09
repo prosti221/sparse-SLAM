@@ -16,7 +16,6 @@ from slam.utils.logger import *
 from slam.utils import telemetry
 from slam.features.matcher import *
 from slam.features.feature_extractor import FeatureExtractor
-from slam.loop_closure import LoopClosureCandidate
 
 LOG_TAG = 'Tracker'
 
@@ -129,9 +128,6 @@ class Tracker:
         # Check & handle keyframe insertion criteria
         self._handle_keyframe_insertion()
 
-        # Periodic loop closure detection
-        self._handle_loop_closure_detection()
-
         self.step += 1
         self.iterations_since_last_keyframe += 1
         self.map.update_tracking_quality()
@@ -176,6 +172,15 @@ class Tracker:
         if self.calib_refiner is not None:
             with telemetry.stage("calib"):
                 self.calib_refiner.on_keyframe_inserted()
+
+        # Phase 3b: the loop-closure detection hook (telemetry-only;
+        # the correction path lands in 3c). Keyframe cadence - one
+        # query per insertion, on the freshly inserted keyframe, after
+        # the map state is final for this insertion. The module is
+        # RNG-transparent by construction, so this stage is
+        # numerically inert wherever no loop verifies.
+        with telemetry.stage("loop"):
+            self._handle_loop_closure_detection()
 
     def _filter_duplicate_keypoints(self):
         # Latent empty-path bug (exposed by the 2j-4 volume-scene
@@ -483,67 +488,45 @@ class Tracker:
         return self.prev_frame.pose @ Rt
 
     def _handle_loop_closure_detection(self):
-        return  # Disable loop closure for now
-        if self.step % 10 != 0 or len(self.map.keyframes) <= 10:
+        """Phase 3b: the loop-closure DETECTION hook - TELEMETRY-ONLY
+        (the correction path lands in 3c: constraints -> pose graph ->
+        global BA -> motion-model consistency - the milestone-3 form
+        even had the post-graph global BA, restored deliberately
+        there). One query per NEW keyframe (the milestone-3 step%10
+        frame cadence re-queried the same cur_keyframe repeatedly);
+        the query is the freshly inserted keyframe, after
+        optimize/triangulate/cull so the candidate scan sees the
+        fresh map.
+
+        The module is cv-RNG-transparent by construction (see
+        slam/loop_closure.py: no cv RANSAC anywhere in the path), so
+        the default pipeline's numerics are untouched wherever no
+        loop fires - the anchor sequences' bit-identity is a
+        construction property, not a calibration outcome.
+        LOOP_CLOSURE_ENABLED is an INT flag (the --override parser's
+        bool("0") trap)."""
+        if not const.LOOP_CLOSURE_ENABLED:
             return
 
         current_keyframe = self.map.cur_keyframe
         if current_keyframe is None:
             return
 
-        loop_candidates = self.map.detect_loop_closures(current_keyframe)
-        if not loop_candidates:
+        candidates = self.map.detect_loop_closures(current_keyframe)
+        if not candidates:
             debug_log(LOG_TAG, "No loop closure candidates detected")
             return
 
-        debug_log(
-            LOG_TAG, f"Detected {len(loop_candidates)} potential loop closures")
-
-        # Set query keyframe ID for candidates
-        for i, cand in enumerate(loop_candidates):
-            updated_cand = LoopClosureCandidate(
-                query_keyframe_id=current_keyframe.frame_id,
-                match_keyframe_id=cand.match_keyframe_id,
-                similarity_score=cand.similarity_score
-            )
-            loop_candidates[i] = updated_cand
-
         verified_loops = self.map.loop_detector.verify_loop_candidates(
-            loop_candidates)
+            candidates)
         if not verified_loops:
             debug_log(LOG_TAG, "No loop closures verified")
             return
 
-        debug_log(
-            LOG_TAG, f"Verified {len(verified_loops)} loop closures - triggering optimization")
-
-        # Create pose graph constraints from verified loops
-        loop_constraints = []
-        for verified_loop in verified_loops:
-            constraint = self.map.pose_graph_optimizer.create_constraint_from_verified_loop(
-                verified_loop)
-            loop_constraints.append(constraint)
-
-        success = self.map.pose_graph_optimizer.optimize_with_loop_constraints(
-            loop_constraints)
-        if not success:
-            warning_log(LOG_TAG, "Pose graph optimization failed")
-            return
-
-        debug_log(
-            LOG_TAG, f"Successfully optimized pose graph with {len(verified_loops)} loop constraints")
-
-        # After pose graph optimization, run full global BA to fix 3D points
-        # This is critical because pose correction makes existing triangulations invalid
-        debug_log(
-            LOG_TAG, "Running full global bundle adjustment to fix 3D points after pose correction")
-        global_ba_success = self.map.g2o_optimizer.global_bundle_adjustment()
-        if global_ba_success:
-            debug_log(
-                LOG_TAG, "Global bundle adjustment completed successfully after loop closure")
-        else:
-            warning_log(
-                LOG_TAG, "Global bundle adjustment failed after loop closure - map may be inconsistent")
+        # 3b stops here deliberately: verification is measured
+        # (telemetry loop_verified); the correction lands in 3c.
+        info_log(LOG_TAG, f"Verified {len(verified_loops)} loop "
+                 f"closure(s) (correction path lands in phase 3c)")
 
     def _handle_relocalization_check(self):
         if not self.map.needs_recovery():
