@@ -31,8 +31,8 @@ DEFAULT_SEQUENCES = ["forward_rotation", "orbit", "translation", "tum_xyz"]
 
 # Thresholds applied to each metric. Missing sequence entry = no baseline yet.
 THRESHOLD_RULES = {
-    "max": ["ate_rmse", "rpe_trans_rmse", "rpe_rot_rmse", "resets",
-            "max_pose_jump"],
+    "max": ["ate_rmse", "ate_kf_rmse", "rpe_trans_rmse", "rpe_rot_rmse",
+            "resets", "max_pose_jump"],
     "min": ["map_on_surface_pct", "map_near_scene_pct"],
 }
 
