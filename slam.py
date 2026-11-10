@@ -3,6 +3,7 @@ import cv2 as cv
 from slam.calibration import IntrinsicsEstimate
 from slam.config.config_parser import ConfigParser
 from slam.core.frame import Frame
+from slam.core.intake import FrameIntakeGate
 from slam.core.map import Map
 from slam.core.tracker import Tracker
 from slam.utils.constants import *
@@ -22,7 +23,10 @@ if __name__ == "__main__":
     ENABLE_MULTISCALE = config.get_global_config_property("enable_multiscale_features")
     ENABLE_BA = config.get_global_config_property("enable_ba")
 
-    cap, K = load_video(config)
+    # Phase 8-1: load_video also returns the config's k1 (0.0 when
+    # absent - the literal identity path). The auto branch returns 0.0;
+    # the prior carries GeoCalib's own k1 there.
+    cap, K, k1 = load_video(config)
     CAP_W, CAP_H = (
         int(cap.get(cv.CAP_PROP_FRAME_WIDTH)),
         int(cap.get(cv.CAP_PROP_FRAME_HEIGHT)),
@@ -52,7 +56,23 @@ if __name__ == "__main__":
             intrinsics_prior)
     else:
         global_map.intrinsics = IntrinsicsEstimate.from_K(
-            K, source="config")
+            K, k1=k1, source="config")
+    # Phase 8-4: the capture's fps, for the TIME normalization of the
+    # frame-count cadence constants (recovery window, rotation-gap
+    # floor, forced-insert backstop). 30.0 is the identity anchor;
+    # cap.get returns 0.0 when the container reports none.
+    container_fps = cap.get(cv.CAP_PROP_FPS) or 30.0
+    global_map.video_fps = container_fps
+    # Phase 8-5: displacement-gated frame intake (finding 33): feed
+    # only frames that carry measurable motion signal, so the pose
+    # chain never noise-fits on sub-pixel displacement. Default ON;
+    # 'enable_adaptive_frame_intake: false' in the config disables it
+    # for A/B. The benchmark harness feeds frame FILES and never
+    # constructs a gate - the frozen battery is untouched.
+    intake_gate = None
+    if config.get_global_config_property("enable_adaptive_frame_intake", True):
+        intake_gate = FrameIntakeGate(
+            FEATURE_EXTRACTOR, ENABLE_MULTISCALE, container_fps)
     renderer = Renderer(global_map, K, W=1920, H=1080)
 
     tracker = Tracker(global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
@@ -90,6 +110,23 @@ if __name__ == "__main__":
                     f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!",
                 )
                 slam_in_progress = False
+                continue
+
+        if intake_gate is not None:
+            # Phase 8-5: the gate decides which decoded frames carry
+            # motion signal. Skipped frames never reach the tracker;
+            # the renderer/pause loop above keeps running (the
+            # `continue` re-enters it). The phase 8-4 cadence
+            # constants deliberately KEEP the container's time base:
+            # video_fps describes physical time, and the recovery
+            # window's health is a COUNT of consecutive quality-
+            # failing checks at the container-normalized scale -
+            # measured A/B on salem's hard segment (2024 decoded):
+            # container-declared 2 resets vs fed-cadence-declared 7
+            # (the latter collapses the window 10 -> 5 fed frames
+            # and re-arms the 8-3 spiral). gate.effective_fps remains
+            # a diagnostic only (fed/decoded ratio).
+            if not intake_gate.should_feed(img):
                 continue
 
         frame = Frame(img, global_map.intrinsics.K,

@@ -83,7 +83,7 @@ class G2OBundleAdjustment:
         self._local_robust_kernel = None
         self._local_vertex_id = 0
 
-    def refine_pose_pnp(self, frame: Frame = None):
+    def refine_pose_pnp(self, frame: Frame = None) -> Tuple[bool, int]:
         """Refine a frame's pose with PnP over its map-point observations.
 
         `frame=None` refines the map's current keyframe (the keyframe path
@@ -92,6 +92,13 @@ class G2OBundleAdjustment:
         instead, so per-frame refinement never applied to the tracked
         trajectory - and every frame re-solved an already-converged stale
         problem (~500 wasted solves on TUM).
+
+        Returns (success, input_count), NOT a robust inlier count. The
+        iterative solve uses every supplied correspondence; no RANSAC or
+        per-measurement inlier mask is computed here. input_count is zero
+        if there is no frame or fewer than four observations (no solve).
+        The legacy minimum/telemetry names containing "inliers" are kept
+        for compatibility, but must not be used as an inlier statistic.
 
         Divergence guards (phase 1b): a solution that is non-finite,
         reprojects worse than PNP_MAX_MEDIAN_REPROJECTION_ERROR over its
@@ -147,13 +154,13 @@ class G2OBundleAdjustment:
             useExtrinsicGuess=True,
             flags=cv.SOLVEPNP_ITERATIVE
         )
-        inliers = np.arange(len(points_3d)).reshape(-1, 1)
+        input_count = len(points_3d)
 
-        if not success or len(inliers) < const.PNP_MINIMUM_INLIERS:
+        if not success or input_count < const.PNP_MINIMUM_INLIERS:
             telemetry.event("pnp_no_solution" if not success else "pnp_few_inliers")
             warning_log(
-                LOG_TAG, f"PnP failed or not enough inliers: {len(inliers)}")
-            return False, len(inliers)
+                LOG_TAG, f"PnP failed or not enough input correspondences: {input_count}")
+            return False, input_count
 
         R_refined, _ = cv.Rodrigues(rvec)
         t_refined = np.asarray(tvec, dtype=np.float64).flatten()
@@ -162,7 +169,7 @@ class G2OBundleAdjustment:
             telemetry.event(f"pnp_guard_{reason}")
             warning_log(
                 LOG_TAG, f"PnP guard rejected solution ({reason}) - keeping seed pose")
-            return False, len(inliers)
+            return False, input_count
 
         # --- Divergence guards: reject and keep the seed pose ---
         if not (np.all(np.isfinite(R_refined)) and np.all(np.isfinite(t_refined))):
@@ -207,13 +214,13 @@ class G2OBundleAdjustment:
         # Update frame pose
         frame.pose = refined_pose
 
-        debug_log(LOG_TAG, f"Pose refined with {len(inliers)} inliers "
+        debug_log(LOG_TAG, f"Pose refined with {input_count} input correspondences "
                            f"(median reproj {median_err:.5f}, "
                            f"center step {center_step:.3f}, "
                            f"rot step {rot_step:.2f} deg).")
         telemetry.event("pnp_ok")
 
-        return True, len(inliers)
+        return True, input_count
 
     def local_bundle_adjustment(self, reference_frame_id: UUID, window_size: int = 5, fix_points=True) -> bool:
         debug_log(

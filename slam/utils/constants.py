@@ -81,6 +81,37 @@ CALIB_GATE_MIN_ROT_AXES = 2
 # doubles as the per-axis accumulated mass and the total floor.
 CALIB_GATE_MIN_ROT_DEG = 15.0
 
+### FRAME INTAKE GATE (phase 8-5, the VIDEO path only) ###
+# Finding 33 (kyoto confirmation): below ~1 px of matched-feature
+# displacement between consecutive fed frames, the two-view geometry
+# is pure noise - kyoto_original at 60 fps has a 0.0 px MEDIAN
+# displacement (sub-pixel motion under ~2.3 gray-levels of appearance
+# noise), the E-chain then claims 0.47 units + 0.114 deg per frame at
+# ~zero true motion, and 6 map wipes happen in 30 s; the SAME
+# content fed at 15 fps (2.4 px median) runs 0 resets / 21K points
+# with the SAME constants. The gate (slam/core/intake.py) feeds a
+# decoded frame only when its median matched-feature displacement vs
+# the LAST FED frame clears this threshold. 2.0 px is the measured
+# healthy edge: above it every fed pair carries real geometric
+# signal; at the noise floor the skipped frames carry sub-noise
+# motion and are information-free to the pose chain. The threshold
+# is in pixels by design; its focal direction is benign (a LONGER
+# focal magnifies displacement -> easier to clear -> feeds more, the
+# safe side; a shorter one starves more, bounded by the valve below).
+FRAME_INTAKE_MIN_DISPLACEMENT_PX = 8.0
+# Safety valve: at a full stop displacement never clears the
+# threshold, but appearance keeps drifting (lighting, dynamic
+# content) - force a feed after this many seconds of container time,
+# converted to DECODED frames at the capture's fps with a 3-frame
+# floor so slow containers keep a regular heartbeat.
+FRAME_INTAKE_MAX_GAP_S = 1.0
+# A displacement MEDIAN needs a sample: fewer good matches than
+# this means the gate cannot measure (scene cut, occlusion,
+# featureless wall) - the frame is fed unconditionally (the
+# conservative choice: the tracker must see state it may need to
+# recover from, and the gate has no basis to skip).
+FRAME_INTAKE_MIN_MATCHES = 10
+
 ### KEYFRAME SELECTION CONSTANTS ###
 MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES = 10
 MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe
@@ -204,6 +235,30 @@ ORB_KEYPOINT_SIZE = 20  # Size of keypoints for feature extraction
 # --- Feature matching constants
 KNN_K_VALUE = 2  # Number of nearest neighbors for KNN matching
 LOWE_RATIO = 0.7  # Lowe's ratio test threshold for feature matching
+# Phase 8-2: the projection-matching search radius, in ANGULAR terms.
+# The pixel radius is resolved per frame as
+#   max(PROJECTION_MATCH_MIN_RADIUS_PX,
+#       round(fx * tan(PROJECTION_MATCH_RADIUS_DEG)))
+# from the LIVE K (so a 2j-4 refit's focal propagates here too).
+# Measurement provenance (finding 32, walking_salem diagnosis): the
+# hard-coded 5 px was implicitly tuned to the benchmark cameras - at
+# tum_xyz's fx=518 it is 0.553 deg of angular tolerance, which is the
+# regime where the pipeline was measured healthy (per-frame E-chain
+# rotation noise median 0.522 deg -> 4.7 px displacement; observations
+# on 80% of frames). The SAME noise (0.557 deg median) on the
+# walking_salem config video (fx=1449.6) is a 14.1 px displacement -
+# 3x outside the fixed radius (0.198 deg tolerance) - collapsing
+# map-observation coverage to 19% of frames and killing per-frame PnP
+# anchoring. Normalizing to the measured-healthy angular tolerance
+# gives that video ~14 px. The FLOOR keeps every benchmark focal
+# (fr/orbit/translation fx=450 -> 4.32 px; tum_xyz fx=517.3 -> 4.97 px;
+# both round below 5) at exactly the historical 5 px, so the frozen
+# battery is bit-identical BY CONSTRUCTION. The descriptor gate
+# (Hamming < 20 at the call site; random-pair distance ~128) remains
+# the correspondence validator - the radius only sets how far the
+# search may look, never what is accepted.
+PROJECTION_MATCH_RADIUS_DEG = 0.55
+PROJECTION_MATCH_MIN_RADIUS_PX = 5
 # RANSAC threshold for essential matrix estimation
 MATCHER_RANSAC_MINIMUM_INLIERS = 8  # Minimum inliers for RANSAC
 MATCHER_RANSAC_THRESHOLD = 0.005
@@ -273,8 +328,18 @@ MIN_RELOCALIZATION_INLIERS = 12
 MIN_AGGRESSIVE_RELOCALIZATION_INLIERS = 8
 
 # --- Reset mechanism constants
-MAX_CONSECUTIVE_RELOCALIZATION_FAILURES = 2  # Reset after 3 failed attempts
-# Reset after 5 successful relocs in a row
+# Phase 8-3: with the hygiene clear in _handle_relocalization_check
+# (genuinely healthy tracking clears both streak counters), these caps
+# count CONSECUTIVE recovery cycles with no healthy frame between them.
+# The success cap is the ineffective-recovery reset: it fires only when
+# a whole streak of recoveries was accepted yet quality never once
+# recovered - at least cap x RELOCALIZATION_FRAME_COUNT consecutive
+# low-quality frames at the needs_recovery cadence - never on successes
+# spread across healthy tracking (finding 30's lifetime bug; finding
+# 32's walking_salem cascade: the cumulative counter wiped the map 7x
+# in 600 frames when better anchoring raised recovery frequency).
+MAX_CONSECUTIVE_RELOCALIZATION_FAILURES = 2  # consecutive failed attempts -> reset
+# consecutive quality-failing recoveries -> reset
 MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS = 5
 
 # --- Loop closure (phase 3). 3a repairs the dormant milestone-3

@@ -16,7 +16,10 @@ Event keys (counted pipeline decisions - deterministic per run):
   match_zero                  zero matches between two frames
   pnp_frame_ok / pnp_frame_fail   outcome of the per-frame PnP call site
   pnp_ok / pnp_few_points / pnp_no_solution / pnp_few_inliers
-                              refine_pose_pnp outcomes (all call sites)
+                               refine_pose_pnp outcomes (all call sites)
+                               pnp_few_inliers is a legacy name: the
+                               iterative solver counts INPUTS, not a
+                               robust inlier set (phase 6b)
   ba_local_call / ba_global_call / ba_success / ba_failure
                               map.optimize BA branch outcomes
   ba_iterations              total LM iterations actually run by BA
@@ -81,6 +84,17 @@ Event keys (counted pipeline decisions - deterministic per run):
                               a correction applied (pose graph), the
                               follow-up global BA re-aligning points,
                               or a failed pose graph
+  intake_first_frame / intake_feed_displacement / intake_forced_max_gap /
+  intake_few_features / intake_few_matches / intake_skip
+                              phase 8-5 displacement-gated frame
+                              intake (video path only - the harness
+                              feeds frame files and never constructs
+                              a gate): why each DECODED frame was fed
+                              (run start; displacement cleared the
+                              threshold vs the last fed frame; the
+                              max-gap time valve fired; measurement
+                              impossible - too few features or too
+                              few matches) or skipped
 """
 import time
 from contextlib import contextmanager

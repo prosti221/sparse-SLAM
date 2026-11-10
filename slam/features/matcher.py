@@ -201,6 +201,11 @@ def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extracti
     matches, Rt = match_features(frame1, frame2, feature_extraction_method,
                                  motion_prior=motion_prior)
 
+    # The list belongs to THIS pair, even when empty. Otherwise a failed
+    # current-to-keyframe match leaves previous-frame trainIdx values
+    # attached, which dedup/triangulation interpret against the wrong KF.
+    frame1.set_match_data(matches)
+
     if len(matches) == 0:
         warning_log(
             LOG_TAG, f"No matches found between frames: {frame1.frame_id} and {frame2.frame_id}")
@@ -213,7 +218,5 @@ def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extracti
 
     debug_log(
         LOG_TAG, f"Found {len(matches)} matches between frames: {frame1.frame_id} and {frame2.frame_id}")
-
-    frame1.set_match_data(matches)
 
     return Rt

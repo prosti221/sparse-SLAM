@@ -1,10 +1,11 @@
-import numpy as np
 import cv2 as cv
-from scipy.spatial.transform import Rotation
+import numpy as np
 from scipy.optimize import least_squares
-from slam.utils.logger import *
-from slam.utils.constants import *
+from scipy.spatial.transform import Rotation
+
 from slam.utils import constants as const
+from slam.utils.constants import *
+from slam.utils.logger import *
 
 LOG_TAG = 'Utils'
 
@@ -18,8 +19,18 @@ def load_video(config):
     H = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
     Fx = config.get_video_property(video_tag, 'fx', default=0)
     Fy = config.get_video_property(video_tag, 'fy', default=Fx)
-    Cx = config.get_video_property(video_tag, 'cx', default=W//2)
-    Cy = config.get_video_property(video_tag, 'cy', default=H//2)
+    Cx = config.get_video_property(video_tag, 'cx', default=W // 2)
+    Cy = config.get_video_property(video_tag, 'cy', default=H // 2)
+    # Phase 8-1: the lens's simple-radial k1 in the 2j-3 normalized
+    # coordinate. Absent -> 0.0, the LITERAL identity path everywhere
+    # k1 is read, so existing configs are bit-identical by construction.
+    # The explicit-intrinsics path returns it alongside K (slam.py flows
+    # it through IntrinsicsEstimate.from_K into every Frame, engaging
+    # the 2j-3 undistort-at-normalization + forward-model projection
+    # boundaries). The 'fx: auto' path returns 0.0 and IGNORES any
+    # explicit k1 by design: GeoCalib supplies both the focal and its
+    # own k1 estimate, consumed through the prior.
+    K1 = config.get_video_property(video_tag, 'k1', default=0.0)
 
     # Phase 2j-2: 'fx: auto' (or an absent/zero fx) switches the video
     # path to GeoCalib auto-calibration - slam.py buffers the first
@@ -29,16 +40,17 @@ def load_video(config):
         info_log(LOG_TAG,
                  f"Loaded video: {VIDEO_PATH} ({int(W)}x{int(H)}) - "
                  "fx: auto -> GeoCalib intrinsics estimation")
-        return cap, None
+        return cap, None, 0.0
 
     K = construct_K(Fx, Fy, Cx, Cy)
 
     info_log(LOG_TAG, f"Loaded video: {VIDEO_PATH} with properties:\n"
              f"  Width: {W}, Height: {H}\n"
              f"  Focal Lengths: Fx={Fx}, Fy={Fy}\n"
-             f"  Principal Point: Cx={Cx}, Cy={Cy}")
+             f"  Principal Point: Cx={Cx}, Cy={Cy}\n"
+             f"  Radial distortion: k1={K1}")
 
-    return cap, K
+    return cap, K, float(K1)
 
 
 def pt_obj_to_array(pts):
@@ -442,15 +454,44 @@ def compute_baseline_distance(frame1, frame2):
 
 
 def compute_new_points_ratio(cur_frame):
-    if len(cur_frame.keypoints) == 0:
+    """Legacy selection signal, deliberately NOT a bounded landmark ratio.
+
+    Missing features/matches contribute no numeric ratio evidence (0).
+    Keep the nonempty-data population and arithmetic unchanged here;
+    replacing that signal is a separate keyframe-policy experiment.
+    """
+    if (cur_frame.keypoints is None or len(cur_frame.keypoints) == 0
+            or cur_frame.matches is None or len(cur_frame.matches) == 0):
         return 0.0
 
-    # We compute the ratio of non-observed matched points vs total matches with prev-frame
+    # ALL unmapped detections / matches with the previous FRAME. These
+    # are different populations, so the retained value may exceed one.
     return cur_frame.num_tracked_features / len(cur_frame.matches)
 
 
+def scaled_frame_count(count, video_fps):
+    """Phase 8-4: convert a FRAME-count constant to the frame count
+    that preserves its TIME meaning at the video's fps. The constants
+    were calibrated (all curated phases) on ~30fps-equivalent content;
+    at 60fps a camera moves half as far per frame, so frame-count
+    thresholds must double to keep the same time/geometric window.
+    30 fps is the identity anchor: scaled == count exactly (and any
+    run path that never sets a video fps - the entire benchmark
+    harness - is bit-identical by construction). At HIGHER fps the
+    scaled value is used (ceil - 59.94 lands on the exact 2x values);
+    at LOWER fps the anchor count is a FLOOR: a 2 fps stream keeps 5
+    recovery frames = 2.5 s (the natural 'several consecutive checks'
+    semantics) - tightening thresholds to fractions of their anchor
+    (ceil alone gives 1 there) would make recovery fire on a single
+    low-quality frame and let rotation insertions go frame-to-frame.
+    """
+    scaled = int(np.ceil(float(count) * float(video_fps) / 30.0))
+    return max(int(count), scaled)
+
+
 def should_insert_keyframe(cur_frame, prev_keyframe,
-                           frames_since_last_keyframe=0):
+                           frames_since_last_keyframe=0,
+                           video_fps=30.0):
     # Constants are read through the module (not the star-imported copies)
     # so benchmark threshold sweeps (--override) can tune them live.
     #
@@ -470,8 +511,14 @@ def should_insert_keyframe(cur_frame, prev_keyframe,
     rotation_deg = float(np.degrees(np.arccos(np.clip(cos_rot, -1.0, 1.0))))
 
     baseline_ok = const.MINIMUM_BASELINE_THRESHOLD <= baseline_distance
+    # Phase 8-4: the rotation-cadence floor is a FRAME count whose
+    # rationale ("never frame-to-frame, where degenerate pairs poison
+    # the map") is about TIME/displacement, not frames - it scales
+    # with the video fps (identity at the 30 fps calibration anchor).
+    # The baseline criterion above is displacement-based and needs no
+    # scaling.
     cadence_allows = frames_since_last_keyframe >= \
-        const.KEYFRAME_ROTATION_MIN_FRAME_GAP
+        scaled_frame_count(const.KEYFRAME_ROTATION_MIN_FRAME_GAP, video_fps)
     rotation_ok = (const.KEYFRAME_MINIMUM_ROTATION_DEG <= rotation_deg
                    and cadence_allows)
     viewpoint_ok = baseline_ok or rotation_ok

@@ -10,6 +10,7 @@ import pytest
 
 import slam.utils.constants as const
 import slam.core.point as point_mod
+import slam.utils.utils as utils
 from slam.core.observation import Observation
 from slam.core.point import Point
 from benchmarks.stages.helpers import make_K, make_frame, yaw_pose, project_gt, set_keypoints
@@ -199,3 +200,88 @@ def test_zero_reprojection_error_does_not_prove_depth_accuracy():
     assert result["validation_code"] == TRIANGULATION_VALIDATION_CODE["VALID"]
     assert result["reprojection_error"] < 1e-8
     assert abs(recovered[2] / truth[2] - 1.0) > 0.25
+
+
+@pytest.mark.parametrize("use_optimization", [False, True])
+def test_compute_triangulation_preserves_metric_geometry_and_match_order(use_optimization):
+    """5f: the optional refinement uses inverse Twc and query/train order.
+
+    Perfect fixed-pose correspondences retain metric scale. Permuted
+    matches must not be confused with the keypoint array order.
+    """
+    prev = make_frame(yaw_pose(-0.1, (-0.2, 0.0, 0.1)), K)
+    cur = make_frame(yaw_pose(0.2, (0.8, 0.1, 0.0)), K)
+    truth = np.array([[0.3, 0.1, 5.0], [-0.4, -0.2, 3.0], [0.1, 0.4, 8.0]])
+    set_keypoints(prev, [project_gt(prev.pose, X, K)[0] for X in truth])
+    set_keypoints(cur, [project_gt(cur.pose, X, K)[0] for X in truth[::-1]])
+    cur.set_match_data([cv.DMatch(0, 2, 0.0), cv.DMatch(2, 0, 0.0),
+                        cv.DMatch(1, 1, 0.0)])
+    poses_before = [prev.pose.copy(), cur.pose.copy()]
+
+    homogeneous = utils.compute_triangulation(cur, prev, use_optimization)
+    recovered = homogeneous[:, :3] / homogeneous[:, 3:4]
+
+    np.testing.assert_allclose(recovered, truth[[2, 0, 1]], atol=1e-5, rtol=0)
+    np.testing.assert_array_equal(prev.pose, poses_before[0])
+    np.testing.assert_array_equal(cur.pose, poses_before[1])
+
+
+def test_optional_refinement_reduces_its_normalized_geometric_objective():
+    """5f: LM refines geometric, not DLT algebraic, error at fixed poses.
+
+    This is a local objective pin, not a claim of better true depth or
+    lower pixel error under arbitrary intrinsics/distortion.
+    """
+    P1 = np.linalg.inv(yaw_pose(0.0))[:3]
+    P2 = np.linalg.inv(yaw_pose(0.25, (0.7, 0.1, 0.2)))[:3]
+    truth = np.array([0.2, 0.1, 5.0])
+
+    def project(P, X):
+        v = P @ np.append(X, 1.0)
+        return v[:2] / v[2]
+
+    pt1 = project(P1, truth) + [0.002, -0.003]
+    pt2 = project(P2, truth) + [-0.001, 0.004]
+    homogeneous = triangulate(P1, P2, pt1[None], pt2[None])[0]
+    linear = homogeneous[:3] / homogeneous[3]
+    refined = utils.optimize_triangulation(pt1, pt2, P1, P2, linear)
+
+    def objective(X):
+        return np.sum((project(P1, X) - pt1) ** 2) + np.sum((project(P2, X) - pt2) ** 2)
+
+    assert refined is not None
+    assert objective(refined) < objective(linear) * 0.995
+
+
+def test_refinement_cannot_repair_epipolar_consistent_wrong_depth():
+    """5f: minimizing an already-zero residual cannot identify image noise."""
+    truth = np.array([0.2, 0.1, 5.0])
+    cur, prev = _validated_pair(yaw_pose(0.0), yaw_pose(0.0, (0.1, 0.0, 0.0)), truth)
+    observed = np.array(cur.keypoints[0].pt) + [2.0, 0.0]
+    set_keypoints(cur, [observed])
+
+    homogeneous = utils.compute_triangulation(cur, prev, use_optimization=True)[0]
+    recovered = homogeneous / homogeneous[3]
+    result = is_valid_triangulated_point(0, cur, prev, recovered)
+
+    assert result["failed_codes"] == []
+    assert result["reprojection_error"] < 1e-5
+    assert abs(recovered[2] / truth[2] - 1.0) > 0.25
+
+
+def test_refinement_failure_falls_back_to_linear_candidate(monkeypatch):
+    """5f: solver failure must not drop/reorder a match or modify its DLT row."""
+    cur, prev = _validated_pair(yaw_pose(0.0), yaw_pose(0.2, (1.0, 0.0, 0.0)),
+                                np.array([0.2, 0.1, 5.0]))
+    linear = utils.compute_triangulation(cur, prev, use_optimization=False)
+    calls = []
+
+    def fail(*args):
+        calls.append(args)
+        return None
+
+    monkeypatch.setattr(utils, "optimize_triangulation", fail)
+    refined = utils.compute_triangulation(cur, prev, use_optimization=True)
+
+    assert len(calls) == 1
+    np.testing.assert_array_equal(refined, linear)

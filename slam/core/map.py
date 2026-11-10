@@ -4,6 +4,7 @@ from typing import List, Tuple, Set
 from uuid import UUID
 import numpy as np
 from slam.utils.logger import info_log, debug_log, error_log, warning_log
+from slam.utils.utils import scaled_frame_count
 from slam.utils.constants import *
 from slam.utils import constants as const
 from slam.utils import telemetry
@@ -37,6 +38,16 @@ class Map:
 
         # Recovery state tracking
         self.consecutive_low_quality_frames = 0
+
+        # Phase 8-4: the source video's fps, for the TIME-normalization
+        # of frame-count cadence constants (RELOCALIZATION_FRAME_COUNT
+        # here; the rotation-gap floor and the forced-insert cap in the
+        # tracker/selection). 30.0 is the identity anchor - the
+        # constants' calibration regime - so every run path that never
+        # sets it (the entire benchmark harness; direct test
+        # construction) is bit-identical by construction. slam.py sets
+        # it from the capture.
+        self.video_fps = 30.0
 
         # Bundle adjustment optimizer
         self.g2o_optimizer = G2OBundleAdjustment(self)
@@ -314,8 +325,15 @@ class Map:
             self.consecutive_low_quality_frames = 0
 
     def needs_recovery(self) -> bool:
+        # Phase 8-4: RELOCALIZATION_FRAME_COUNT is a frame count whose
+        # meaning is a TIME window of sustained low quality (~167 ms at
+        # the 30 fps calibration anchor). At 60 fps the unscaled 5
+        # frames is 83 ms - recovery triggers on transient dips and the
+        # quality-failing streaks (8-3's corrected reset) accumulate
+        # twice as fast. Scale by the video fps; identity at 30.
         return (self.avg_tracking_quality < const.RELOCALIZATION_QUALITY_THRESHOLD and
-                self.consecutive_low_quality_frames >= const.RELOCALIZATION_FRAME_COUNT)
+                self.consecutive_low_quality_frames >=
+                scaled_frame_count(const.RELOCALIZATION_FRAME_COUNT, self.video_fps))
 
     def on_relocalization_successful(self, reference_keyframe_id: UUID):
         self.consecutive_low_quality_frames = 0

@@ -128,12 +128,12 @@ class Tracker:
         # (finding 12). Divergent solutions are guarded and rejected.
         if len(observations) >= 10:
             with telemetry.stage("pnp"):
-                pose_refined = self.map.g2o_optimizer.refine_pose_pnp(
+                pose_refined, input_count = self.map.g2o_optimizer.refine_pose_pnp(
                     self.cur_frame)
             telemetry.event("pnp_frame_ok" if pose_refined else "pnp_frame_fail")
             if pose_refined:
                 debug_log(
-                    LOG_TAG, f"Pose refined with PnP using {len(observations)} observations")
+                    LOG_TAG, f"Pose refined with PnP using {input_count} input correspondences")
             else:
                 debug_log(LOG_TAG, "Pose refinement failed")
 
@@ -280,9 +280,18 @@ class Tracker:
         # per-frame PnP (see finding 9 notes there).
         should_insert, result = should_insert_keyframe(
             self.cur_frame, self.map.cur_keyframe,
-            frames_since_last_keyframe=self.iterations_since_last_keyframe)
+            frames_since_last_keyframe=self.iterations_since_last_keyframe,
+            video_fps=self.map.video_fps)
 
-        if not should_insert and self.iterations_since_last_keyframe < const.MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES:
+        # Phase 8-4: the forced-insert backstop is a FRAME count with a
+        # TIME meaning (~333 ms at the 30 fps calibration anchor); it
+        # scales with the video fps (identity at 30 - the harness
+        # never sets one). Measured on walking_salem: this path never
+        # fires (the baseline criterion pre-empts at ~3 frames), but
+        # the normalization keeps its time meaning at any fps.
+        max_frames_between_kfs = scaled_frame_count(
+            const.MAX_NUMBER_OF_FRAMES_BETWEEN_KEYFRAMES, self.map.video_fps)
+        if not should_insert and self.iterations_since_last_keyframe < max_frames_between_kfs:
             debug_log(
                 LOG_TAG, f"Skipping keyframe insertion criteria not met. {result}")
             return
@@ -323,8 +332,23 @@ class Tracker:
 
     def _match_projected_points(
         self, projected_points: List[Tuple[Point, np.ndarray]],
-        dist_thresh: int = 5
+        dist_thresh: int = None
     ) -> List[Observation]:
+        # Phase 8-2: the search radius is ANGULAR, resolved per call
+        # from the live K (a 2j-4 refit's focal propagates here). The
+        # historical hard-coded 5 px is the floor: every benchmark
+        # focal (450-518) resolves BELOW it and stays at exactly 5 px
+        # (bit-identical battery), while long-focal videos get the
+        # tolerance the pipeline was measured healthy at (0.55 deg -
+        # see PROJECTION_MATCH_RADIUS_DEG's provenance). The descriptor
+        # gate below (<20 Hamming) remains the correspondence
+        # validator; the radius only widens the search.
+        if dist_thresh is None:
+            fx = float(self.cur_frame.K[0, 0])
+            dist_thresh = max(
+                const.PROJECTION_MATCH_MIN_RADIUS_PX,
+                int(round(fx * np.tan(np.radians(
+                    const.PROJECTION_MATCH_RADIUS_DEG)))))
         observations = []
         _, descriptors = self.cur_frame.get_keypoints_descriptors()
         kp_coords = self.cur_frame.kp_pts
@@ -647,15 +671,45 @@ class Tracker:
         self._loop_kfs_since_correction = 0
 
     def _handle_relocalization_check(self):
+        # Phase 8-3: recovery-streak hygiene - 'consecutive' finally
+        # means consecutive. Genuinely healthy tracking (map quality
+        # at or above the recovery threshold) clears BOTH streak
+        # counters, so the success counter reaches its cap only across
+        # recovery cycles with NO healthy frame anywhere between them:
+        # a demonstrated-ineffective recovery streak, never successes
+        # spread across healthy gaps. (Finding 30: the old cumulative
+        # counter survived 265 healthy checks and wiped the map on the
+        # 5th success however far apart; on the walking_salem config
+        # video the better observation coverage raises recovery
+        # frequency and the cumulative cap converted that into 7 map
+        # wipes in 600 frames - finding 32.) The clear is deliberately
+        # gated on QUALITY, not on needs_recovery():
+        # on_relocalization_successful resets
+        # consecutive_low_quality_frames, so the frames after every
+        # successful recovery are always 'no recovery needed' - gating
+        # the clear there would make the cap unreachable dead code.
+        # The failure counter gets the same lifetime: a healthy frame
+        # ends a failure streak too. No telemetry event is added (the
+        # 7a discipline: frozen-control event comparisons stay exact
+        # wherever the intervention changes nothing observable).
+        if self.map.avg_tracking_quality >= const.RELOCALIZATION_QUALITY_THRESHOLD:
+            self.consecutive_successful_relocalizations = 0
+            self.consecutive_relocalization_failures = 0
+            return
         if not self.map.needs_recovery():
             return
 
-        # Check for too many consecutive successful relocalizations before attempting
+        # Phase 8-3: reaching the cap now means a full streak of
+        # recoveries was accepted yet quality never once recovered
+        # between them (the hygiene clear above) - each recovery
+        # demonstrably failed to restore tracking. The reset is the
+        # last resort for a map that cannot support tracking, not a
+        # penalty for successful recoveries.
         debug_log(
             LOG_TAG, f"Checking consecutive successful relocs: {self.consecutive_successful_relocalizations}/{MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS}")
         if self.consecutive_successful_relocalizations >= MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS:
             warning_log(
-                LOG_TAG, f"Too many consecutive successful relocalizations ({self.consecutive_successful_relocalizations}) - map may be unstable, resetting")
+                LOG_TAG, f"{self.consecutive_successful_relocalizations} consecutive relocalizations without quality recovery - map cannot support tracking, resetting")
             self._reset_system()
             return
 
@@ -697,6 +751,22 @@ class Tracker:
             self.map.keyframes) > RELOCALIZATION_WINDOW else self.map.keyframes
 
         for kf in reversed(recent_keyframes):
+            # Finding 29 (rotation/recovery diagnosis): recovery runs AFTER
+            # insertion, so the newest keyframe can BE this frame. Matching
+            # a frame against itself has zero baseline - the two-view
+            # geometry is undefined - yet identical images still fit an
+            # essential matrix with hundreds of epipolar inliers and can
+            # propose a catastrophic ~180deg rotation (measured: RPY
+            # frames 434/553 accepted 686/565-inlier half-turns that
+            # survived as 175.8/179.4deg stream errors; TUM frame 327
+            # accepted a 503-inlier half-turn that only local BA's unwind
+            # happened to contain). A frame is never its own
+            # relocalization reference; the next-newest keyframe is tried
+            # exactly as before. No telemetry event is added so frozen
+            # control comparisons stay exact wherever no self-pair was
+            # ever accepted.
+            if kf is self.cur_frame:
+                continue
             pose, inliers = self._match_frame_to_keyframe(self.cur_frame, kf)
             if inliers >= MIN_RELOCALIZATION_INLIERS:
                 telemetry.event("reloc_success")
@@ -714,6 +784,11 @@ class Tracker:
     def _attempt_aggressive_relocalization(self) -> bool:
         telemetry.event("reloc_aggressive_attempt")
         for kf in reversed(self.map.keyframes):
+            # Same exclusion as _attempt_relocalization (finding 29): the
+            # permissive matcher's relaxed gates admit zero-baseline
+            # self-pairs even more readily than the normal path.
+            if kf is self.cur_frame:
+                continue
             pose, inliers = self._match_frame_to_keyframe_permissive(
                 self.cur_frame, kf)
             if inliers >= MIN_AGGRESSIVE_RELOCALIZATION_INLIERS:

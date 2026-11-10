@@ -3,12 +3,14 @@
 Pure logic tests for should_insert_keyframe - no SLAM run required.
 Documents the actual policy semantics: baseline is a critical condition;
 new-points-ratio and tracking quality are OR-ed quality conditions.
+Phase 8-4 pins: the rotation-cadence floor is TIME-normalized by the
+video fps (identity at the 30 fps calibration anchor).
 """
 import numpy as np
 import pytest
 
 from benchmarks.stages.helpers import make_K, make_frame, yaw_pose, set_keypoints
-from slam.utils.utils import should_insert_keyframe
+from slam.utils.utils import scaled_frame_count, should_insert_keyframe
 
 K = make_K()
 
@@ -402,3 +404,73 @@ def test_cull_redundant_keyframe_requires_min_other_observers():
     assert m.cull_redundant_keyframe() is False
     assert len(m.keyframes) == 12
     assert len(m.points) == 30
+
+
+# --- Phase 8-4: fps-normalized rotation-cadence floor ----------------------
+
+def test_scaled_frame_count_identity_and_scaling():
+    """8-4: 30 fps is the identity anchor (the constants' calibration
+    regime - the benchmark harness never sets a video fps); 60 fps
+    doubles frame counts (ceil, so a threshold never gets tighter);
+    59.94 lands on the exact 2x values; LOWER fps keeps the anchor
+    count as a floor (a 2 fps stream keeps 5 recovery frames - the
+    anchor semantics - never a collapsed single-frame window)."""
+    assert scaled_frame_count(3, 30.0) == 3
+    assert scaled_frame_count(5, 30.0) == 5
+    assert scaled_frame_count(10, 30.0) == 10
+    assert scaled_frame_count(3, 60.0) == 6
+    assert scaled_frame_count(5, 60.0) == 10
+    assert scaled_frame_count(10, 60.0) == 20
+    assert scaled_frame_count(3, 59.94) == 6
+    assert scaled_frame_count(5, 59.94) == 10
+    assert scaled_frame_count(10, 59.94) == 20
+    assert scaled_frame_count(10, 45.0) == 15
+    # low-fps floor: never tighter than the anchor count
+    assert scaled_frame_count(5, 2.0) == 5
+    assert scaled_frame_count(3, 2.0) == 3
+    assert scaled_frame_count(10, 2.0) == 10
+    assert scaled_frame_count(5, 15.0) == 5
+
+
+def test_rotation_floor_scales_with_video_fps():
+    """8-4: at 60 fps the rotation trigger needs the same accumulated
+    TIME/displacement as at 30 fps - a gap-3 rotation insertion is
+    rejected (the camera moved half as far); gap 6 is admitted. At the
+    default 30 fps the historical gap-3 behavior is unchanged."""
+    prev_kf = _policy_frame(yaw_pose(0.0, (0, 0, 0)), 0.5)
+
+    def rotated_frame(gap_rotation):
+        # ~2 deg accumulated rotation (>= KEYFRAME_MINIMUM_ROTATION_DEG)
+        return _policy_frame(yaw_pose(np.radians(2.0), (0.1, 0, 0)), 0.5)
+
+    cur = rotated_frame(2.0)
+
+    # 30 fps (default): gap 3 admits the rotation trigger
+    should, _ = should_insert_keyframe(cur, prev_kf,
+                                       frames_since_last_keyframe=3,
+                                       video_fps=30.0)
+    assert should
+
+    # 60 fps: gap 3 is now frame-to-frame in TIME - rejected
+    should, _ = should_insert_keyframe(cur, prev_kf,
+                                       frames_since_last_keyframe=3,
+                                       video_fps=60.0)
+    assert not should
+
+    # 60 fps: gap 6 restores the same time window - admitted
+    should, _ = should_insert_keyframe(cur, prev_kf,
+                                       frames_since_last_keyframe=6,
+                                       video_fps=60.0)
+    assert should
+
+
+def test_baseline_criterion_is_fps_independent():
+    """8-4: the baseline criterion is displacement-based - it needs no
+    time normalization and behaves identically at any fps."""
+    prev_kf = _policy_frame(yaw_pose(0.0, (0, 0, 0)), 0.5)
+    cur = _policy_frame(yaw_pose(0.0, (3.0, 0, 0)), 0.5)
+    for fps in (30.0, 59.94, 60.0, 120.0):
+        should, _ = should_insert_keyframe(cur, prev_kf,
+                                           frames_since_last_keyframe=1,
+                                           video_fps=fps)
+        assert should, fps
