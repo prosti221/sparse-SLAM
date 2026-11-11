@@ -13,8 +13,31 @@ from slam.core.frame import Frame
 from slam.core.observation import Observation
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 from slam.loop_closure import LoopClosureCandidate, KeyframeFeatureDatabase, LoopClosureDetector, PoseGraphOptimizer
+from slam import loop_closure
 
 LOG_TAG = 'Map'
+
+
+class ArchivedMap:
+    """Phase 10: a frozen pre-reset map - the relocalization target
+    that replaces reset amnesia (finding 32's measured middle path:
+    disabling the success cap alone yielded zero resets and a
+    continuously accumulating map, so the reset is a legitimate last
+    resort whose COST is the discarded world).
+
+    Holds the SAME Frame/Point objects the live map held (moved, not
+    copied: the live collections are cleared immediately after; the
+    cross-object structure the PnP validation needs - keyframe poses,
+    point positions, descriptors and the point-side observation
+    registry - survives intact). Read-only by convention: after the
+    reset, nothing in the live pipeline holds these objects except
+    the archive (the about-to-be-origin frame is EXCLUDED before
+    archiving - see Map.archive_current_state).
+    """
+
+    def __init__(self, keyframes: List[Frame], points: List[Point]):
+        self.keyframes = keyframes
+        self.points = points
 
 
 class Map:
@@ -64,6 +87,15 @@ class Map:
         self.feature_db = KeyframeFeatureDatabase()
         self.loop_detector = LoopClosureDetector(self, self.feature_db)
         self.pose_graph_optimizer = PoseGraphOptimizer(self)
+
+        # Phase 10: frozen pre-reset maps (archive-and-re-anchor). A
+        # reset appends the current map here BEFORE clearing it
+        # (tracker._reset_system -> archive_current_state); the
+        # archive is the recovery machinery's last-resort
+        # relocalization target. Empty on every run that never resets
+        # (all four curated sequences) - the curated battery is
+        # untouched by construction.
+        self.archives: List[ArchivedMap] = []
 
     def add_points(self, points: List[Point]):
         new_points = []
@@ -341,6 +373,38 @@ class Map:
         self.optimize(enable_ba=True)
         info_log(
             LOG_TAG, f"Successfully relocalized to keyframe {reference_keyframe_id}")
+
+    def archive_current_state(self, exclude_frame: Frame = None):
+        """Phase 10: freeze the current map as an ArchivedMap, called
+        by the tracker's _reset_system BEFORE map.reset() clears the
+        collections (the objects move into the archive; reset()
+        itself stays pure amnesia so every other reset caller is
+        unaffected).
+
+        exclude_frame: the frame about to become the NEW origin. The
+        reset immediately overwrites its pose to identity and re-adds
+        it to the live map - archiving it would alias an object the
+        live pipeline keeps mutating (its archive geometry would be
+        corrupted in place). A map whose only keyframe IS the
+        about-to-be-origin has nothing to relocalize against and is
+        not archived.
+        """
+        if not loop_closure.RECOVERY_ARCHIVE_ENABLED:
+            return
+        kfs = [kf for kf in self.keyframes if kf is not exclude_frame]
+        if not kfs:
+            return
+        self.archives.append(ArchivedMap(kfs, list(self.points)))
+        info_log(LOG_TAG, f"Archived pre-reset map: {len(kfs)} keyframes, "
+                 f"{len(self.points)} points (recovery relocalization "
+                 f"target)")
+
+    def rebuild_point_coords(self):
+        """Phase 10: the add_points coordinate-dedup set must follow
+        the live geometry after the re-anchoring write (every map
+        point is rigidly moved into the archive's world frame)."""
+        self.point_coords = {tuple(np.round(pt.pt_3d, 3))
+                             for pt in self.points}
 
     def reset(self):
         info_log(LOG_TAG, "Resetting map - clearing all data")

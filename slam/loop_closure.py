@@ -45,6 +45,28 @@ from slam.utils.utils import extractRtFromE
 
 LOG_TAG = 'LoopClosure'
 
+# Phase 9 recovery validation kill-switch. MODULE-level for now: the
+# user's constants.py is a live experiment file (their intake sweep),
+# so this lands beside the only code that reads it and migrates to
+# the constants module (the --override-sweepable convention) once
+# their file stabilizes. An INT flag, not a bool - the --override
+# parser's type(current)(value) trap (bool("0") is True). Read via
+# this module's namespace at CALL time so probes can patch it
+# in memory for A/B.
+RECOVERY_VALIDATION_ENABLED = 1
+
+# Phase 10 archive kill-switch + archive-query scan bound (same
+# module-level placement / INT-flag convention / call-time reads as
+# RECOVERY_VALIDATION_ENABLED). OFF reproduces legacy amnesia
+# exactly: no archive is created at reset, and the archive recovery
+# returns before any work. The scan bound caps the archived-keyframe
+# candidates examined per recovery cycle (newest-first, early-out on
+# the first verified match); resets are rare so archives are few,
+# but a salem-scale pre-reset map holds 150+ keyframes and a recovery
+# spiral must not pay for all of them every cycle.
+RECOVERY_ARCHIVE_ENABLED = 1
+RECOVERY_ARCHIVE_SCAN_LIMIT = 40
+
 
 class LoopClosureCandidate(NamedTuple):
     """Represents a potential loop closure between two keyframes"""
@@ -547,6 +569,182 @@ class LoopClosureDetector:
             debug_log(LOG_TAG, f"Rotation disagreement {ang:.1f} deg "
                       f"above {const.LOOP_MAX_ROTATION_DISAGREEMENT_DEG}")
             return False
+        return True
+
+    def map_anchored_pnp_pose(self, frame: Frame, match_kf: Frame,
+                              points) -> Tuple[Optional[np.ndarray],
+                                               Optional[dict]]:
+        """Phase 10 shared front: the reloc-grade map-anchored PnP over
+        a candidate keyframe's described map points, parameterized by
+        the POINT SOURCE (the live map for phase 9's validation, an
+        ArchivedMap's points for phase 10's archive recovery).
+
+        Descriptor-match the frame against the candidate's point-side
+        described map points (BF knn + LOWE_RATIO, no cv-RNG draws),
+        deterministic PnP RANSAC (`_pnp_ransac` - seeded per call),
+        gate on the loop-measured quality stack (inliers / ratio /
+        median TRUE-pixel reprojection).
+
+        Returns (pose_pnp, diagnostics) on success - the pose is
+        METRIC in the point set's world frame (PnP resolves the
+        monocular scale against the 3D points; the E-chain cannot -
+        why the archive recovery commits the PnP pose, not an E-chain
+        proposal). Returns (None, {'reason': ...}) on every gate
+        failure or inability: a low-quality PnP cannot arbitrate
+        anything (phase 9's no-basis principle).
+        """
+        corr = []  # (pt_3d, descriptor, Point) rows
+        for pt in points:
+            if pt.is_observed_by(match_kf.frame_id) and pt.descriptor is not None:
+                corr.append((pt.pt_3d, pt.descriptor, pt))
+        if len(corr) < const.LOOP_MIN_CORRESPONDENCES:
+            return None, {'reason': 'sparse_candidate',
+                          'described_points': len(corr)}
+
+        _, frame_desc = frame.get_keypoints_descriptors()
+        if frame_desc is None or len(frame_desc) == 0:
+            return None, {'reason': 'featureless_frame'}
+        point_descs = np.asarray([c[1] for c in corr])
+        bf = cv.BFMatcher(cv.NORM_HAMMING)
+        knn = bf.knnMatch(frame_desc, point_descs, k=2)
+        q_idx, c_idx = [], []
+        for pair in knn:
+            if len(pair) < 2:
+                continue
+            m, n = pair
+            if m.distance < const.LOWE_RATIO * n.distance:
+                q_idx.append(m.queryIdx)
+                c_idx.append(m.trainIdx)
+        if len(q_idx) < const.LOOP_MIN_CORRESPONDENCES:
+            return None, {'reason': 'few_correspondences',
+                          'correspondences': len(q_idx)}
+
+        obj = np.asarray([corr[c][0] for c in c_idx], dtype=np.float32)
+        img = frame.kp_pts_norm[q_idx].astype(np.float32)
+        rvec, tvec, inliers = self._pnp_ransac(obj, img, frame.K[0, 0])
+        if rvec is None or len(inliers) < const.LOOP_MIN_INLIERS:
+            return None, {'reason': 'pnp_failed',
+                          'inliers': 0 if rvec is None else len(inliers)}
+        if len(inliers) / len(q_idx) < const.LOOP_MIN_INLIER_RATIO:
+            return None, {'reason': 'low_inlier_ratio',
+                          'ratio': len(inliers) / len(q_idx)}
+
+        # median inlier reprojection in TRUE pixels
+        R_pnp, _ = cv.Rodrigues(rvec)
+        obj_in = obj[inliers]
+        Xc = (R_pnp @ obj_in.T).T + tvec.ravel()
+        proj = Xc[:, :2] / Xc[:, 2:3]
+        err_px = (np.linalg.norm(proj - img[inliers], axis=1)
+                  * frame.K[0, 0])
+        if np.median(err_px) > const.LOOP_MAX_MEDIAN_REPROJ_PX:
+            return None, {'reason': 'median_reprojection',
+                          'median_err_px': float(np.median(err_px))}
+
+        pose_pnp = self._twc_from_pnp(rvec, tvec)
+        diag = {'inliers': inliers, 'q_idx': q_idx, 'c_idx': c_idx,
+                'img': img, 'corr': corr, 'obj': obj,
+                'n_correspondences': len(q_idx),
+                'median_err_px': float(np.median(err_px))}
+        return pose_pnp, diag
+
+    def verify_archive_recovery(self, frame: Frame, match_kf: Frame,
+                                points) -> Optional[np.ndarray]:
+        """Phase 10: the loop-grade verification stack for an ARCHIVE
+        recovery candidate - map_anchored_pnp_pose plus the E-vs-PnP
+        ROTATION CROSS- CHECK (the archive path has no E-chain proposal
+        for the phase-9 disagreement check; the PnP IS the estimator,
+        so it gets the loop detector's degeneracy guard: the archived
+        keyframe's own observations of the inlier points give the
+        match-side view, and a mirrored / degenerate PnP shows up as a
+        rotation disagreement).
+
+        Returns the metric map-anchored pose (in the ARCHIVE's world
+        frame), or None on any gate failure.
+        """
+        pose_pnp, diag = self.map_anchored_pnp_pose(frame, match_kf, points)
+        if pose_pnp is None:
+            debug_log(LOG_TAG, f"Archive candidate rejected: "
+                      f"{diag.get('reason')}")
+            return None
+        R_pnp_rel = (np.linalg.inv(match_kf.pose) @ pose_pnp)[:3, :3]
+        corr_rows = [diag['corr'][c] for c in
+                     np.asarray(diag['c_idx'])[diag['inliers']]]
+        if not self._rotation_agrees(match_kf, diag['img'],
+                                     diag['inliers'], corr_rows,
+                                     R_pnp_rel):
+            debug_log(LOG_TAG, "Archive candidate rejected: PnP "
+                      "rotation cross-check failed")
+            return None
+        debug_log(LOG_TAG, f"Archive candidate verified: "
+                  f"{len(diag['inliers'])}/{diag['n_correspondences']} "
+                  f"inliers, median reproj "
+                  f"{diag['median_err_px']:.2f}px")
+        return pose_pnp
+
+    def validate_map_anchored_pose(self, frame: Frame, match_kf: Frame,
+                                   proposed_pose: np.ndarray) -> bool:
+        """Phase 9 recovery validation: check a recovery proposal
+        against the map BEFORE the caller commits anything.
+
+        The defect class (finding 29): both recovery paths accepted
+        candidates on epipolar inlier support alone and committed
+        immediately - RPY frames 434/553 accepted 686/565-inlier
+        half-turns that survived as 175.8/179.4-deg stream errors
+        DESPITE the per-frame PnP guard rejecting them afterwards;
+        recovery had no rollback (local BA unwound 579/681, the rest
+        persisted). 7a removed the zero-baseline self-pair admission
+        path; this closes the remaining no-validation architecture.
+
+        REJECT only on POSITIVE contradiction (phase 10 refactor: the
+        correspondence/PnP/quality work lives in
+        map_anchored_pnp_pose; this wrapper keeps the phase-9
+        contract bit-for-bit): a HIGH-QUALITY PnP whose rotation
+        disagrees with the proposal by more than
+        LOOP_MAX_ROTATION_DISAGREEMENT_DEG. Every inability to
+        validate - sparse candidate, too few Lowe matches, PnP
+        failure, or a low-quality PnP that cannot arbitrate - ACCEPTS
+        exactly as the legacy path (the intake gate's no-basis
+        principle: young / post-reset sparse maps keep their
+        recovery).
+
+        Returns True (accept) / False (reject). Fires no telemetry;
+        the tracker hook owns the rejection event so it fires only on
+        actual rejections (the 7a discipline: exact frozen-control
+        comparisons wherever the gate is silent).
+        """
+        if not RECOVERY_VALIDATION_ENABLED:
+            # Flag OFF: bit-transparent - return before constructing
+            # a matcher or touching anything.
+            return True
+
+        pose_pnp, diag = self.map_anchored_pnp_pose(
+            frame, match_kf, self.map.points)
+        if pose_pnp is None:
+            debug_log(LOG_TAG, f"Validation: cannot arbitrate "
+                      f"({diag.get('reason')}) - no basis to validate, "
+                      "accepting")
+            return True
+
+        # --- the positive contradiction: a high-quality map-anchored
+        #     pose disagreeing with the proposal. The angle is between
+        #     ABSOLUTE rotations (both poses are world-frame); a
+        #     half-turn proposal shows up as ~180 deg against the
+        #     map-anchored truth.
+        dR = proposed_pose[:3, :3].T @ pose_pnp[:3, :3]
+        ang = np.degrees(np.arccos(
+            np.clip((np.trace(dR) - 1.0) / 2.0, -1.0, 1.0)))
+        if ang > const.LOOP_MAX_ROTATION_DISAGREEMENT_DEG:
+            debug_log(LOG_TAG, f"Validation: REJECTING recovery "
+                      f"proposal - map-anchored PnP disagrees by "
+                      f"{ang:.1f} deg (bound "
+                      f"{const.LOOP_MAX_ROTATION_DISAGREEMENT_DEG}), "
+                      f"{len(diag['inliers'])}/{diag['n_correspondences']} "
+                      f"inliers, median reproj "
+                      f"{diag['median_err_px']:.2f}px")
+            return False
+        debug_log(LOG_TAG, f"Validation: proposal agrees with the map "
+                  f"({ang:.1f} deg, {len(diag['inliers'])}/"
+                  f"{diag['n_correspondences']} inliers) - accepting")
         return True
 
 class PoseGraphConstraint:
