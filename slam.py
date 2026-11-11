@@ -77,6 +77,19 @@ if __name__ == "__main__":
 
     tracker = Tracker(global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
 
+    # Phase 13 (finding 37): the rotation-dominant pair-pose gate is
+    # VIDEO-PATH scoped and - the measured part - tied to the INTAKE
+    # GATE's cadence: the t-coherence signal only exists when fed
+    # pairs carry >= FRAME_INTAKE_MIN_DISPLACEMENT_PX of matched-
+    # feature displacement (above the ORB quantization noise); at a
+    # stride-1 every-frame feed (the harness, or the config's
+    # 'enable_adaptive_frame_intake: false') the signal is not
+    # measurable (13c: the synthetic stride-1 sequences read
+    # incoherent on real translation). The benchmark harness never
+    # reaches this line - the frozen battery is bit-identical by
+    # construction.
+    tracker.rotation_model_enabled = intake_gate is not None
+
     renderer.start()
 
     if RECORD_SESSION:

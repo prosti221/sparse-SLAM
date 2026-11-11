@@ -16,6 +16,14 @@ from slam.utils.logger import *
 from slam.utils import telemetry
 from slam.features.matcher import *
 from slam.features.feature_extractor import FeatureExtractor
+# Phase 10 flags (RECOVERY_ARCHIVE_ENABLED / RECOVERY_ARCHIVE_SCAN_LIMIT)
+# live beside their machinery in the loop-closure module (the user's
+# constants.py is a live experiment file); read at CALL time via this
+# module alias so probes patch them in memory for A/B.
+import slam.loop_closure as loop_closure_mod
+# Phase 13 rotation-model flags/constants (ROTATION_MODEL_*): same
+# module-level convention, read at CALL time for in-memory A/B.
+import slam.features.matcher as matcher_mod
 
 LOG_TAG = 'Tracker'
 
@@ -62,6 +70,22 @@ class Tracker:
         # a correction resets it to 0).
         self._loop_kfs_since_correction = const.LOOP_CORRECTION_COOLDOWN_KF
 
+        # Phase 13: the rotation-dominant pair-pose gate (finding 37).
+        # VIDEO-PATH ONLY - slam.py enables it where it wires the
+        # intake gate (the coherence signal exists only at the fed
+        # cadence, where pairs carry >= 8 px of displacement above
+        # the ORB quantization noise; the benchmark harness's
+        # stride-1 feeds and every harness-path diagnostic keep the
+        # default OFF and are bit-identical by construction).
+        self.rotation_model_enabled = False
+        # The t-coherence EMA state (see
+        # _update_rotation_model_gate): EMA of |cos| between
+        # consecutive frame-chain pair E-t directions, the previous
+        # pair's unit t, and the sticky engagement flag.
+        self._rot_model_ema = None
+        self._rot_model_prev_t = None
+        self._rot_model_engaged = False
+
     def update(self, new_frame: Frame) -> bool:
         # Extract features from the new frame
         with telemetry.stage("extract"):
@@ -93,6 +117,12 @@ class Tracker:
             Rt = match_features_between_frames(
                 self.cur_frame, self.prev_frame, self.feature_extraction_method,
                 motion_prior=motion_prior)
+        # Phase 13: the t-coherence gate. The legacy E path ALWAYS
+        # runs first, identically (same cv-RNG consumption, same
+        # match data, same events) - the EMA is fed by its
+        # translation directions, and only the COMMITTED pose step
+        # swaps when the gate is engaged.
+        Rt = self._update_rotation_model_gate(Rt)
         if Rt is not None:
             # Refine the kinematic estimate with the feature-based relative
             # pose: Twc_cur = Twc_prev @ T_{prev<-cur}
@@ -163,6 +193,92 @@ class Tracker:
             self._handle_relocalization_check()
 
         return self.cur_frame.is_keyframe
+
+    def _update_rotation_model_gate(self, Rt):
+        """Phase 13: the t-coherence rotation-dominant gate (finding
+        37; the 13a-13c measured baseline arc in IMPROVEMENT.md).
+
+        On rotation-only motion the E-chain pair pose is degenerate -
+        with true t~0 the epipolar constraint holds for ANY
+        translation, so every pair commits unit-normalized |t|=1.0
+        in noise-driven directions (measured on the kyoto_2_5 pan:
+        forward / backward / backward / forward across 4 sampled
+        pairs, 100-220 map units of accumulated fake translation on
+        a pan in place). Five PER-PAIR gate candidates died in
+        measurement; what separates rotation-only motion from real
+        translation is TEMPORAL - real translation keeps the
+        committed t direction coherent pair after pair, rotation-only
+        commits noise. This gate tracks exactly that: an EMA of
+        |cos(t_k, t_{k-1})| over consecutive frame-chain pair E-t
+        directions.
+
+        Semantics (13c-pinned constants, sticky both ways): ENGAGE the
+        rotation model when the EMA drops below
+        ROTATION_MODEL_T_COHERENCE_ENGAGE; RE-ARM legacy when it
+        recovers above ROTATION_MODEL_T_COHERENCE_REARM. No basis
+        (run start, a failed pair) never updates the EMA and never
+        engages - the legacy estimate always stands when the gate
+        cannot arbitrate. The legacy E estimate ALWAYS runs first and
+        feeds the EMA even while engaged (so real translation
+        re-arms); the engaged commit swaps only the pose step for
+        rotation_model_pose_between_frames' [R | 0] and its consensus
+        matches.
+
+        VIDEO-PATH ONLY (self.rotation_model_enabled, set by slam.py
+        where it wires the intake gate; default False): the coherence
+        signal exists only at the fed cadence (>= 8 px pairs, above
+        the ORB quantization noise); the benchmark harness and every
+        harness-path diagnostic keep the legacy path bit-identical by
+        construction.
+
+        Returns the pair pose to COMMIT (the legacy Rt, or the
+        rotation-model override).
+        """
+        if (not self.rotation_model_enabled
+                or not matcher_mod.ROTATION_MODEL_ENABLED):
+            return Rt
+
+        # --- feed the EMA from the legacy E translation directions ---
+        if Rt is not None:
+            t = Rt[:3, 3]
+            norm = float(np.linalg.norm(t))
+            if norm > 1e-9:
+                if self._rot_model_prev_t is not None:
+                    c = abs(float(np.dot(t, self._rot_model_prev_t)) / norm)
+                    a = matcher_mod.ROTATION_MODEL_EMA_ALPHA
+                    self._rot_model_ema = (
+                        c if self._rot_model_ema is None
+                        else a * self._rot_model_ema + (1.0 - a) * c)
+                self._rot_model_prev_t = t.copy()
+
+        if self._rot_model_ema is None:
+            # No basis yet: the run start / every pair so far failed.
+            return Rt
+
+        # --- sticky engage / re-arm ---
+        if not self._rot_model_engaged:
+            if self._rot_model_ema < matcher_mod.ROTATION_MODEL_T_COHERENCE_ENGAGE:
+                self._rot_model_engaged = True
+                telemetry.event("pair_rotation_model_engage")
+                debug_log(LOG_TAG, f"Rotation model ENGAGED (t-coherence "
+                          f"EMA {self._rot_model_ema:.3f})")
+        elif self._rot_model_ema > matcher_mod.ROTATION_MODEL_T_COHERENCE_REARM:
+            self._rot_model_engaged = False
+            telemetry.event("pair_rotation_model_rearm")
+            debug_log(LOG_TAG, f"Rotation model re-armed legacy (t-coherence "
+                      f"EMA {self._rot_model_ema:.3f})")
+
+        if not self._rot_model_engaged or Rt is None:
+            return Rt
+
+        Rt_rot = rotation_model_pose_between_frames(
+            self.cur_frame, self.prev_frame,
+            self.feature_extraction_method)
+        if Rt_rot is None:
+            # No rotation consensus for this pair: the legacy
+            # estimate stands (the no-basis principle).
+            return Rt
+        return Rt_rot
 
     def _initialize(self):
         self.cur_frame.pose = self._get_next_pose_estimate()
@@ -723,6 +839,21 @@ class Tracker:
             debug_log(LOG_TAG, "Aggressive relocalization successful!")
             return
 
+        # Phase 10: the frozen pre-reset maps are the LAST recovery
+        # resort before the failure path. A verified cross-map match
+        # (the loop-grade PnP stack against an archived keyframe's
+        # map points) re-anchors the ENTIRE live map into the
+        # archive's world frame: the emitted trajectory continues
+        # there instead of re-originating at identity (the 10a probe
+        # measured the amnesia alternative - total map loss plus an
+        # immediate post-reset re-collapse). No archives exist on
+        # any run that never reset (the whole curated battery), so
+        # this returns before any event or work there.
+        if self._attempt_archive_relocalization():
+            debug_log(LOG_TAG, "Archive relocalization successful - "
+                      "map re-anchored into the pre-reset world frame")
+            return
+
         # Relocalization failed completely. NOTE: latent bug fixed in
         # 2j-4 (exposed by the sparse volume-scene probes): this
         # counter was incremented through self.map - the attribute
@@ -804,6 +935,101 @@ class Tracker:
                 return True
         return False
 
+    def _attempt_archive_relocalization(self) -> bool:
+        """Phase 10: the frozen pre-reset maps as the last recovery
+        resort (archive-and-re-anchor instead of amnesia).
+
+        Candidates are the archived keyframes, newest archive first,
+        newest keyframe first within each (the reset just happened -
+        the current view is nearest the pre-reset map's END). Each
+        candidate runs the loop-grade verification stack
+        (`verify_archive_recovery`: descriptor match against the
+        candidate's archived map points -> deterministic PnP RANSAC ->
+        the inlier / ratio / median-TRUE-px gates -> the E-vs-PnP
+        rotation cross-check). There is no E-chain proposal here by
+        design: the PnP pose IS the estimate, because it is METRIC in
+        the archive's world frame (PnP resolves the monocular scale
+        against 3D points; an E-chain relative pose composed onto the
+        archived keyframe would carry unit-scale translation).
+
+        A verified pose re-anchors the ENTIRE live map into the
+        archive's world frame (see _reanchor_map_to), then commits
+        exactly like the other recovery paths: velocity reset, the
+        success counter, the quality-streak clear + local BA via
+        on_relocalization_successful. The scan bound caps the
+        candidates examined per cycle (early-out on the first
+        verified match).
+
+        The attempt event fires only when archives EXIST - recovery
+        on a run that never reset (the whole curated battery) returns
+        before any event or work, so frozen-control comparisons stay
+        exact.
+        """
+        if not loop_closure_mod.RECOVERY_ARCHIVE_ENABLED:
+            return False
+        if not self.map.archives:
+            return False
+        telemetry.event("reloc_archive_attempt")
+        scanned = 0
+        for archive in reversed(self.map.archives):
+            for kf in reversed(archive.keyframes):
+                if scanned >= loop_closure_mod.RECOVERY_ARCHIVE_SCAN_LIMIT:
+                    debug_log(LOG_TAG, "Archive scan bound reached "
+                              "without a verified match")
+                    return False
+                scanned += 1
+                pose_pnp = self.map.loop_detector.verify_archive_recovery(
+                    self.cur_frame, kf, archive.points)
+                if pose_pnp is None:
+                    continue
+                telemetry.event("reloc_archive_success")
+                info_log(LOG_TAG, f"Archive relocalization: verified "
+                         f"against archived keyframe {kf.frame_id} "
+                         f"({scanned} candidates scanned) - re-anchoring "
+                         f"the live map into the pre-reset world frame")
+                self._reanchor_map_to(pose_pnp)
+                self.cur_frame.pose = pose_pnp
+                # The reloc precedent: never feed the pose jump into
+                # the constant-velocity model.
+                self.velocity = np.eye(4)
+                self.consecutive_successful_relocalizations += 1
+                self.map.on_relocalization_successful(kf.frame_id)
+                return True
+        return False
+
+    def _reanchor_map_to(self, pose_pnp: np.ndarray):
+        """Phase 10: rigidly move the ENTIRE live map into a recovered
+        world frame (the archive's). The verified PnP pose is the
+        current frame's pose in the ARCHIVE frame; the live map's
+        poses are in its own (identity-origin) frame; G transforms
+        every live keyframe pose and point position so the map and
+        the recovered pose live in ONE frame (a mixed-frame map
+        would corrupt every downstream projection and BA solve).
+
+        RIGID only - the live map's internal scale is preserved; if
+        the live and archive scales disagree, the re-anchored live
+        geometry sits in the archive frame at its own scale (phase
+        3's parked Sim3 question - recorded open, measured before
+        anything more is adopted). The persistent local-BA graph is
+        invalidated BEFORE the write (the 5e-0 discipline for
+        external pose/point mutations), and the add_points dedup set
+        is rebuilt from the moved geometry.
+        """
+        # Invalidation BEFORE any external write (the 5e-0 lesson:
+        # the persistent graph's retained estimates must never be
+        # mixed with a re-gauged map).
+        self.map.g2o_optimizer.reset_persistent_graph()
+        G = pose_pnp @ np.linalg.inv(self.cur_frame.pose)
+        for kf in self.map.keyframes:
+            kf.pose = G @ kf.pose
+        R, t = G[:3, :3], G[:3, 3]
+        for pt in self.map.points:
+            pt.pt_3d = R @ pt.pt_3d + t
+        # Observations read Point.pt_3d through a live property, so
+        # they follow automatically; only the dedup set needs the
+        # rebuild.
+        self.map.rebuild_point_coords()
+
     def _match_frame_to_keyframe(self, frame: Frame, keyframe: Frame) -> Tuple[Optional[np.ndarray], int]:
         matches, Rt = match_features(
             frame, keyframe, self.feature_extraction_method)
@@ -830,7 +1056,29 @@ class Tracker:
                 return None, 0
             # Rt is the pose of this frame expressed in the keyframe's frame
             # (T_{kf<-frame}), so: Twc_frame = Twc_keyframe @ Rt
-            return keyframe.pose @ Rt, inliers
+            pose = keyframe.pose @ Rt
+            # Phase 9 recovery validation: the proposal is checked
+            # against the map BEFORE any state is committed (finding
+            # 29: recovery accepted high-inlier E-proposals - including
+            # ~180-deg half-turns - with no geometric check and no
+            # rollback; the per-frame PnP guard rejected the pose only
+            # AFTER commit). A rejected candidate returns exactly like a
+            # failed match - the caller's loop falls through to the
+            # next candidate, the pose was never written, the streaks
+            # were never cleared, and the aggressive path's
+            # remove_keyframes_after never ran (rollback is factored
+            # out). The gate rejects only on positive contradiction
+            # and accepts wherever it cannot validate (see
+            # validate_map_anchored_pose); the telemetry event fires
+            # only on rejection so frozen-control comparisons stay
+            # exact wherever the gate is silent (the 7a discipline).
+            if not self.map.loop_detector.validate_map_anchored_pose(
+                    frame, keyframe, pose):
+                telemetry.event("reloc_rejected_validation")
+                debug_log(LOG_TAG, "Recovery proposal rejected by "
+                          "map-anchored validation - trying next candidate")
+                return None, 0
+            return pose, inliers
 
         return None, 0
 
@@ -856,6 +1104,16 @@ class Tracker:
     def _reset_system(self):
         telemetry.event("system_reset")
         info_log(LOG_TAG, "System reset triggered - clearing map and restarting")
+
+        # Phase 10: archive-and-re-anchor replaces amnesia (finding
+        # 32's measured middle path). The pre-reset map is FROZEN as
+        # the recovery machinery's last-resort relocalization target
+        # BEFORE the clear - the objects move into the archive intact
+        # (poses, points, descriptors, observations). The current
+        # frame is excluded: it becomes the new origin immediately
+        # after, and the archive must not alias an object the live
+        # pipeline keeps mutating.
+        self.map.archive_current_state(exclude_frame=self.cur_frame)
 
         # Reset the map completely
         self.map.reset()

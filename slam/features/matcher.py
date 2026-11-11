@@ -12,6 +12,59 @@ LOG_TAG = 'Matcher'
 # Matcher cache to avoid recreating expensive matcher objects
 _matcher_cache: Dict[str, cv.DescriptorMatcher] = {}
 
+# ===== Phase 13: the rotation-dominant pair pose (finding 37) =====
+# Module-level flags + constants beside the machinery (the phase 9/10
+# convention - the user's constants.py is their live experiment file).
+# INT for the enable flag: the --override parser's type(current)(value)
+# trap (bool("0") is True). Read at CALL time via this module's
+# namespace so probes can pin them in memory for A/B.
+#
+# The finding-37 defect: on rotation-only motion the E-chain pair pose
+# is degenerate (with true t~0 the epipolar constraint holds for ANY
+# translation - a one-parameter exact-solution family), so every pair
+# commits unit-normalized |t|=1.0 in noise-driven INCOHERENT directions
+# plus a ~12% shrunken rotation. Five per-pair gate candidates died in
+# measurement (sv-spread: the far-cluster homography is near-rotational
+# on translation content; consensus fraction: inverted - sub-noise
+# translation pairs are rotation-consistent by residual size;
+# directionality: the ray-Kabsch refit absorbs a uniform parallax field
+# as rotation; flip-decisiveness: the E's fabricated t is
+# cheirality-confirmed on 80% of pan pairs). The surviving gate is
+# TEMPORAL and lives in the tracker (see Tracker._update_rotation_
+# model_gate): an EMA of |cos| between consecutive frame-chain pair
+# E-t directions. These constants parameterize the ROTATION MODEL the
+# engaged path commits (the 13a2-validated instrument: 3-point
+# orthogonal Procrustes on unit rays, numpy-RNG only).
+ROTATION_MODEL_ENABLED = 1
+# The rotation-only consensus residual, pixel-space at unit depth
+# (MATCHER_RANSAC_THRESHOLD's units): ~2.8 px at fx 940. Measured on
+# the pan: consensus fraction p50 0.91 at this threshold with
+# inlier counts in the hundreds-to-thousands.
+ROTATION_MODEL_RESIDUAL = 3e-3
+ROTATION_MODEL_MIN_INLIERS = 20
+ROTATION_MODEL_RANSAC_ITERS = 256
+# Fixed per call: deterministic, and numpy's Generator is NOT the cv
+# global RNG stream - the engaged path changes no cv-RNG consumption
+# order anywhere (the phase-3b RNG-transparency convention).
+ROTATION_MODEL_RNG_SEED = 1305
+# ===== the t-coherence gate (13c, phase13c_t_coherence.json) =====
+# EMA over |cos(t_k, t_{k-1})| of consecutive frame-chain pair E-t
+# directions. ENGAGE the rotation model below ENGAGE, re-arm legacy
+# above REARM (sticky both ways). Pinned from the measured traces
+# with margin: the kyoto_2_5 pan engages at the first sustained dip
+# and stays engaged 281/281 pairs (its EMA p90 is 0.93, below
+# re-arm); the kyoto_2_5 WALKING segment never engages (EMA min
+# 0.958 - above engage with margin); walking_salem never engages
+# (min 0.996). The synthetic harness sequences at their stride-1
+# battery cadence read incoherent (their per-pair parallax sits at
+# the ORB quantization noise - the pan's regime), which is why the
+# gate is VIDEO-PATH scoped (Tracker.rotation_model_enabled,
+# default False; slam.py enables it where it wires the intake
+# gate). These bounds are measured pins, not tuning targets.
+ROTATION_MODEL_EMA_ALPHA = 0.9
+ROTATION_MODEL_T_COHERENCE_ENGAGE = 0.80
+ROTATION_MODEL_T_COHERENCE_REARM = 0.95
+
 
 def _get_or_create_matcher(feature_extraction_method: str) -> cv.DescriptorMatcher:
     cache_key = feature_extraction_method
@@ -123,6 +176,26 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
     f1_kp, f1_desc = frame1.get_keypoints_descriptors()
     f2_kp, f2_desc = frame2.get_keypoints_descriptors()
 
+    # Finding 35 (phase 10a forced-reset probe): a featureless frame
+    # yields descriptors=None, and BFMatcher.knnMatch is ASYMMETRIC
+    # about it - knnMatch(None, X) silently returns no matches, but
+    # knnMatch(X, None) raises the batchDistance assertion. Matching
+    # against a featureless PREVIOUS or REFERENCE frame therefore
+    # crashed the whole pipeline (the probe's post-reset bootstrap:
+    # textured replay frames matched against the featureless reset
+    # origin; a dark-scene reset on real video takes the same path).
+    # Zero features on either side means zero matches: take the
+    # finding-10 path (callers fall back to the kinematic estimate /
+    # the next candidate). The event fires only on this previously-
+    # unreachable-except-by-crash path, so battery event comparisons
+    # stay exact (no benchmark frame pair is featureless).
+    if (f1_desc is None or f2_desc is None
+            or len(f1_desc) == 0 or len(f2_desc) == 0):
+        telemetry.event("match_no_features")
+        debug_log(LOG_TAG, "Featureless frame in match pair - "
+                  "no matches possible")
+        return [], None
+
     matches = matcher.knnMatch(f1_desc, f2_desc, k=2)
 
     good_matches = []
@@ -219,4 +292,124 @@ def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extracti
     debug_log(
         LOG_TAG, f"Found {len(matches)} matches between frames: {frame1.frame_id} and {frame2.frame_id}")
 
+    return Rt
+
+
+def rotation_model_pose_between_frames(frame1: Frame, frame2: Frame,
+                                       feature_extraction_method: str
+                                       ) -> Optional[np.ndarray]:
+    """Phase 13: the rotation-dominant pair pose - the model the
+    tracker commits when the t-coherence gate (see
+    Tracker._update_rotation_model_gate) says the frame chain is in a
+    rotation-only regime (finding 37: on such motion the E-chain's
+    translation is a noise-driven unit vector - the pair cannot
+    observe it, so the honest pair pose carries NO translation).
+
+    The estimator is the 13a2-validated instrument: a numpy-RNG
+    3-point orthogonal-Procrustes (Kabsch) RANSAC on unit rays, with
+    residuals in pixel-space at unit depth - the same units as
+    MATCHER_RANSAC_THRESHOLD. For a camera rotating in place this
+    recovers the true pair rotation (the census pseudo-GT class);
+    translation is exactly the unobservable component, so the
+    committed pose is [R | 0].
+
+    Mirrors match_features_between_frames' contract: the consensus
+    matches are attached to frame1 (the pair's own list, even when
+    empty - the finding-22 replacement rule), and the return is the
+    T_{f2<-f1} pair pose or None on any degeneracy (caller keeps the
+    legacy estimate - the no-basis principle).
+
+    RNG discipline: numpy's Generator only (fixed seed per call) -
+    NO cv-RNG draws, so the engaged path changes no cv-stream
+    consumption order anywhere.
+    """
+    if not ROTATION_MODEL_ENABLED:
+        return None
+
+    f1_kp, f1_desc = frame1.get_keypoints_descriptors()
+    f2_kp, f2_desc = frame2.get_keypoints_descriptors()
+    if (f1_desc is None or f2_desc is None
+            or len(f1_desc) == 0 or len(f2_desc) == 0):
+        # The legacy E path (which always runs first) has already
+        # taken the finding-35 no-matches path for this pair; the
+        # rotation model has no basis either.
+        return None
+
+    matcher = _get_or_create_matcher(feature_extraction_method)
+    matches = matcher.knnMatch(f1_desc, f2_desc, k=2)
+    good_matches = []
+    indices_f1_set, indices_f2_set = set(), set()
+    for pair in matches:
+        if len(pair) < 2:
+            continue
+        m, n = pair
+        if (m.distance < LOWE_RATIO * n.distance
+                and m.queryIdx not in indices_f1_set
+                and m.trainIdx not in indices_f2_set):
+            indices_f1_set.add(m.queryIdx)
+            indices_f2_set.add(m.trainIdx)
+            good_matches.append(m)
+    if len(good_matches) < ROTATION_MODEL_MIN_INLIERS:
+        return None
+
+    q_idx = np.array([m.queryIdx for m in good_matches])
+    t_idx = np.array([m.trainIdx for m in good_matches])
+    pts_f1 = frame1.kp_pts_norm[q_idx]
+    pts_f2 = frame2.kp_pts_norm[t_idx]
+    n = len(pts_f1)
+    x1h = np.hstack([pts_f1, np.ones((n, 1))])
+    x2h = np.hstack([pts_f2, np.ones((n, 1))])
+    r1 = x1h / np.linalg.norm(x1h, axis=1, keepdims=True)
+    r2 = x2h / np.linalg.norm(x2h, axis=1, keepdims=True)
+
+    def _residual(R):
+        p = x1h @ R.T
+        z = p[:, 2]
+        ok = z > 1e-9
+        res = np.full((n, 2), np.inf)
+        res[ok] = p[ok, :2] / z[ok, None] - pts_f2[ok]
+        return res
+
+    def _kabsch(a, b):
+        U, _, Vt = np.linalg.svd(a.T @ b)
+        R = Vt.T @ U.T
+        if np.linalg.det(R) < 0:
+            R = Vt.T @ np.diag([1.0, 1.0, -1.0]) @ U.T
+        return R
+
+    rng = np.random.default_rng(ROTATION_MODEL_RNG_SEED)
+    best_cnt, best_mask = -1, None
+    for _ in range(ROTATION_MODEL_RANSAC_ITERS):
+        idx = rng.choice(n, 3, replace=False)
+        R = _kabsch(r1[idx], r2[idx])
+        if not np.isfinite(R).all():
+            continue
+        mask = np.linalg.norm(_residual(R), axis=1) < ROTATION_MODEL_RESIDUAL
+        cnt = int(mask.sum())
+        if cnt > best_cnt:
+            best_cnt, best_mask = cnt, mask
+    if best_cnt < ROTATION_MODEL_MIN_INLIERS:
+        debug_log(LOG_TAG, "Rotation model: no consensus "
+                  f"({best_cnt} inliers) - keeping the legacy estimate")
+        return None
+
+    R = _kabsch(r1[best_mask], r2[best_mask])
+    if not np.isfinite(R).all():
+        return None
+    res = _residual(R)
+    mask = np.linalg.norm(res, axis=1) < ROTATION_MODEL_RESIDUAL
+    if int(mask.sum()) < ROTATION_MODEL_MIN_INLIERS:
+        return None
+
+    frame1.set_match_data([m for i, m in enumerate(good_matches)
+                           if mask[i]])
+    Rt = np.eye(4)
+    Rt[:3, :3] = R
+    # t = 0 BY CONSTRUCTION: translation is exactly the component a
+    # rotation-only pair cannot observe. The committed chain step
+    # therefore carries no fabricated translation.
+    telemetry.event("pair_rotation_model")
+    debug_log(LOG_TAG, f"Rotation model: {int(mask.sum())}/{n} "
+              f"consensus matches, pair rotation "
+              f"{np.degrees(np.arccos(np.clip((np.trace(R) - 1.) / 2., -1., 1.))):.3f} deg")
     return Rt
