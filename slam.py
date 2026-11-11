@@ -86,9 +86,15 @@ if __name__ == "__main__":
     prev_img = np.zeros((CAP_H, CAP_W, 3), dtype=np.uint8)
     while slam_in_progress or renderer_is_active:
         renderer.vis.update_renderer()
-        if not renderer.vis.poll_events() or renderer.should_quit():
+        if not renderer.vis.poll_events():
             renderer_is_active = slam_in_progress = False
             continue
+
+        # Fly camera: apply held-key movement for this iteration. Runs
+        # in every loop state (paused, gate-skipping, post-SLAM - all
+        # of them re-enter here); dt is wall-clock based. Quit is
+        # Open3D's native Esc / window close (poll_events returns False).
+        renderer.process_fly_input()
 
         # Capture and write the current renderer frame if recording is enabled
         if RECORD_SESSION:

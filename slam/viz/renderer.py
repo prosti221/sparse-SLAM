@@ -1,16 +1,61 @@
-import open3d as o3d
-import numpy as np
-import cv2 as cv
 import json
 import os
+import time
 from datetime import datetime
 
-from slam.utils.utils import pt_obj_to_array
-from slam.utils.logger import debug_log, info_log, error_log, warning_log
-from slam.utils.constants import TRACKING_QUALITY_GRADIENT
+import cv2 as cv
+import numpy as np
+import open3d as o3d
+
 from slam.core.map import Map
+from slam.utils.constants import TRACKING_QUALITY_GRADIENT
+from slam.utils.logger import debug_log, error_log, info_log, warning_log
+from slam.utils.utils import pt_obj_to_array
 
 LOG_TAG = 'Renderer'
+
+POINT_SIZE = 2.0
+BACKGROUND_COLOR = [0.0, 0.0, 0.0]
+
+# ===== Fly-mode camera controls =====
+# Key codes are GLFW codes, which Open3D reports for letter keys as the
+# UPPERCASE ASCII values: 'q' is 81, not the lowercase-ASCII 113 the old
+# quit registration used (113 is not a GLFW code - that registration
+# never fired; quit is Open3D's native Esc / window close). Registering
+# a key as an ACTION callback also fully suppresses Open3D's built-in
+# binding for that key (VisualizerWithKeyCallback::KeyPressCallback
+# returns early after the custom callback), so the fly keys below
+# disable the built-in W/S/D defaults (wireframe/shading/depth
+# capture) on purpose.
+KEY_PAUSE = 32                 # GLFW_KEY_SPACE (press-callback: pause needs no release events)
+KEY_FLY_FORWARD = 87           # GLFW_KEY_W
+KEY_FLY_BACK = 83              # GLFW_KEY_S
+KEY_FLY_LEFT = 65              # GLFW_KEY_A
+KEY_FLY_RIGHT = 68             # GLFW_KEY_D
+KEY_FLY_DOWN = 81              # GLFW_KEY_Q
+KEY_FLY_UP = 69                # GLFW_KEY_E
+KEY_FLY_BOOST = (340, 341)     # GLFW_KEY_LEFT_SHIFT / RIGHT_SHIFT
+KEY_FLY_SLOWER = 45            # GLFW_KEY_MINUS
+KEY_FLY_FASTER = 61            # GLFW_KEY_EQUAL
+
+# GLFW key actions delivered to key-action callbacks.
+KEY_ACTION_RELEASE = 0
+KEY_ACTION_PRESS = 1
+KEY_ACTION_REPEAT = 2
+
+# Fly speed. Monocular maps have arbitrary scale, so the base speed is
+# a fraction of the point-cloud bounding-box diagonal (cached whenever
+# update_points runs), stepped by a user multiplier and boosted while a
+# shift key is held. camera_local_translate takes ABSOLUTE world-unit
+# deltas (probe-verified on 0.20: a 1.0 argument moves the eye exactly
+# 1.0 world unit along the view axis, independent of zoom and bbox).
+FLY_SPEED_SCENE_FRACTION = 0.3      # diagonal per second at 1.0x
+FLY_SPEED_BOOST = 3.0
+FLY_SPEED_MULT_MIN = 1.0 / 32.0
+FLY_SPEED_MULT_MAX = 32.0
+FLY_SPEED_STEP = 2.0
+FLY_MAX_DT_S = 0.05                 # per-tick dt cap (BA stalls, event bursts)
+FLY_DEFAULT_SCENE_DIAGONAL = 100.0  # before the first points arrive
 
 
 class Renderer:
@@ -38,11 +83,16 @@ class Renderer:
         self.camera_parameters.intrinsic = self.pinhole
 
         self.paused = False
-        self.quit_requested = False  # Add quit flag
 
-        # Camera tracking attributes
-        self.tracking_enabled = False
-        self.last_tracked_frame = None
+        # Fly-mode state: keycodes currently held (press/release
+        # tracked via key-action callbacks), the boost keys, the user
+        # speed multiplier and the scene-scale cache that converts it
+        # to world units per second.
+        self._fly_keys_held = set()
+        self._fly_boost_held = set()
+        self._fly_speed_multiplier = 1.0
+        self._fly_scene_diagonal = FLY_DEFAULT_SCENE_DIAGONAL
+        self._fly_last_tick = None  # time.monotonic() of the last fly tick
 
         # Save/load attributes
         self.session_data = {
@@ -64,21 +114,35 @@ class Renderer:
         info_log(LOG_TAG, "Starting Open3D visualizer")
         self.vis.create_window(
             window_name="SLAM", width=self.W, height=self.H)
-        self.vis.get_render_option().background_color = [0.0, 0.0, 0.0]
+        self.vis.get_render_option().background_color = BACKGROUND_COLOR
 
         self.ctrl = self.vis.get_view_control()
         self.ctrl.convert_from_pinhole_camera_parameters(
             self.camera_parameters, allow_arbitrary=True)
         self.ctrl.set_constant_z_far(10000.0)
 
-        # Register spacebar (ASCII 32) to toggle pause
-        self.vis.register_key_callback(32, self._toggle_pause)
+        # Register spacebar (GLFW 32) to toggle pause. The plain key
+        # callback only ever reports presses (RELEASE is filtered), which
+        # is all pause needs.
+        self.vis.register_key_callback(KEY_PAUSE, self._toggle_pause)
 
-        # Register 'q' key (ASCII 113) to quit
-        self.vis.register_key_callback(113, self._request_quit)
+        # Fly keys use ACTION callbacks: they receive PRESS / REPEAT /
+        # RELEASE, so held keys can be tracked properly (hold W to keep
+        # moving), and registering them suppresses Open3D's built-in
+        # bindings for those keys. Quit is Open3D's native Esc /
+        # window close (the old 113 registration was a dead keycode).
+        for key in (KEY_FLY_FORWARD, KEY_FLY_BACK, KEY_FLY_LEFT,
+                    KEY_FLY_RIGHT, KEY_FLY_UP, KEY_FLY_DOWN):
+            self.vis.register_key_action_callback(
+                key, self._make_fly_key_handler(key))
+        for key in KEY_FLY_BOOST:
+            self.vis.register_key_action_callback(
+                key, self._make_fly_boost_handler(key))
+        self.vis.register_key_action_callback(KEY_FLY_SLOWER, self._fly_slower)
+        self.vis.register_key_action_callback(KEY_FLY_FASTER, self._fly_faster)
 
-        # Register 't' key (ASCII 116) to toggle camera tracking
-        self.vis.register_key_callback(84, self._toggle_tracking)
+        info_log(LOG_TAG, "Fly controls: W/A/S/D move, Q/E down/up, "
+                          "Shift boost, -/= speed; mouse orbits; Esc quits")
 
         # Create session output folder
         os.makedirs(self.output_path, exist_ok=True)
@@ -91,9 +155,6 @@ class Renderer:
 
     def is_paused(self):
         return self.paused
-
-    def should_quit(self):
-        return self.quit_requested
 
     def update(self):
         self.update_points(self.map.points)
@@ -109,12 +170,15 @@ class Renderer:
         self.point_cloud.points = o3d.utility.Vector3dVector(pts_array)
         self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
 
+        # Cache the scene extent for fly-speed scaling.
+        self._fly_cache_scene_scale(pts_array)
+
         if not self.cloud_initialized:
             self.vis.add_geometry(self.point_cloud)
             self.cloud_initialized = True
 
         # Update view
-        self.vis.get_render_option().point_size = 1.5
+        self.vis.get_render_option().point_size = POINT_SIZE
         self.vis.update_geometry(self.point_cloud)
         self.vis.poll_events()
         self.vis.update_renderer()
@@ -145,20 +209,22 @@ class Renderer:
             elif self.poses[kf.frame_id][1] != kf.tracking_quality:
                 debug_log(LOG_TAG, f"Updating pose for frame {kf.frame_id}")
                 self._update_pose_geometry(kf)
-            else:
-                continue
 
-        # Store pose data for session saving
-        self.session_data['poses'][kf.frame_id.int] = {
-            'pose': kf.pose.tolist(),
-            'tracking_quality': kf.tracking_quality,
-        }
+            # Store pose data for session saving (inside the loop: the
+            # old leaked-`kf` save crashed on empty lists and only
+            # saved the LAST keyframe per update; poses can also move
+            # under BA without a quality change)
+            self.session_data['poses'][kf.frame_id.int] = {
+                'pose': kf.pose.tolist(),
+                'tracking_quality': kf.tracking_quality,
+            }
 
-        # Update camera tracking if enabled
-        self.last_tracked_frame = keyframes[-1]
-        if self.tracking_enabled or not self.camera_initialized:
+        # Place the camera once, over the first keyframe (the 't' follow
+        # mode this placement used to serve is deprecated in favor of
+        # the fly controls).
+        if not self.camera_initialized and keyframes:
             self.camera_initialized = True
-            self._update_camera_tracking()
+            self._place_initial_camera(keyframes[-1])
 
         self.vis.poll_events()
         self.vis.update_renderer()
@@ -168,21 +234,106 @@ class Renderer:
         info_log(LOG_TAG, "Paused" if self.paused else "Resumed")
         return False
 
-    def _toggle_tracking(self, vis):
-        self.tracking_enabled = not self.tracking_enabled
-        status = "enabled" if self.tracking_enabled else "disabled"
-        info_log(LOG_TAG, f"Camera tracking {status}")
+    # ======= Fly-mode camera controls =======
+    def _make_fly_key_handler(self, key):
+        """PRESS adds the key to the held set, RELEASE removes it,
+        REPEAT is a no-op (the state was already set at PRESS). One
+        callback per keycode - Open3D stores a single callback per
+        registered key."""
+        def handle(vis, action, mods):
+            if action == KEY_ACTION_PRESS:
+                self._fly_keys_held.add(key)
+            elif action == KEY_ACTION_RELEASE:
+                self._fly_keys_held.discard(key)
+            return False
+        return handle
 
-        if not self.tracking_enabled:
-            # Reset tracking state when disabled
-            self.last_tracked_frame = None
+    def _make_fly_boost_handler(self, key):
+        """Shift keys are tracked like fly keys, in their own set."""
+        def handle(vis, action, mods):
+            if action == KEY_ACTION_PRESS:
+                self._fly_boost_held.add(key)
+            elif action == KEY_ACTION_RELEASE:
+                self._fly_boost_held.discard(key)
+            return False
+        return handle
 
+    def _fly_slower(self, vis, action, mods):
+        if action == KEY_ACTION_PRESS:
+            self._fly_speed_multiplier = max(
+                FLY_SPEED_MULT_MIN,
+                self._fly_speed_multiplier / FLY_SPEED_STEP)
+            self._log_fly_speed()
         return False
 
-    def _request_quit(self, vis):
-        self.quit_requested = True
-        info_log(LOG_TAG, "Ending slam session...")
+    def _fly_faster(self, vis, action, mods):
+        if action == KEY_ACTION_PRESS:
+            self._fly_speed_multiplier = min(
+                FLY_SPEED_MULT_MAX,
+                self._fly_speed_multiplier * FLY_SPEED_STEP)
+            self._log_fly_speed()
         return False
+
+    def _log_fly_speed(self):
+        info_log(LOG_TAG, f"Fly speed: {self._fly_speed_multiplier:.2f}x "
+                          f"({self._fly_speed():.2f} map units/s)")
+
+    def _fly_speed(self):
+        """World units per second: a fraction of the cached scene
+        diagonal, scaled by the user multiplier, boosted while a shift
+        key is held."""
+        speed = (FLY_SPEED_SCENE_FRACTION * self._fly_scene_diagonal
+                 * self._fly_speed_multiplier)
+        if self._fly_boost_held:
+            speed *= FLY_SPEED_BOOST
+        return speed
+
+    def process_fly_input(self):
+        """One fly-movement step. Must be called explicitly from
+        slam.py's loop (every iteration - running, paused, gate-skipping
+        and post-SLAM alike): Open3D's own animation callback only runs
+        inside Visualizer::Run(), which this codebase never calls. dt
+        comes from the wall clock so the paused busy-spin cannot
+        accelerate movement, and is capped so a mid-BA stall cannot
+        teleport the camera."""
+        now = time.monotonic()
+        dt = 0.0
+        if self._fly_last_tick is not None:
+            dt = min(now - self._fly_last_tick, FLY_MAX_DT_S)
+        self._fly_last_tick = now
+        if dt <= 0.0:
+            return
+        displacement = self._fly_displacement(dt)
+        if displacement is not None:
+            self.ctrl.camera_local_translate(*displacement)
+
+    def _fly_displacement(self, dt):
+        """World-unit (forward, right, up) for the currently held keys,
+        or None when no movement. The vector is L2-normalized so
+        diagonal movement is not faster than axis movement."""
+        held = self._fly_keys_held
+        if not held:
+            return None
+        forward = float(KEY_FLY_FORWARD in held) - float(KEY_FLY_BACK in held)
+        right = float(KEY_FLY_RIGHT in held) - float(KEY_FLY_LEFT in held)
+        up = float(KEY_FLY_UP in held) - float(KEY_FLY_DOWN in held)
+        norm = np.sqrt(forward * forward + right * right + up * up)
+        if norm == 0.0:
+            return None
+        scale = self._fly_speed() * dt / norm
+        return (forward * scale, right * scale, up * scale)
+
+    def _fly_cache_scene_scale(self, pts_array):
+        """Cache the point-cloud bounding-box diagonal (the fly speed's
+        scale reference - monocular maps have no absolute scale). Two
+        reductions over the already-materialized array; called from
+        update_points."""
+        if len(pts_array) == 0:
+            return
+        extent = pts_array.max(axis=0) - pts_array.min(axis=0)
+        diagonal = float(np.linalg.norm(extent))
+        if diagonal > 0.0:
+            self._fly_scene_diagonal = diagonal
 
     def _construct_pose_geometry(self, keyframe):
         pose = keyframe.pose
@@ -196,8 +347,6 @@ class Renderer:
         # Set current frame color to cyan
         colors = np.tile(np.array([0, 255, 255]), (len(lines), 1))
         new_cam.colors = o3d.utility.Vector3dVector(colors)
-
-        self.last_tracked_frame = keyframe
 
         return new_cam
 
@@ -217,9 +366,11 @@ class Renderer:
 
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
 
-    def _update_camera_tracking(self):
-        # Get the pose of the most recent keyframe
-        tracked_pose = np.linalg.inv(self.last_tracked_frame.pose)
+    def _place_initial_camera(self, keyframe):
+        """One-time top-down placement over the first keyframe. (This
+        placement used to run per-keyframe as the 't' follow mode;
+        that mode is deprecated in favor of the fly controls.)"""
+        tracked_pose = np.linalg.inv(keyframe.pose)
         tracked_position = tracked_pose[:3, 3]
 
         # Project position to ground plane (assuming y is up)
