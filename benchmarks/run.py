@@ -17,6 +17,7 @@ import numpy as np
 
 from benchmarks.synthetic.generator import SEQUENCES, generate_sequence
 from benchmarks.tum import prepare_tum_sequence
+from benchmarks.datasets import GT_SEQUENCES, prepare as prepare_gt_sequence
 from benchmarks.harness import run_slam, load_trajectory, load_scene
 from benchmarks import metrics
 
@@ -28,6 +29,11 @@ REPORT_DIR = REPO_ROOT / "output" / "benchmarks"
 # the rest are generated synthetic worlds.
 TUM_SEQUENCES = {"tum_xyz"}
 DEFAULT_SEQUENCES = ["forward_rotation", "orbit", "translation", "tum_xyz"]
+# Phase 15: the GT ladder is DIAGNOSTIC tier — prepared on demand via
+# benchmarks.datasets, evaluated through the SAME run_slam + metrics
+# path, and never part of the frozen adoption battery (absent from
+# DEFAULT_SEQUENCES and baselines.json by construction).
+LADDER_SEQUENCES = set(GT_SEQUENCES)
 
 # Thresholds applied to each metric. Missing sequence entry = no baseline yet.
 THRESHOLD_RULES = {
@@ -42,9 +48,13 @@ def evaluate_sequence(name: str, seed: int) -> dict:
         seq_dir = generate_sequence(name)
     elif name in TUM_SEQUENCES:
         seq_dir = prepare_tum_sequence()
+    elif name in LADDER_SEQUENCES:
+        seq_dir = prepare_gt_sequence(name)
     else:
+        available = sorted(SEQUENCES) + sorted(TUM_SEQUENCES) \
+            + sorted(LADDER_SEQUENCES)
         raise ValueError(f"Unknown sequence '{name}'. "
-                         f"Available: {sorted(SEQUENCES) + sorted(TUM_SEQUENCES)}")
+                         f"Available: {available}")
 
     gt_poses = load_trajectory(seq_dir)
     # Synthetic sequences ship analytic scene geometry; real-world ones don't.

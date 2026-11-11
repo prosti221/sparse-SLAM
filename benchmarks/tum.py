@@ -75,6 +75,13 @@ def ensure_downloaded() -> Path:
 
 def prepare_tum_sequence(force: bool = False) -> Path:
     """Normalize the raw TUM sequence into the benchmark dataset layout."""
+    # Normalized-first (2026-11-11, the remote-offload enabler): when
+    # the prepared sequence is already on disk, return it WITHOUT
+    # touching the raw dataset — a remote mirror that synced only the
+    # normalized tree runs the sequence download-free. (The raw check
+    # below remains the source of truth for a first-time prepare.)
+    if (NORM_DIR / "trajectory.txt").exists() and not force:
+        return NORM_DIR
     ensure_downloaded()
 
     if (NORM_DIR / "trajectory.txt").exists() and not force:

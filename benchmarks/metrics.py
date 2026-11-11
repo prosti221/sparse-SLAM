@@ -177,6 +177,38 @@ def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
     metrics["resets"] = result.resets
     metrics["fps"] = result.fps
 
+    # ---- phase 14/15 additions (additive observables only) ----
+    # The shared health summary (same module the video census uses):
+    # on ladder entries this joins with GT accuracy in the analysis;
+    # on battery entries it is harmless extra context. The harness
+    # feeds every frame, so decoded == fed and the fed rate is 1.
+    if getattr(result, "health_rows", None):
+        from benchmarks.health import summarize_run
+        metrics["health"] = summarize_run(
+            result.health_rows,
+            getattr(result, "health_reset_indices", []),
+            result.telemetry.get("events", {}),
+            result.frames_processed, result.frames_processed,
+            result.seconds)
+
+    # The loop-closure BENEFIT (fr3_long_office is the reason this
+    # exists): KF-ATE of the keyframe trajectory as it stood
+    # IMMEDIATELY BEFORE the first correction vs the FINAL (post-
+    # correction, post-culling) trajectory. Positive = the
+    # correction improved the keyframe trajectory against GT.
+    metrics["loop_corrections"] = getattr(result, "loop_corrections", 0)
+    if (metrics["loop_corrections"]
+            and len(result.pre_correction_keyframe_poses) >= 2
+            and metrics.get("ate_kf_rmse") is not None):
+        idx = np.asarray(result.pre_correction_keyframe_gt_indices)
+        if len(idx) == len(result.pre_correction_keyframe_poses) \
+                and idx.max() < len(gt_poses):
+            pre = ate(result.pre_correction_keyframe_poses,
+                      gt_poses[idx])
+            metrics["ate_kf_pre_rmse"] = pre["ate_rmse"]
+            metrics["loop_correction_benefit"] = (
+                pre["ate_rmse"] - metrics["ate_kf_rmse"])
+
     # Collapse tripwire: the largest single-step camera-center displacement.
     # A finding-8-style blowup (pose chain stepping backward, PnP diverging
     # to |t| ~ 1e4) flags itself here instead of hiding behind an ATE number.

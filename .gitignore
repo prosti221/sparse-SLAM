@@ -24,3 +24,6 @@ weights/
 # Logs and cache
 *.log
 *.cache
+
+# Local debug output (live session log; never part of a commit)
+debug.txt

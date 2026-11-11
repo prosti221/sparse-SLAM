@@ -15,6 +15,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 import slam.utils.logger as slam_logger
+from benchmarks.health import heading_deg
 from slam.calibration.refit import IntrinsicsEstimate
 from slam.core.frame import Frame
 from slam.core.map import Map
@@ -46,6 +47,25 @@ class RunResult:
     # the frame indices of those same keyframes (the KF-trajectory
     # ATE's pairing; the harness sets _bench_frame_index at insertion
     # so culled keyframes drop out cleanly)
+    # ---- phase 14/15 additions (pure observation; additive only) ----
+    health_rows: List[dict] = field(default_factory=list)
+    # the per-frame health stream (the shared benchmarks/health.py
+    # schema) — lets GT'd ladder runs attribute ACCURACY to health
+    # mechanisms (windowed ATE x quality/flags) the same way the
+    # video census attributes failure modes without GT.
+    health_reset_indices: List[int] = field(default_factory=list)
+    # WHERE the resets happened in the fed stream (health needs
+    # positions; the int `resets` above keeps the battery contract).
+    loop_corrections: int = 0
+    # phase 15: how many loop-closure corrections fired during the
+    # run (the tracker flag the harness observes per update).
+    pre_correction_keyframe_poses: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 4, 4)))
+    pre_correction_keyframe_gt_indices: List[int] = field(
+        default_factory=list)
+    # phase 15: the keyframe-poses snapshot taken immediately BEFORE
+    # the FIRST loop-closure correction rewrote them — the
+    # loop-benefit measurement's "before" side (KF-ATE pre vs post).
 
     @property
     def fps(self) -> float:
@@ -124,6 +144,12 @@ def run_slam(dataset_dir: Path,
     poses: List[np.ndarray] = []
     keyframe_indices: List[int] = []
     steps: List[int] = []
+    # phase 14/15: the per-frame health stream + the loop-benefit
+    # "before" snapshot (pure observation; no pipeline interaction).
+    health_rows: List[dict] = []
+    loop_corrections = 0
+    pre_correction = None   # (kf poses, kf frame indices) before the
+    #                        FIRST correction fires
 
     # Attach the telemetry recorder for this run only. It is a pure
     # observer: stages time call sites, events count pipeline decisions;
@@ -139,10 +165,71 @@ def run_slam(dataset_dir: Path,
                 raise IOError(f"Failed to read frame: {frame_file}")
             frame = Frame(img, world_map.intrinsics.K,
                           world_map.intrinsics.k1)
+            prev_pose = (tracker.cur_frame.pose.copy()
+                         if tracker.cur_frame is not None else None)
+            before_ev = dict(recorder.events)
+            # phase 15: snapshot the keyframe state while no
+            # correction has fired yet. At the moment the FIRST
+            # correction rewrites poses (inside this update), this
+            # holds the pre-correction trajectory.
+            if loop_corrections == 0 and world_map.keyframes:
+                pre_correction = (
+                    [kf.pose.copy() for kf in world_map.keyframes],
+                    [kf._bench_frame_index
+                     for kf in world_map.keyframes
+                     if hasattr(kf, "_bench_frame_index")])
             is_new_keyframe = tracker.update(frame)
+
+            # The per-frame event delta FIRST: loop-correction
+            # detection keys off the 'loop_corrected' telemetry event.
+            # (The tracker's _loop_correction_applied flag is set AND
+            # cleared WITHIN the same update() — the velocity-reset
+            # block clears it before update() returns — so a
+            # post-update flag check sees nothing; measured: fr3
+            # applied corrections visibly while the flag check
+            # counted zero.)
+            ev = {k: v - before_ev.get(k, 0)
+                  for k, v in recorder.events.items()
+                  if v != before_ev.get(k, 0)}
+            if ev.get("loop_corrected", 0):
+                loop_corrections += ev["loop_corrected"]
 
             poses.append(tracker.cur_frame.pose)
             steps.append(tracker.step)
+            # phase 14/15: the health row (the shared
+            # benchmarks/health.py schema). The harness path never
+            # enables the phase-13 rotation model, so 'rm' is always
+            # False here — the auto motion-signal is a census tool;
+            # ladder entries carry their known axis labels instead.
+            pose = tracker.cur_frame.pose
+            R = pose[:3, :3]
+            d_rot = (float(np.degrees(np.arccos(np.clip(
+                (np.trace(prev_pose[:3, :3].T @ R) - 1.) / 2., -1., 1.))))
+                if prev_pose is not None else 0.)
+            health_rows.append({
+                "i": i,
+                "kf": bool(is_new_keyframe),
+                "feat": len(frame.keypoints)
+                        if frame.keypoints is not None else 0,
+                "obs": len(frame.observed_points),
+                "q": float(world_map.avg_tracking_quality),
+                "low_q": world_map.consecutive_low_quality_frames,
+                "kfs": len(world_map.keyframes),
+                "pts": len(world_map.points),
+                "archives": len(world_map.archives),
+                "head": heading_deg(pose),
+                "t": float(np.linalg.norm(pose[:3, 3])),
+                "d_rot": d_rot,
+                "d_t": float(np.linalg.norm(
+                    pose[:3, 3] - prev_pose[:3, 3]))
+                    if prev_pose is not None else 0.,
+                "v_rot": float(np.degrees(np.arccos(np.clip(
+                    (np.trace(tracker.velocity[:3, :3]) - 1.) / 2.,
+                    -1., 1.)))),
+                "v_t": float(np.linalg.norm(tracker.velocity[:3, 3])),
+                "rm": bool(tracker._rot_model_engaged),
+                "ev": ev,
+            })
             if is_new_keyframe:
                 keyframe_indices.append(i)
                 # Phase 3c: the KF-trajectory ATE's pairing needs each
@@ -171,6 +258,20 @@ def run_slam(dataset_dir: Path,
     else:
         map_points = np.empty((0, 3))
 
+    # phase 14/15: reset positions in the fed stream (health
+    # classifiers need WHERE, RunResult.resets keeps the battery's
+    # int contract) + the loop-benefit "before" attachment (only
+    # meaningful when a correction actually fired).
+    health_reset_indices = [j + 1 for j, (a, b)
+                             in enumerate(zip(steps, steps[1:]))
+                             if b < a]
+    if loop_corrections and pre_correction is not None:
+        pre_poses = np.array(pre_correction[0])
+        pre_indices = list(pre_correction[1])
+    else:
+        pre_poses = np.empty((0, 4, 4))
+        pre_indices = []
+
     return RunResult(
         frames_processed=len(frame_files),
         poses=np.array(poses),
@@ -189,4 +290,9 @@ def run_slam(dataset_dir: Path,
             kf._bench_frame_index
             for kf in world_map.keyframes
             if hasattr(kf, "_bench_frame_index")],
+        health_rows=health_rows,
+        health_reset_indices=health_reset_indices,
+        loop_corrections=loop_corrections,
+        pre_correction_keyframe_poses=pre_poses,
+        pre_correction_keyframe_gt_indices=pre_indices,
     )

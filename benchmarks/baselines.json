@@ -1,5 +1,6 @@
 {
  "seed": 42,
+ "phase16_note": "PHASE 16 MIGRATION (2026-11-11, user-approved): this file is now bound to the DESKTOP (cankourn@arch-desktop.local), the gate machine. The three tum_xyz re-curated entries (ate_kf_rmse 0.15->0.25, rpe_rot_rmse 8.0->18.0, max_pose_jump 45.0->100.0) are the 5e margin-above-observed convention applied to the DESKTOP-measured values 0.1814 / 14.02 / 76.95 — all three are the loop-correction cascade's cross-arch outcome chaos (the phase-15 finding; 11 vs 10 corrections, 252 vs 232 keyframes vs the laptop), NOT a regression. The other 27 thresholds carried unchanged: the synthetic sequences' cross-arch deltas sit in the 3rd-4th decimal. Canonical desktop reference: report_20261111_153311.json (bit-identical twin of 153058, the M3 gate-validity double-run). Gate sensitivity verified on the desktop: FOCAL_SCALE=0.8 trips 7 failures, exit 1. Full evidence: output/benchmarks/remote_runs/phase16_m3_m4.json and the phase-16 record in IMPROVEMENT.md.",
  "note": "Phase 5e-0 (2026-11-09), USER-ACCEPTED tradeoff: invalidate persistent local BA before external pose-graph/global-BA write-back. tum_xyz per-frame ATE improves 0.1335 -> 0.0671, rotation 4.98 -> 2.92 and jump 36.1 -> 15.1, but KF-ATE regresses 0.0406 -> 0.1069. The user explicitly accepted that regression in exchange for trajectory quality and cache correctness. ONLY tum_xyz ate_kf_rmse changes, 0.10 -> 0.15: a hand-curated margin above observed 0.1069 that still rejects the alternative synchronization variant's 0.1792. No raw --update-baselines write, no loop/triangulation/pruning threshold changes. All other gates remain at phase 3e values; fr/orbit/translation stay bit-identical. The phase-3 seed-flat results are deterministic config values, not statistical samples. Full candidate results and the explicit acceptance are recorded in benchmarks/IMPROVEMENT.md.",
  "thresholds": {
   "forward_rotation": {
@@ -34,10 +35,10 @@
   },
   "tum_xyz": {
    "ate_rmse": 0.2,
-   "ate_kf_rmse": 0.15,
+   "ate_kf_rmse": 0.25,
    "rpe_trans_rmse": 0.2,
-   "rpe_rot_rmse": 8.0,
-   "max_pose_jump": 45.0,
+   "rpe_rot_rmse": 18.0,
+   "max_pose_jump": 100.0,
    "resets": 1
   }
  }
