@@ -25,6 +25,40 @@ import slam.loop_closure as loop_closure_mod
 # module-level convention, read at CALL time for in-memory A/B.
 import slam.features.matcher as matcher_mod
 
+# Phase 20 (T3a) flag, beside its machinery (_reset_system below).
+# The shipped reset TELEPORTS the live trajectory to the world
+# origin (cur_frame.pose = identity) — the single mechanism behind
+# all three census SCALE_BLOWUP labels (road |t| 382.3 -> 0 in one
+# step, woods_1 148.1 -> 0, woods_2_15 273.4 -> 0) and the reason
+# nothing after a reset is comparable to anything before it (the
+# phase-18 record's four unjudgeable (b) legs). Flag 1 = RE-GAUGE
+# CONTINUATION: keep the pre-reset pose as the new map's anchor —
+# the live trajectory stays in the pre-reset world frame, and the
+# recovery archive (whose poses live in that same frame) becomes
+# gauge-consistent with the live map, so the archive-reloc
+# re-anchor degenerates to a no-op instead of a second teleport.
+# INT flag (the --override bool("0") trap); read at CALL time so
+# probes pin it in memory for A/B. Phase-20 plan: benchmarks/
+# IMPROVEMENT.md "Phase 20" (pre-registered).
+#
+# ADOPTED 2026-11-12 (the phase-20 A/B, both legs on the desktop
+# gate machine; output/benchmarks/ladder/phase20_gauge_contract.json):
+# the re-gauge continuation wins the pre-registered contract's
+# majority-benefit rule 4/5 — walking_woods_1 (boundary steps
+# 151.4/30.0/66.0 -> 1.0/0.15, SCALE_BLOWUP cleared), walking_woods_
+# 2_15 (105.0/105.5 -> 1.0/1.0, SCALE_BLOWUP cleared), kyoto_2_5
+# (2.16 -> 0.0), and the GT'd euroc_v1_01_easy (identical reset
+# indices [30, 60]; final KF-ATE 1.425 -> 1.038, per-frame 1.543 ->
+# 1.044). road is the lone vote AGAINST — its primary metric
+# improved (266.23 -> 0.5, SCALE_BLOWUP cleared) but the candidate
+# gained a second reset (529, 31 frames after 498; the T3b
+# trigger-side defect firing again) that tripped the pre-registered
+# RESET_STORM >=2-resets classifier — the label leg's conservative
+# guard. greece: bit-identical no-op guard. Battery (flag silent):
+# 0 non-timing diffs vs both references. The pre-adoption shipped
+# default was the teleport (0).
+RESET_GAUGE_CONTINUITY_ENABLED = 1
+
 LOG_TAG = 'Tracker'
 
 
@@ -770,8 +804,13 @@ class Tracker:
         # BA re-solves poses+points together (finding 13's reserved
         # trigger: the global rearrangement justified by a genuine
         # loop constraint; the milestone-3 disabled block had this
-        # exact call).
-        if self.map.g2o_optimizer.global_bundle_adjustment():
+        # exact call). Phase 18 [18a-2]: gated=True opts THIS call
+        # site into the acceptance gate — the solve writes back only
+        # if it improved the objective it minimizes; a diverged
+        # rearrangement restores the re-anchored pre-solve state
+        # instead of teleporting the map. The Map's PERIODIC global
+        # BA stays ungated (bit-transparent legacy path).
+        if self.map.g2o_optimizer.global_bundle_adjustment(gated=True):
             telemetry.event("loop_global_ba")
         else:
             warning_log(LOG_TAG, "Global BA after loop correction "
@@ -1126,7 +1165,21 @@ class Tracker:
         self.consecutive_relocalization_failures = 0
 
         # Set current frame as new origin
-        self.cur_frame.pose = np.eye(4)
+        # Phase 20 (T3a): the shipped path TELEPORTS the live
+        # trajectory to the world origin here — every census
+        # SCALE_BLOWUP label is this one write (road |t| 382.3 -> 0,
+        # woods_1 148.1 -> 0, woods_2_15 273.4 -> 0). Flag 1 keeps
+        # the pre-reset pose instead: the new map's gauge CONTINUES
+        # the old world frame (the pose-graph gauge anchors at KF0's
+        # CURRENT pose wherever it is; the E-chain/PnP compose
+        # relative motions; the harness's Umeyama is global — all
+        # verified gauge-agnostic in the phase-20 plan). The
+        # recovery archive lives in that same frame, so the
+        # archive-reloc re-anchor degenerates to a no-op instead of
+        # a second teleport. Flag 0 = the shipped teleport, exactly.
+        if not RESET_GAUGE_CONTINUITY_ENABLED:
+            self.cur_frame.pose = np.eye(4)
+        # (flag 1: keep self.cur_frame.pose — the pre-reset estimate)
         self.prev_frame = None
 
         # Add current frame as first keyframe of new map

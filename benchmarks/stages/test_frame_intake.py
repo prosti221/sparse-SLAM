@@ -39,13 +39,17 @@ def shifted(img, dx):
 
 
 def test_constants_pin_the_measured_band():
-    """8-5: the threshold is the measured healthy edge from finding 33
-    (kyoto_original: 0.0 px median displacement at 60 fps -> 6 resets
-    in 30 s; the same content at 15 fps / 2.4 px -> 0 resets, 21K-point
-    map); the valve bounds full-stop staleness at 1 s of container
+    """8-5: the valve bounds full-stop staleness at 1 s of container
     time; the match floor is the minimum sample for a displacement
-    MEDIAN (below it the gate cannot measure and must not skip)."""
-    assert const.FRAME_INTAKE_MIN_DISPLACEMENT_PX == 8.0
+    MEDIAN (below it the gate cannot measure and must not skip).
+    The displacement threshold is USER-DECIDED by measurement, and
+    the pin tracks the configured value (the 8-5 record's contract):
+    2.0 = the adopted healthy edge (finding 33: kyoto_original 0.0 px
+    median at 60 fps -> 6 resets in 30 s; 2.4 px -> 0 resets), 8.0 =
+    the user's 2-fps-cadence adjustment, 4.0 = the user's conclusion
+    of the 8->2->4 sweep (2026-11-12; finding 37's kyoto_2_5 pan
+    sweep is the mid-point evidence)."""
+    assert const.FRAME_INTAKE_MIN_DISPLACEMENT_PX == 4.0
     assert const.FRAME_INTAKE_MAX_GAP_S == 1.0
     assert const.FRAME_INTAKE_MIN_MATCHES == 10
 

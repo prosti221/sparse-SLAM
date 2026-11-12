@@ -15,6 +15,62 @@ import cv2 as cv
 
 LOG_TAG = 'g2oBA'
 
+# ---- Phase 18 (T1 combination) flags: beside their machinery, module
+# level INT/FLOAT constants, read at CALL time so probes can pin them
+# in memory for A/B (the user's constants.py is a live experiment
+# file; these do not belong there until it stabilizes). ----
+
+# [18a-1] Scale-invariant pose-graph odometry information. Today
+# every odometry edge carries LOOP_INFO_ODOMETRY (10.0), so the
+# AGGREGATE odometry stiffness grows with map size: ~100-200 on a
+# young map (the loop edge competes 1:1 -> the measured lossy snap:
+# fr1 e1 desktop +72% KF-ATE applying GOOD constraints) vs ~2500 on
+# a 250-KF map (the loop edge drowns -> post-graph == pre to four
+# decimals while the chain drifts 14x; fr3, both hosts). The
+# normalization keeps the AGGREGATE constant: per-edge =
+# AGGREGATE / n_odometry_edges — one mechanism fixing both faces.
+# 500.0 lands the measured mild zone (mh_01's healthy repairs ran
+# at aggregate odo:loop ~3-6:1). MEASURED (phase 18, C2-only arm,
+# desktop x86_64): the normalized graph alone FAILED the amended
+# contract — fr2 final-KF-ATE +0.109, fr3 +0.110 vs the phase-17
+# control, per-event graph-stage degradations to +0.0165 on fr1 —
+# so the pre-registered {300, 1000} sweep is superseded, not run:
+# the ablation matrix localizes the harm away from the constant
+# (the gate-only arm fails with normalization OFF entirely), and
+# sweeping to rescue a rejected mechanism would violate the
+# no-rescue clause. Ships OFF pending a redesigned mechanism;
+# the phase-18 record in IMPROVEMENT.md holds the numbers.
+LOOP_ODOMETRY_NORMALIZED_ENABLED = 0
+LOOP_INFO_ODOMETRY_AGGREGATE = 500.0
+
+# [18a-2] The BA acceptance gate on the correction path (phase 11's
+# planned machinery, scoped by phase 18's pre-registration to the
+# GLOBAL-AFTER-CORRECTION call — the Map's PERIODIC global BA
+# (map.py, should_perform_global_bundle_adjustment) stays
+# ungated: the gate is opt-in per call site via gated=True, and
+# the default is the legacy bit-transparent path). The gate: a
+# solve is written back only if it improves the objective it
+# minimizes (total squared NORMALIZED reprojection error over the
+# map's observations — the EdgeProjectXYZ2UV objective), measured
+# on the re-anchored pre-solve state vs the post-solve state; a
+# rejection restores the pre-solve state and counts the solve
+# failed (telemetry loop_global_ba_rejected). Measured
+# justification (phase 17): the BA exploded to 21-160-unit
+# keyframe teleports EVEN FROM the consistent re-anchored init
+# (fr2: d_ba +0.086/+0.114 — larger than OFF's worst) and
+# nothing checked. The per-solve max/median move ratio was
+# measured NOT to discriminate (healthy 2.3-6.7 vs harmful
+# 15.3-26.6 vs GT-benign 43-52 — recorded in the phase-18 plan).
+# MEASURED (phase 18, desktop x86_64, all three gate-on arms): the
+# objective criterion is INSUFFICIENT — 68 gated decisions, 67
+# accepted / 1 rejected, while 12 accepted solves degraded
+# GT-aligned ATE by >0.02 (worst +0.087 fr1, +0.129 fr3) and the
+# single rejection did not save its run (fr2 +0.127 final). A
+# solve that fits the map's own biased structure better is not a
+# truer solve. Ships OFF; the machinery + pins remain for a
+# redesigned criterion (the phase-18 record in IMPROVEMENT.md).
+LOOP_BA_GATE_ENABLED = 0
+
 
 class G2OBundleAdjustment:
     def __init__(self, map, verbose=False):
@@ -467,7 +523,13 @@ class G2OBundleAdjustment:
         self._recompute_point_errors(observations)
         return True
 
-    def global_bundle_adjustment(self) -> bool:
+    def global_bundle_adjustment(self, gated: bool = False) -> bool:
+        """Global BA. `gated=True` (the loop-correction call site)
+        enables the phase-18 acceptance gate; the default False is
+        the legacy bit-transparent path (the Map's PERIODIC global
+        BA and every other existing caller stay exactly as they
+        were — phase 18's pre-registration scopes the gate to the
+        correction path)."""
         debug_log(LOG_TAG, "Starting global BA with g2o")
         keyframes = self.map.keyframes
         points = self.map.points
@@ -479,7 +541,98 @@ class G2OBundleAdjustment:
                 LOG_TAG, f"Insufficient observations for global BA: {len(observations)}")
             return False
 
-        return self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=True, fix_points=False)
+        if not (gated and LOOP_BA_GATE_ENABLED):
+            return self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=True, fix_points=False)
+
+        # ---- Phase 18 [18a-2]: the acceptance gate ----
+        # Snapshot the pre-solve state. In the phase-18 combination
+        # this is the RE-ANCHORED state (graph-corrected poses +
+        # points moved with them): CONSISTENT — so a rejected BA
+        # leaves a coherent map, which is exactly what makes the
+        # write-back rejectable (17d-1's standalone re-anchor
+        # failed its A/B partly because a rejection would have
+        # left the moved-poses/stale-points mess).
+        pre_poses = {kf.frame_id: kf.pose.copy() for kf in keyframes}
+        pre_pts = [np.asarray(p.pt_3d).copy() for p in points]
+        err_pre = self._total_reprojection_sq_error(observations)
+
+        ok = self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=True, fix_points=False)
+        if not ok:
+            return False
+
+        err_post = self._total_reprojection_sq_error(observations)
+        if err_post >= err_pre:
+            # The solve did not improve the objective it minimizes:
+            # a diverged rearrangement, not a refinement. Restore
+            # the pre-solve (re-anchored, consistent) state; the
+            # per-point error stats were recomputed inside the solve
+            # on the REJECTED estimates, so recompute them on the
+            # restored state too. The persistent graph was already
+            # invalidated inside the solve; it rebuilds from the
+            # restored state.
+            for kf in keyframes:
+                kf.pose = pre_poses[kf.frame_id]
+            for p, x in zip(points, pre_pts):
+                p.pt_3d = x
+            self._recompute_point_errors(observations)
+            telemetry.event("loop_global_ba_rejected")
+            warning_log(
+                LOG_TAG,
+                f"Global BA REJECTED by the acceptance gate "
+                f"(objective {err_pre:.3f} -> {err_post:.3f}, not an "
+                f"improvement) - keeping the re-anchored pre-solve state")
+            return False
+        telemetry.event("loop_global_ba_accepted")
+        debug_log(
+            LOG_TAG, f"Global BA accepted by the gate "
+            f"(objective {err_pre:.3f} -> {err_post:.3f})")
+        return True
+
+    def _total_reprojection_sq_error(self, observations) -> float:
+        """Phase 18 [18a-2]: the g2o global-BA objective — total
+        squared NORMALIZED reprojection error over the observations
+        (the EdgeProjectXYZ2UV residual the solver actually
+        minimizes: projection through inv(pose) with the unit
+        camera, measured against pt_2d_norm). The scale-free
+        before/after acceptance quantity; mirrors the solver's own
+        residual including its behind-camera behavior (no
+        cheirality special case — the same large error both
+        sides). No RNG; corrections are rare so the per-observation
+        loop is a one-time cost per correction event."""
+        total = 0.0
+        for obs in observations:
+            T_cw = np.linalg.inv(obs.frame.pose)
+            Xc = T_cw[:3, :3] @ obs.point.pt_3d + T_cw[:3, 3]
+            z = Xc[2] if abs(Xc[2]) > 1e-12 else 1e-12
+            du = Xc[0] / z - obs.pt_2d_norm[0]
+            dv = Xc[1] / z - obs.pt_2d_norm[1]
+            total += du * du + dv * dv
+        return float(total)
+
+    def _odometry_information(self, frame_to_vertex) -> np.ndarray:
+        """Phase 18 [18a-1]: the odometry edges' per-edge information
+        matrix. Legacy: LOOP_INFO_ODOMETRY per edge, so AGGREGATE
+        odometry stiffness grows with map size — ~100-200 on a young
+        map (the loop edge competes 1:1 -> the measured lossy snap:
+        fr1 e1 desktop +72% KF-ATE applying GOOD constraints) vs
+        ~2500 on a 250-KF map (the loop edge drowns -> post-graph ==
+        pre to four decimals while the chain drifts 14x; fr3, both
+        hosts). Normalized: the AGGREGATE spread over the edge count,
+        scale-invariant vs map size — one mechanism fixing both faces
+        (phase 17c). 500.0 lands the measured mild zone (mh_01's
+        healthy repairs ran at aggregate odo:loop ~3-6:1); the
+        phase-18 A/B sweeps {300, 1000} only if the default leg fails
+        the contract. The flag is read at call time (probes pin it in
+        memory for A/B)."""
+        if LOOP_ODOMETRY_NORMALIZED_ENABLED:
+            vertex_ids = set(frame_to_vertex)
+            n_odo = sum(
+                1 for kf1, kf2 in zip(self.map.keyframes,
+                                      self.map.keyframes[1:])
+                if kf1.frame_id in vertex_ids
+                and kf2.frame_id in vertex_ids) or 1
+            return np.eye(6) * (LOOP_INFO_ODOMETRY_AGGREGATE / n_odo)
+        return np.eye(6) * const.LOOP_INFO_ODOMETRY
 
     def pose_graph_optimization(self, loop_constraints: List[Tuple[UUID, UUID, np.ndarray]]) -> bool:
         debug_log(
@@ -499,6 +652,8 @@ class G2OBundleAdjustment:
             # Create pose graph vertices
             frame_to_vertex = self._create_keyframe_vertices(
                 opt, self.map.keyframes, vertex_id_offset=0, fix_first=True)
+
+            odometry_information = self._odometry_information(frame_to_vertex)
 
             # Add odometry edges (sequential constraints between
             # keyframes - the tautological-by-design CHAIN PRIOR:
@@ -530,8 +685,9 @@ class G2OBundleAdjustment:
                 edge.set_vertex(0, frame_to_vertex[kf1.frame_id])
                 edge.set_vertex(1, frame_to_vertex[kf2.frame_id])
                 edge.set_measurement(se3_rel)
-                # Odometry edges have moderate information
-                edge.set_information(np.eye(6) * const.LOOP_INFO_ODOMETRY)
+                # Phase 18 [18a-1]: the (possibly normalized)
+                # per-edge odometry information computed above.
+                edge.set_information(odometry_information)
 
                 # Add robust kernel to handle odometry outliers gracefully
                 edge.set_robust_kernel(g2o.RobustKernelHuber(np.sqrt(5.991)))

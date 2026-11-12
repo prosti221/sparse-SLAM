@@ -67,6 +67,46 @@ RECOVERY_VALIDATION_ENABLED = 1
 RECOVERY_ARCHIVE_ENABLED = 1
 RECOVERY_ARCHIVE_SCAN_LIMIT = 40
 
+# Phase 17 (T1) point re-anchor kill-switch (same module-level
+# placement / INT-flag / call-time-read convention). The verdict
+# evidence: the pose graph moves keyframe poses while the map
+# points stay triangulated under the OLD poses, so the global BA
+# that follows starts from an inconsistent state (moved cameras,
+# stale structure) and lands wherever LM takes it — measured as
+# single-keyframe teleports of 21-160 map units per solve and 2-3x
+# KF-ATE explosions (fr1/fr2/fr3, both hosts; the same stage
+# REPAIRS dramatically when it happens to land in the right basin:
+# mh_01 desktop, all six events). The re-anchor moves each point
+# with its earliest observing keyframe's rigid correction (the
+# ORB-SLAM2 reference-KF practice) BEFORE the BA, making the
+# consistent basin the starting point.
+#
+# A/B VERDICT (2026-11-11, phase 17d-1): REJECTED as a STANDALONE
+# fix — the pre-registered adoption contract FAILED on all 8
+# sequence x host legs. The measured mechanism of the failure: the
+# stale points were LOAD-BEARING — they anchored the per-frame
+# stream in the pre-correction gauge and often pulled the BA back
+# toward the better-aligned geometry; making corrections propagate
+# consistently amplified HARMFUL corrections into the live stream
+# (fr1 laptop per-frame 0.067 -> 0.180; desktop legs gained reset
+# storms where OFF had zero resets). And the BA still explodes
+# from the consistent init (fr2: d_ba +0.086/+0.114 — larger than
+# OFF's worst), so stale-init was not the explosions' whole cause;
+# the missing piece is an acceptance GATE on the BA write-back
+# (phase 11's planned machinery), not only the initialization.
+# Retained OFF (the pre-17 passthrough) for the eventual
+# combination: a corrected graph (17d-2) + the gate, then the
+# re-anchor re-tried as one unit. MEASURED (phase 18, desktop
+# x86_64): the combination AND every pre-registered ablation
+# FAILED the amended contract — and the re-anchor is the
+# destabilizer (reset storms on fr3/mh_01 in BOTH normalization
+# regimes; the one bright leg, fr1 -0.080 final with gate-only,
+# does not survive the conjunctive contract). Stays OFF. Evidence:
+# output/benchmarks/ladder/phase17_t1_events_*_{,_on}{,_c18*}.json
+# and phase18_t1_contract*.json; the phase-17/18 records in
+# benchmarks/IMPROVEMENT.md.
+LOOP_POINT_REANCHOR_ENABLED = 0
+
 
 class LoopClosureCandidate(NamedTuple):
     """Represents a potential loop closure between two keyframes"""
@@ -773,7 +813,14 @@ class PoseGraphOptimizer:
     def optimize_with_loop_constraints(self, loop_constraints: List[PoseGraphConstraint]) -> bool:
         """Run the SE3 pose graph over the loop constraints (odometry
         edges built internally from consecutive keyframes; the loop
-        edges carry the verified metric constraints)."""
+        edges carry the verified metric constraints).
+
+        Phase 17 (T1): on success, the write-back RE-ANCHORS the map
+        points with the correction (see _reanchor_points_with_
+        correction) so the global BA that follows starts from a
+        consistent state instead of the moved-cameras/stale-structure
+        initialization measured to produce 21-160-unit keyframe
+        teleports. Flag OFF = the pre-17 passthrough, exactly."""
         debug_log(
             LOG_TAG, f"Starting pose graph optimization with {len(loop_constraints)} loop constraints")
 
@@ -786,9 +833,61 @@ class PoseGraphOptimizer:
             for constraint in loop_constraints
         ]
 
-        # Use the optimizer's pose graph (edge weights from the
-        # LOOP_INFO_* constants)
-        return self.map.g2o_optimizer.pose_graph_optimization(pose_graph_constraints)
+        if not LOOP_POINT_REANCHOR_ENABLED:
+            return self.map.g2o_optimizer.pose_graph_optimization(
+                pose_graph_constraints)
+
+        # The pre-correction poses (the correction IS the delta;
+        # captured BEFORE the g2o write-back moves anything).
+        pre_poses = {kf.frame_id: kf.pose.copy()
+                     for kf in self.map.keyframes}
+        ok = self.map.g2o_optimizer.pose_graph_optimization(
+            pose_graph_constraints)
+        if ok:
+            self._reanchor_points_with_correction(pre_poses)
+        return ok
+
+    def _reanchor_points_with_correction(self,
+                                          pre_poses: dict) -> None:
+        """Phase 17 (T1): move every map point with the rigid
+        correction of its EARLIEST observing keyframe, after the pose
+        graph moved the keyframes and before the global BA runs.
+
+        A point triangulated under the old poses must follow the
+        keyframe that anchors its observations; the earliest observer
+        approximates the triangulating reference (the ORB-SLAM2
+        reference-KF practice). Multi-keyframe points get the single
+        earliest delta — an approximation the BA refines from a
+        CONSISTENT basin instead of teleporting keyframes to explain
+        stale structure (measured, both hosts: 21-160-unit per-solve
+        keyframe moves from the stale initialization).
+
+        No RNG draws; pure linear algebra on existing state (the
+        module's cv-RNG-transparency contract holds).
+        """
+        # insertion order -> the earliest-observer tiebreak
+        kf_order = {kf.frame_id: i
+                    for i, kf in enumerate(self.map.keyframes)}
+        reanchored = 0
+        for pt in self.map.points:
+            best_order, best_id = None, None
+            for fid in pt.observations.keys():
+                order = kf_order.get(fid)
+                if order is not None and (best_order is None
+                                          or order < best_order):
+                    best_order, best_id = order, fid
+            if best_id is None:
+                continue        # no live keyframe observes it
+            pre = pre_poses.get(best_id)
+            kf = self.map.get_keyframe_by_id(best_id)
+            if pre is None or kf is None:
+                continue
+            delta = kf.pose @ np.linalg.inv(pre)
+            p = np.asarray(pt.pt_3d, dtype=np.float64).reshape(3)
+            pt.pt_3d = delta[:3, :3] @ p + delta[:3, 3]
+            reanchored += 1
+        debug_log(LOG_TAG, f"Re-anchored {reanchored} map points "
+                  f"with the loop correction")
 
     def create_constraint_from_verified_loop(self, verified_loop: LoopClosureCandidate) -> PoseGraphConstraint:
         """Convert a verified loop closure to a pose graph constraint.

@@ -98,7 +98,16 @@ CALIB_GATE_MIN_ROT_DEG = 15.0
 # is in pixels by design; its focal direction is benign (a LONGER
 # focal magnifies displacement -> easier to clear -> feeds more, the
 # safe side; a shorter one starves more, bounded by the valve below).
-FRAME_INTAKE_MIN_DISPLACEMENT_PX = 8.0
+# Value history (all measured, user-decided): 2.0 = the phase-8-5
+# adopted healthy edge (finding 33's band); 8.0 = the user's
+# post-adoption cadence approximation of their 2 fps re-encode
+# (stride-30 median displacement 8.6 px); 4.0 = the user's
+# conclusion of the 8->2->4 sweep (2026-11-12), with finding 37's
+# kyoto_2_5 pan sweep as the mid-point evidence (final |t|
+# 219.0 / 185.2 / 123.3 / 101.6 map units and resets 2/3/0/0 at
+# 2/4/8/16 px - 4 px composes ~16% less fake translation than the
+# 2.0 edge while feeding more than the 8.0 cadence).
+FRAME_INTAKE_MIN_DISPLACEMENT_PX = 4.0
 # Safety valve: at a full stop displacement never clears the
 # threshold, but appearance keeps drifting (lighting, dynamic
 # content) - force a feed after this many seconds of container time,

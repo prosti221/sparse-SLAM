@@ -381,13 +381,14 @@ class Map:
         itself stays pure amnesia so every other reset caller is
         unaffected).
 
-        exclude_frame: the frame about to become the NEW origin. The
-        reset immediately overwrites its pose to identity and re-adds
-        it to the live map - archiving it would alias an object the
-        live pipeline keeps mutating (its archive geometry would be
-        corrupted in place). A map whose only keyframe IS the
-        about-to-be-origin has nothing to relocalize against and is
-        not archived.
+        exclude_frame: the frame about to anchor the NEW map (the
+        shipped reset overwrites its pose to identity; the phase-20
+        re-gauge continuation keeps the pre-reset pose — either way
+        it is re-added to the live map immediately after).
+        Archiving it would alias an object the live pipeline keeps
+        mutating (its archive geometry would be corrupted in
+        place). A map whose only keyframe IS the anchor frame has
+        nothing to relocalize against and is not archived.
         """
         if not loop_closure.RECOVERY_ARCHIVE_ENABLED:
             return
