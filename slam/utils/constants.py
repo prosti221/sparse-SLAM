@@ -230,10 +230,16 @@ TRIANGULATION_VALIDATION_CODE.update(
 
 
 # --- Feature extractor constants
+# Phase 23: AKAZE and SuperPoint ("DNN") are REMOVED - neither ever
+# won a measured adoption gate, and the only extractor every
+# benchmark tier constructs is ORB. The extension seam for the
+# planned learned extractors (ALIKED + LightGlue) is the
+# descriptor-kind map below: one entry per extractor name;
+# matcher.descriptor_norm() reads it to pick the cv norm. 'binary' =
+# Hamming (ORB's uint8 descriptors); 'float' = L2 (what a learned
+# dense-descriptor extractor will need).
 ORB_EXTRACTOR_NAME = 'ORB'
-DNN_EXTRACTOR_NAME = 'DNN'
-AKAZE_EXTRACTOR_NAME = 'AKAZE'
-BINARY_DESCRIPTION_METHODS = [ORB_EXTRACTOR_NAME, AKAZE_EXTRACTOR_NAME]
+EXTRACTOR_DESCRIPTOR_KINDS = {ORB_EXTRACTOR_NAME: 'binary'}
 
 ORB_NUMBER_OF_POINTS = 8000
 ORB_QUALITY_LEVEL = 0.01  # Quality level for feature detection

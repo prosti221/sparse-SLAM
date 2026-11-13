@@ -569,7 +569,7 @@ class Tracker:
                 if d1 is None or d2 is None:
                     continue
                 desc_dist = cv.norm(
-                    d1, d2, cv.NORM_HAMMING if self.feature_extraction_method in BINARY_DESCRIPTION_METHODS else cv.NORM_L2)
+                    d1, d2, descriptor_norm(self.feature_extraction_method))
                 if desc_dist < best_dist:
                     best_dist = desc_dist
                     best_idx = i

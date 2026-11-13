@@ -20,6 +20,7 @@ from benchmarks.keyframe_audit import _authoritative_observations, distribution
 from slam.core.observation import Observation
 from slam.core.point import Point
 from slam.core.tracker import Tracker
+from slam.features.matcher import descriptor_norm
 from slam.utils import constants as const, telemetry
 from slam.utils.utils import compute_triangulation, is_valid_triangulated_point
 
@@ -107,7 +108,7 @@ def match_new_pair(current, reference, extractor):
             or current.keypoints is None or reference.keypoints is None
             or len(current.keypoints) != len(a) or len(reference.keypoints) != len(b)):
         return []
-    norm = cv.NORM_HAMMING if extractor in const.BINARY_DESCRIPTION_METHODS else cv.NORM_L2
+    norm = descriptor_norm(extractor)
     matcher = cv.BFMatcher(norm, crossCheck=False)
     reserved_query, reserved_train = occupied_indices(current), occupied_indices(reference)
     query_seen, train_seen = set(), set()

@@ -8,6 +8,7 @@ import pytest
 from benchmarks.harness import run_slam
 from benchmarks.keyframe_audit import KeyframeAudit
 import benchmarks.triangulation_partners as partners
+import slam.features.matcher as matcher_mod
 from benchmarks.stages.helpers import make_frame, project_gt, set_keypoints, yaw_pose
 from benchmarks.synthetic.generator import ensure_sequence
 from slam.core.map import Map
@@ -266,7 +267,15 @@ def test_partner_geometry_is_scale_invariant_inside_unchanged_depth_guards(scale
         base.summary(current)["accepted_bearing_parallax_deg"]["median"], abs=1e-6)
 
 
-def test_float_descriptor_matching_is_bf_rng_transparent_too():
+def test_float_descriptor_matching_is_bf_rng_transparent_too(monkeypatch):
+    """Phase 23: the float branch is reached THROUGH the declared
+    seam now - descriptor_norm raises on unknown names, so the pin
+    registers a float-descriptor extractor kind for the call (the
+    seam's dict is read at call time; the pre-23 name-string list
+    silently defaulted every non-binary name to L2). The RNG
+    transparency contract itself is unchanged: float descriptors
+    match on BFMatcher(cv.NORM_L2) - no FLANN, no cv-RNG consumption."""
+    monkeypatch.setitem(matcher_mod.EXTRACTOR_DESCRIPTOR_KINDS, "SIFT", "float")
     _, older, _, current, _ = _fixture()
     current.descriptors = current.descriptors.astype(np.float32)
     older.descriptors = older.descriptors.astype(np.float32)
