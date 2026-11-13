@@ -50,16 +50,11 @@ LOG_TAG = 'LoopClosure'
 # time so probes can patch it in memory for A/B.
 RECOVERY_VALIDATION_ENABLED = 1
 
-# The loop-scan worker-pool size: the candidate scan (one similarity
-# score per stored keyframe) and the candidate verification (one
-# reloc-grade PnP per candidate) are independent, order-independent
-# computations - ranked after the aggregation, so a bounded thread
-# pool preserves results bit-exactly (the [26a] audit: every worker
-# call is cv-RNG-clean and GIL-releasing). Flag 0/1 = the sequential
-# path (the shipped default: byte-identical); N >= 2 engages a pool
-# of N workers. INT flag (the --override int trap); read at CALL
-# time so probes pin it for A/B.
-LOOP_SCAN_THREADS = 0
+# The loop-scan worker-pool flag was REMOVED (the [26b] A/B: the
+# pool was proven run-level silent but won nothing — the GT-ladder
+# loop stage is correction-dominated, not scan-dominated; see the
+# phase-26 [26b] record). Any future threading hangs off the [26a]
+# audit facts (worker candidates cv-RNG-clean, GIL-releasing).
 
 # Archive kill-switch + archive-query scan bound (same module-level
 # placement / INT-flag convention / call-time reads). OFF reproduces
@@ -168,36 +163,15 @@ class KeyframeFeatureDatabase:
             candidate_keyframes = self.keyframe_order[:-exclude_recent]
 
         candidates = []
-        # The scan parallelizes over STORED keyframes: each score is
-        # an independent pure function of two descriptor sets, results
-        # are order-independent (ranked after), and pool.map preserves
-        # candidate order. Engaged only when the flag allows and there
-        # is more than one candidate (a pool for one item is waste).
-        if LOOP_SCAN_THREADS > 1 and len(candidate_keyframes) > 1:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(
-                    max_workers=LOOP_SCAN_THREADS) as pool:
-                scores = list(pool.map(
-                    lambda kf: self._score_or_zero(
-                        query_descriptors, kf, extractor_name),
-                    candidate_keyframes))
-            for kf_id, score in zip(candidate_keyframes, scores):
-                if score >= similarity_threshold:
-                    candidates.append(LoopClosureCandidate(
-                        query_keyframe_id=None,  # Will be set by caller
-                        match_keyframe_id=kf_id,
-                        similarity_score=score
-                    ))
-        else:
-            for kf_id in candidate_keyframes:
-                score = self._score_or_zero(
-                    query_descriptors, kf_id, extractor_name)
-                if score >= similarity_threshold:
-                    candidates.append(LoopClosureCandidate(
-                        query_keyframe_id=None,  # Will be set by caller
-                        match_keyframe_id=kf_id,
-                        similarity_score=score
-                    ))
+        for kf_id in candidate_keyframes:
+            score = self._score_or_zero(
+                query_descriptors, kf_id, extractor_name)
+            if score >= similarity_threshold:
+                candidates.append(LoopClosureCandidate(
+                    query_keyframe_id=None,  # Will be set by caller
+                    match_keyframe_id=kf_id,
+                    similarity_score=score
+                ))
 
         # Sort by similarity (highest first)
         candidates.sort(key=lambda x: x.similarity_score, reverse=True)
@@ -314,40 +288,26 @@ class LoopClosureDetector:
         """Geometric verification via the reloc-grade PnP constraint
         (see _estimate_loop_constraint). A verified candidate carries
         the pose-graph edge measurement M(query, match) =
-        pose_q_pnp @ inv(pose_match) in relative_pose.
+        pose_q_pnp @ inv(pose_match) in relative_pose."""
+        verified_loops = []
 
-        Per-candidate verification is independent and read-only (the
-        only shared mutation is telemetry counting, lock-guarded), so
-        a bounded pool preserves the verified list bit-exactly when
-        LOOP_SCAN_THREADS allows it ([26b]; the [26a] audit proved
-        every worker call cv-RNG-clean and GIL-releasing)."""
-        def verify_one(candidate):
+        for candidate in candidates:
             query_kf = self.map.get_keyframe_by_id(
                 candidate.query_keyframe_id)
             match_kf = self.map.get_keyframe_by_id(
                 candidate.match_keyframe_id)
             if query_kf is None or match_kf is None:
-                return None
+                continue
             relative_pose = self._estimate_loop_constraint(
                 query_kf, match_kf)
-            if relative_pose is None:
-                return None
-            return LoopClosureCandidate(
-                query_keyframe_id=candidate.query_keyframe_id,
-                match_keyframe_id=candidate.match_keyframe_id,
-                similarity_score=candidate.similarity_score,
-                geometric_verified=True,
-                relative_pose=relative_pose
-            )
-
-        if LOOP_SCAN_THREADS > 1 and len(candidates) > 1:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(
-                    max_workers=LOOP_SCAN_THREADS) as pool:
-                results = list(pool.map(verify_one, candidates))
-        else:
-            results = [verify_one(c) for c in candidates]
-        verified_loops = [r for r in results if r is not None]
+            if relative_pose is not None:
+                verified_loops.append(LoopClosureCandidate(
+                    query_keyframe_id=candidate.query_keyframe_id,
+                    match_keyframe_id=candidate.match_keyframe_id,
+                    similarity_score=candidate.similarity_score,
+                    geometric_verified=True,
+                    relative_pose=relative_pose
+                ))
 
         if verified_loops:
             telemetry.event("loop_verified")
