@@ -1,8 +1,7 @@
-"""Intrinsics refit in the BA loop (phase 2j-4) - the DroidCalib port,
+"""Intrinsics refit in the BA loop - the DroidCalib port,
 v3: BASIN SEARCH.
 
-Design record (the full probe trail is in benchmarks/IMPROVEMENT.md
-"Phase 2j-4 record"):
+Design record (the full probe trail is in benchmarks/IMPROVEMENT.md):
 
 v1 refined (f, k1) by plain least squares against the frozen map's
 reprojection residuals, alternated with the g2o local BA. Six probes
@@ -62,7 +61,7 @@ _K1_ADDITIVE_GRID = (-0.06, -0.03, -0.012, 0.0, 0.012, 0.03, 0.06)
 
 
 class IntrinsicsEstimate:
-    """The LIVE intrinsics state (phase 2j-4): the value the frame-
+    """The LIVE intrinsics state: the value the frame-
     construction sites read every frame, and the object the refit
     mutates on convergence. Carries the INITIALIZATION's sigmas for
     provenance (the search needs no prior weights - it compares
@@ -250,8 +249,8 @@ class IntrinsicsRefiner:
 
     def _point_side_observations(self):
         """Keyframe observations from the POINT-SIDE registry
-        (Point.observations - the 2f/finding-17 lesson: the frame-side
-        registry additionally holds dedup-only matches)."""
+        (Point.observations - the frame-side registry additionally
+        holds dedup-only matches)."""
         kf_ids = {kf.frame_id for kf in self.map.keyframes}
         obs_list = []
         for pt in self.map.points:

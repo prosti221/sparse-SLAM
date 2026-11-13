@@ -36,18 +36,18 @@ class RunResult:
     telemetry: dict = field(default_factory=dict)
     # telemetry snapshot: stage_seconds / stage_calls / events
     final_intrinsics: dict = field(default_factory=dict)
-    # phase 2j-4: the final intrinsics estimate (f, k1, frozen,
+    # the final intrinsics estimate (f, k1, frozen,
     # source) - the recovery experiments' readout
     keyframe_poses: np.ndarray = field(default_factory=lambda:
                                        np.empty((0, 4, 4)))
-    # phase 3c: the FINAL map keyframe poses (post-correction,
+    # the FINAL map keyframe poses (post-correction,
     # post-culling - loop closure rewrites the keyframe trajectory
     # after the per-frame stream is history), paired with
     keyframe_gt_indices: List[int] = field(default_factory=list)
     # the frame indices of those same keyframes (the KF-trajectory
     # ATE's pairing; the harness sets _bench_frame_index at insertion
     # so culled keyframes drop out cleanly)
-    # ---- phase 14/15 additions (pure observation; additive only) ----
+    # ---- observation-only additions (additive; no SLAM state touched) ----
     health_rows: List[dict] = field(default_factory=list)
     # the per-frame health stream (the shared benchmarks/health.py
     # schema) — lets GT'd ladder runs attribute ACCURACY to health
@@ -57,13 +57,13 @@ class RunResult:
     # WHERE the resets happened in the fed stream (health needs
     # positions; the int `resets` above keeps the battery contract).
     loop_corrections: int = 0
-    # phase 15: how many loop-closure corrections fired during the
+    # how many loop-closure corrections fired during the
     # run (the tracker flag the harness observes per update).
     pre_correction_keyframe_poses: np.ndarray = field(
         default_factory=lambda: np.empty((0, 4, 4)))
     pre_correction_keyframe_gt_indices: List[int] = field(
         default_factory=list)
-    # phase 15: the keyframe-poses snapshot taken immediately BEFORE
+    # the keyframe-poses snapshot taken immediately BEFORE
     # the FIRST loop-closure correction rewrote them — the
     # loop-benefit measurement's "before" side (KF-ATE pre vs post).
 
@@ -73,17 +73,17 @@ class RunResult:
 
 
 def load_calibration(dataset_dir: Path):
-    """Dataset calibration -> (K, k1). Phase 2j-3: the calibration file
+    """Dataset calibration -> (K, k1). The calibration file
     may carry a 5th value, the simple-radial k1 (the generator writes
     it only when nonzero, so existing sequences' files are unchanged).
-    The phase-2j-0 FOCAL_SCALE diagnostic perturbs the focal on demand;
+    The FOCAL_SCALE diagnostic perturbs the focal on demand;
     k1 lives in normalized units and is untouched by it."""
     dataset_dir = Path(dataset_dir)
     vals = np.atleast_1d(np.loadtxt(dataset_dir / "calibration.txt"))
     fx, fy, cx, cy = vals[:4]
     k1 = float(vals[4]) if len(vals) > 4 else 0.0
 
-    # Phase 2j-0 diagnostic: perturb the focal length on demand
+    # Diagnostic: perturb the focal length on demand
     # (--override FOCAL_SCALE=0.8). Literal no-op at the default 1.0
     # (the multiply is skipped) so default runs are bit-identical.
     if const.FOCAL_SCALE != 1.0:
@@ -132,7 +132,7 @@ def run_slam(dataset_dir: Path,
     cv.setRNGSeed(seed)
 
     world_map = Map()
-    # Phase 2j-4: the live intrinsics estimate. Constructed from the
+    # The live intrinsics estimate. Constructed from the
     # (possibly FOCAL_SCALE-perturbed) dataset K; the frame loop reads
     # it every frame so mid-run refits reach subsequent frames. The
     # refit activates only via CALIB_REFIT_ENABLED (default 0 - the
@@ -144,7 +144,7 @@ def run_slam(dataset_dir: Path,
     poses: List[np.ndarray] = []
     keyframe_indices: List[int] = []
     steps: List[int] = []
-    # phase 14/15: the per-frame health stream + the loop-benefit
+    # the per-frame health stream + the loop-benefit
     # "before" snapshot (pure observation; no pipeline interaction).
     health_rows: List[dict] = []
     loop_corrections = 0
@@ -168,7 +168,7 @@ def run_slam(dataset_dir: Path,
             prev_pose = (tracker.cur_frame.pose.copy()
                          if tracker.cur_frame is not None else None)
             before_ev = dict(recorder.events)
-            # phase 15: snapshot the keyframe state while no
+            # Snapshot the keyframe state while no
             # correction has fired yet. At the moment the FIRST
             # correction rewrites poses (inside this update), this
             # holds the pre-correction trajectory.
@@ -196,9 +196,9 @@ def run_slam(dataset_dir: Path,
 
             poses.append(tracker.cur_frame.pose)
             steps.append(tracker.step)
-            # phase 14/15: the health row (the shared
+            # the health row (the shared
             # benchmarks/health.py schema). The harness path never
-            # enables the phase-13 rotation model, so 'rm' is always
+            # enables the rotation model, so 'rm' is always
             # False here — the auto motion-signal is a census tool;
             # ladder entries carry their known axis labels instead.
             pose = tracker.cur_frame.pose
@@ -232,14 +232,14 @@ def run_slam(dataset_dir: Path,
             })
             if is_new_keyframe:
                 keyframe_indices.append(i)
-                # Phase 3c: the KF-trajectory ATE's pairing needs each
+                # The KF-trajectory ATE's pairing needs each
                 # FINAL map keyframe's frame index - keyframe_indices
                 # (above) is insertion-ordered and keeps culled
                 # entries, so the index rides on the frame itself and
                 # the post-loop gather drops culled keyframes cleanly.
                 tracker.cur_frame._bench_frame_index = i
 
-        # Phase 2j-4 (v3.1): the one-shot basin search at STREAM END.
+        # The one-shot basin search at STREAM END.
         # The hook only gate-checks during the run; the search runs
         # once here (inside the try so its stage timing is recorded),
         # and freezes the estimate.
@@ -258,7 +258,7 @@ def run_slam(dataset_dir: Path,
     else:
         map_points = np.empty((0, 3))
 
-    # phase 14/15: reset positions in the fed stream (health
+    # reset positions in the fed stream (health
     # classifiers need WHERE, RunResult.resets keeps the battery's
     # int contract) + the loop-benefit "before" attachment (only
     # meaningful when a correction actually fired).

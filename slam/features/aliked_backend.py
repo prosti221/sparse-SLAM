@@ -1,4 +1,4 @@
-"""ALIKED + LightGlue backend (phase 24).
+"""ALIKED + LightGlue backend.
 
 The learned feature frontend: ALIKED (IEEE TIM 2023, BSD-3-Clause)
 detects sub-pixel keypoints with 128-dim L2-normalized float
@@ -17,7 +17,7 @@ upstream bug, cvg/LightGlue issue #186); CUDA when available with
 torch.use_deterministic_algorithms(True) and
 CUBLAS_WORKSPACE_CONFIG=:4096:8 (set BEFORE the torch import - the
 first caller does it). No cv-RNG is drawn anywhere here (the
-Finding-39 invariant: new mid-run code never touches the cv stream).
+RNG invariant: new mid-run code never touches the cv stream).
 
 Weights: download-on-demand with a skip-if-exists guard into the
 installed lightglue package's weights/ dir (where LightGlue looks)
@@ -74,11 +74,10 @@ def _device():
     production laptop: the [24a] MPS addendum probe MEASURED it
     viable - deform_conv2d's Metal kernel exists and works, extract
     + match bit-stable double-runs, steady-state extraction
-    138 ms/frame vs 639 ms CPU, ~4.6x; evidence
-    p24_mps probe JSON in the session temp, cited in the phase-24
-    record) > CPU. ALL devices run the same fp32 + deterministic-
-    algorithms pins; measured legs stay on the desktop regardless
-    (cross-device bit-identity is not a thing, phase 16)."""
+    138 ms/frame vs 639 ms CPU, ~4.6x; the IMPROVEMENT.md record
+    cites the probe evidence) > CPU. ALL devices run the same fp32 +
+    deterministic-algorithms pins; measured legs stay on the desktop
+    regardless (cross-device bit-identity is not a thing)."""
     torch = _import_torch()
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -152,8 +151,8 @@ def extract_aliked(img_bgr: np.ndarray
     Returns the Frame contract: cv.KeyPoint list in ORIGINAL pixel
     coordinates (response = the detector score) + (N, 128) float32
     L2-normalized descriptors, or ([], None) when nothing is
-    detected (the ORB path's empty convention - the finding-35
-    featureless handling applies unchanged).
+    detected (the ORB path's empty convention - the featureless
+    handling applies unchanged).
     """
     torch, extractor, _, device = _get_models()
     feats = extractor.extract(_to_tensor(img_bgr).to(device))

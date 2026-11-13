@@ -1,4 +1,4 @@
-"""Phase 6c experimental selectors: benchmark-only, NOT production defaults.
+"""Experimental selectors: benchmark-only, NOT production defaults.
 
 Mapped geometry replaces the raw-distance trigger only with sufficient
 fresh, distributed, pose-refined evidence. Otherwise retain the complete
@@ -161,7 +161,7 @@ class KeyframePolicyExperiment:
         original = tracker_mod.should_insert_keyframe
 
         def policy(frame, reference, frames_since_last_keyframe=0, **kwargs):
-            # Phase 8-4: the tracker passes the run's video_fps through
+            # the tracker passes the run's video_fps through
             # here (time-normalized cadence constants); the experiment
             # wrapper is a pure passthrough for it.
             legacy = original(frame, reference, frames_since_last_keyframe,

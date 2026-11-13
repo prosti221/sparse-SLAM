@@ -12,29 +12,23 @@ LOG_TAG = 'Matcher'
 # Matcher cache to avoid recreating expensive matcher objects
 _matcher_cache: Dict[str, cv.DescriptorMatcher] = {}
 
-# ===== Phase 13: the rotation-dominant pair pose (finding 37) =====
-# Module-level flags + constants beside the machinery (the phase 9/10
-# convention - the user's constants.py is their live experiment file).
-# INT for the enable flag: the --override parser's type(current)(value)
-# trap (bool("0") is True). Read at CALL time via this module's
-# namespace so probes can pin them in memory for A/B.
+# ===== the rotation-dominant pair pose =====
+# Module-level flags + constants beside the machinery; read at CALL
+# time via this module's namespace so probes can pin them in memory
+# for A/B.
 #
-# The finding-37 defect: on rotation-only motion the E-chain pair pose
-# is degenerate (with true t~0 the epipolar constraint holds for ANY
+# The defect: on rotation-only motion the E-chain pair pose is
+# degenerate (with true t~0 the epipolar constraint holds for ANY
 # translation - a one-parameter exact-solution family), so every pair
 # commits unit-normalized |t|=1.0 in noise-driven INCOHERENT directions
-# plus a ~12% shrunken rotation. Five per-pair gate candidates died in
-# measurement (sv-spread: the far-cluster homography is near-rotational
-# on translation content; consensus fraction: inverted - sub-noise
-# translation pairs are rotation-consistent by residual size;
-# directionality: the ray-Kabsch refit absorbs a uniform parallax field
-# as rotation; flip-decisiveness: the E's fabricated t is
-# cheirality-confirmed on 80% of pan pairs). The surviving gate is
-# TEMPORAL and lives in the tracker (see Tracker._update_rotation_
-# model_gate): an EMA of |cos| between consecutive frame-chain pair
-# E-t directions. These constants parameterize the ROTATION MODEL the
-# engaged path commits (the 13a2-validated instrument: 3-point
-# orthogonal Procrustes on unit rays, numpy-RNG only).
+# plus a ~12% shrunken rotation. Per-pair gate candidates all died in
+# measurement (sv-spread, consensus fraction, directionality,
+# flip-decisiveness each inverted on some regime). The surviving gate
+# is TEMPORAL and lives in the tracker (see
+# Tracker._update_rotation_model_gate): an EMA of |cos| between
+# consecutive frame-chain pair E-t directions. These constants
+# parameterize the ROTATION MODEL the engaged path commits (a
+# 3-point orthogonal Procrustes on unit rays, numpy-RNG only).
 ROTATION_MODEL_ENABLED = 1
 # The rotation-only consensus residual, pixel-space at unit depth
 # (MATCHER_RANSAC_THRESHOLD's units): ~2.8 px at fx 940. Measured on
@@ -45,34 +39,32 @@ ROTATION_MODEL_MIN_INLIERS = 20
 ROTATION_MODEL_RANSAC_ITERS = 256
 # Fixed per call: deterministic, and numpy's Generator is NOT the cv
 # global RNG stream - the engaged path changes no cv-RNG consumption
-# order anywhere (the phase-3b RNG-transparency convention).
+# order anywhere.
 ROTATION_MODEL_RNG_SEED = 1305
-# ===== the t-coherence gate (13c, phase13c_t_coherence.json) =====
+# ===== the t-coherence gate =====
 # EMA over |cos(t_k, t_{k-1})| of consecutive frame-chain pair E-t
 # directions. ENGAGE the rotation model below ENGAGE, re-arm legacy
-# above REARM (sticky both ways). Pinned from the measured traces
-# with margin: the kyoto_2_5 pan engages at the first sustained dip
-# and stays engaged 281/281 pairs (its EMA p90 is 0.93, below
-# re-arm); the kyoto_2_5 WALKING segment never engages (EMA min
-# 0.958 - above engage with margin); walking_salem never engages
-# (min 0.996). The synthetic harness sequences at their stride-1
-# battery cadence read incoherent (their per-pair parallax sits at
+# above REARM (sticky both ways). Pinned from measured traces with
+# margin: the pan engages at the first sustained dip and stays
+# engaged (its EMA p90 is 0.93, below re-arm); walking segments never
+# engage (EMA min 0.958 / 0.996 - above engage with margin). Stride-1
+# battery sequences read incoherent (their per-pair parallax sits at
 # the ORB quantization noise - the pan's regime), which is why the
-# gate is VIDEO-PATH scoped (Tracker.rotation_model_enabled,
-# default False; slam.py enables it where it wires the intake
-# gate). These bounds are measured pins, not tuning targets.
+# gate is VIDEO-PATH scoped (Tracker.rotation_model_enabled, default
+# False; slam.py enables it where it wires the intake gate). These
+# bounds are measured pins, not tuning targets.
 ROTATION_MODEL_EMA_ALPHA = 0.9
 ROTATION_MODEL_T_COHERENCE_ENGAGE = 0.80
 ROTATION_MODEL_T_COHERENCE_REARM = 0.95
 
 
 def descriptor_norm(feature_extraction_method: str) -> int:
-    """The cv norm for an extractor's descriptor kind - the phase-23
-    seam: constants.EXTRACTOR_DESCRIPTOR_KINDS holds ONE entry per
+    """The cv norm for an extractor's descriptor kind:
+    constants.EXTRACTOR_DESCRIPTOR_KINDS holds ONE entry per
     extractor name ('binary' = Hamming, 'float' = L2); a learned
-    float-descriptor extractor (ALIKED) adds its own line there.
-    Unknown names raise KeyError - the registry declares, never
-    silently defaults."""
+    float-descriptor extractor adds its own line there. Unknown
+    names raise KeyError - the registry declares, never silently
+    defaults."""
     kind = EXTRACTOR_DESCRIPTOR_KINDS[feature_extraction_method]
     return cv.NORM_HAMMING if kind == 'binary' else cv.NORM_L2
 
@@ -93,9 +85,8 @@ def _get_or_create_matcher(feature_extraction_method: str) -> cv.DescriptorMatch
     if feature_extraction_method in _matcher_cache:
         return _matcher_cache[feature_extraction_method]
 
-    # Phase 23: the FLANN branch died with SuperPoint. Every
-    # extractor now matches with brute-force knn - deterministic, and
-    # the triangulation-partner tool depends on that property.
+    # Every extractor matches with brute-force knn - deterministic,
+    # and the triangulation-partner tool depends on that property.
     matcher = cv.BFMatcher(
         descriptor_norm(feature_extraction_method), crossCheck=False)
 
@@ -107,17 +98,11 @@ def _get_or_create_matcher(feature_extraction_method: str) -> cv.DescriptorMatch
 
 def lowe_ratio_filter(matches) -> List[cv.DMatch]:
     """Lowe's ratio test + one-to-one enforcement over knnMatch(k=2)
-    results. Phase 23: extracted from its two inline copies
-    (match_features and rotation_model_pose_between_frames) so the
-    planned ALIKED+LightGlue seam has ONE named insertion point to
-    replace.
-
-    One deliberate semantic touch-up, pre-declared in the phase-23
-    plan: the len(pair) < 2 guard (from the rotation-model copy) now
-    protects BOTH callers - a knnMatch query with fewer than 2
-    neighbors (tiny descriptor sets) previously crashed
-    match_features' unpacking. Unexercised on every measured tier
-    (the finding-35 featureless path returns earlier).
+    results. One named insertion point for a learned matcher to
+    replace; the len(pair) < 2 guard also protects callers from the
+    tiny-descriptor-set crash the inline copies once had
+    (unexercised on every measured tier - the featureless path
+    returns earlier).
     """
     good_matches = []
     indices_f1_set, indices_f2_set = set(), set()
@@ -136,15 +121,13 @@ def lowe_ratio_filter(matches) -> List[cv.DMatch]:
 
 def match_pair_descriptors(frame1: Frame, frame2: Frame,
                            feature_extraction_method: str) -> List[cv.DMatch]:
-    """The per-extractor MATCH strategy seam (the [23d] insertion
-    point, landed in phase 24 with its second implementation).
-
-    Learned methods (float descriptors) -> LightGlue via
-    aliked_backend.match_aliked (index pairs + confidences -> the
-    DMatch contract). Everything else -> BF knnMatch + Lowe's ratio
-    filter, unchanged. Callers: match_features and
-    rotation_model_pose_between_frames - the rotation-dominant regime
-    matches pairs consistently with the E-chain.
+    """The per-extractor MATCH strategy seam: learned methods (float
+    descriptors) -> LightGlue via aliked_backend.match_aliked (index
+    pairs + confidences -> the DMatch contract); everything else ->
+    BF knnMatch + Lowe's ratio filter, unchanged. Callers:
+    match_features and rotation_model_pose_between_frames - the
+    rotation-dominant regime matches pairs consistently with the
+    E-chain.
     """
     if EXTRACTOR_DESCRIPTOR_KINDS[feature_extraction_method] == 'float':
         from slam.features import aliked_backend
@@ -159,17 +142,14 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
     f1_kp, f1_desc = frame1.get_keypoints_descriptors()
     f2_kp, f2_desc = frame2.get_keypoints_descriptors()
 
-    # Finding 35 (phase 10a forced-reset probe): a featureless frame
-    # yields descriptors=None, and BFMatcher.knnMatch is ASYMMETRIC
-    # about it - knnMatch(None, X) silently returns no matches, but
-    # knnMatch(X, None) raises the batchDistance assertion. Matching
-    # against a featureless PREVIOUS or REFERENCE frame therefore
-    # crashed the whole pipeline (the probe's post-reset bootstrap:
-    # textured replay frames matched against the featureless reset
-    # origin; a dark-scene reset on real video takes the same path).
-    # Zero features on either side means zero matches: take the
-    # finding-10 path (callers fall back to the kinematic estimate /
-    # the next candidate). The event fires only on this previously-
+    # A featureless frame yields descriptors=None, and
+    # BFMatcher.knnMatch is ASYMMETRIC about it - knnMatch(None, X)
+    # silently returns no matches, but knnMatch(X, None) raises the
+    # batchDistance assertion. Matching against a featureless
+    # PREVIOUS or REFERENCE frame therefore crashed the whole
+    # pipeline. Zero features on either side means zero matches:
+    # callers fall back to the kinematic estimate / the next
+    # candidate. The event fires only on this previously-
     # unreachable-except-by-crash path, so battery event comparisons
     # stay exact (no benchmark frame pair is featureless).
     if (f1_desc is None or f2_desc is None
@@ -186,9 +166,8 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         LOG_TAG, f"Found {len(good_matches)} good matches from ratio test")
 
     # Geometric filter: RANSAC on the essential matrix. The E-only
-    # policy is the stated contract (phase 23: the homography
-    # alternative was disabled-in-practice dead code since its
-    # introduction - the selection machinery died with it).
+    # policy is the stated contract (the homography alternative was
+    # disabled-in-practice dead code for its entire life).
     if len(good_matches) > MATCHER_RANSAC_MINIMUM_INLIERS:
         indices_f1 = [m.queryIdx for m in good_matches]
         indices_f2 = [m.trainIdx for m in good_matches]
@@ -199,8 +178,8 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         E, mask, _ = estimate_essential_matrix(pts_f1_norm, pts_f2_norm)
 
         if E is None or mask is None or int(np.sum(mask)) < 5:
-            # RANSAC could not estimate a usable model; no geometric pose.
-            # Callers fall back to the kinematic estimate (finding 11: the
+            # RANSAC could not estimate a usable model; no geometric
+            # pose. Callers fall back to the kinematic estimate (the
             # old code indexed into a None mask and crashed).
             telemetry.event("match_no_model")
             return good_matches, None
@@ -213,7 +192,7 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         # ambiguity is resolved by explicit cheirality scoring of all
         # decompositions, with the constant-velocity motion prior (the
         # previous frame-to-frame relative pose) breaking the ties that a
-        # cheirality vote alone coin-flips under lateral motion (phase 1a).
+        # cheirality vote alone coin-flips under lateral motion.
         # All good matches participate, matching recoverPose's input set
         # (A/B measured: the E-inlier subset scores the same branches).
         # Convention: Rt is T_{f2<-f1}, the pose of frame1's camera in
@@ -250,10 +229,9 @@ def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extracti
         warning_log(
             LOG_TAG, f"No matches found between frames: {frame1.frame_id} and {frame2.frame_id}")
         telemetry.event("match_zero")
-        # Finding 10 (see benchmarks/IMPROVEMENT.md): this used to return
-        # `None, None` - a truthy 2-tuple that sailed through callers'
-        # `Rt is not None` check and crashed the pose composition with a
-        # TypeError. Zero matches means no pose estimate.
+        # Zero matches means no pose estimate. This used to return a
+        # truthy 2-tuple that sailed through callers' `Rt is not None`
+        # check and crashed the pose composition with a TypeError.
         return None
 
     debug_log(
@@ -265,12 +243,12 @@ def match_features_between_frames(frame1: Frame, frame2: Frame, feature_extracti
 def rotation_model_pose_between_frames(frame1: Frame, frame2: Frame,
                                        feature_extraction_method: str
                                        ) -> Optional[np.ndarray]:
-    """Phase 13: the rotation-dominant pair pose - the model the
-    tracker commits when the t-coherence gate (see
+    """The rotation-dominant pair pose - the model the tracker
+    commits when the t-coherence gate (see
     Tracker._update_rotation_model_gate) says the frame chain is in a
-    rotation-only regime (finding 37: on such motion the E-chain's
-    translation is a noise-driven unit vector - the pair cannot
-    observe it, so the honest pair pose carries NO translation).
+    rotation-only regime (on such motion the E-chain's translation
+    is a noise-driven unit vector - the pair cannot observe it, so
+    the honest pair pose carries NO translation).
 
     The estimator is the 13a2-validated instrument: a numpy-RNG
     3-point orthogonal-Procrustes (Kabsch) RANSAC on unit rays, with
@@ -282,7 +260,7 @@ def rotation_model_pose_between_frames(frame1: Frame, frame2: Frame,
 
     Mirrors match_features_between_frames' contract: the consensus
     matches are attached to frame1 (the pair's own list, even when
-    empty - the finding-22 replacement rule), and the return is the
+    empty), and the return is the
     T_{f2<-f1} pair pose or None on any degeneracy (caller keeps the
     legacy estimate - the no-basis principle).
 
@@ -298,7 +276,7 @@ def rotation_model_pose_between_frames(frame1: Frame, frame2: Frame,
     if (f1_desc is None or f2_desc is None
             or len(f1_desc) == 0 or len(f2_desc) == 0):
         # The legacy E path (which always runs first) has already
-        # taken the finding-35 no-matches path for this pair; the
+        # taken the no-matches path for this pair; the
         # rotation model has no basis either.
         return None
 

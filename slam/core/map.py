@@ -18,10 +18,8 @@ LOG_TAG = 'Map'
 
 
 class ArchivedMap:
-    """Phase 10: a frozen pre-reset map - the relocalization target
-    that replaces reset amnesia (finding 32's measured middle path:
-    disabling the success cap alone yielded zero resets and a
-    continuously accumulating map, so the reset is a legitimate last
+    """A frozen pre-reset map - the relocalization target
+    that replaces reset amnesia (the reset is a legitimate last
     resort whose COST is the discarded world).
 
     Holds the SAME Frame/Point objects the live map held (moved, not
@@ -61,7 +59,7 @@ class Map:
         # Recovery state tracking
         self.consecutive_low_quality_frames = 0
 
-        # Phase 8-4: the source video's fps, for the TIME-normalization
+        # The source video's fps, for the TIME-normalization
         # of frame-count cadence constants (RELOCALIZATION_FRAME_COUNT
         # here; the rotation-gap floor and the forced-insert cap in the
         # tracker/selection). 30.0 is the identity anchor - the
@@ -74,10 +72,10 @@ class Map:
         # Bundle adjustment optimizer
         self.g2o_optimizer = G2OBundleAdjustment(self)
 
-        # Phase 2j-4: the LIVE intrinsics state. Set by the run entry
+        # The LIVE intrinsics state. Set by the run entry
         # points (harness/slam.py) from the dataset K or the GeoCalib
         # prior; the frame-construction sites read it every frame so
-        # mid-run refits reach subsequent frames. The 2j-4 refiner
+        # mid-run refits reach subsequent frames. The refiter
         # mutates it; None means the run path never wired it (tests
         # construct Frames directly).
         self.intrinsics = None
@@ -87,7 +85,7 @@ class Map:
         self.loop_detector = LoopClosureDetector(self, self.feature_db)
         self.pose_graph_optimizer = PoseGraphOptimizer(self)
 
-        # Phase 10: frozen pre-reset maps (archive-and-re-anchor). A
+        # Frozen pre-reset maps (archive-and-re-anchor). A
         # reset appends the current map here BEFORE clearing it
         # (tracker._reset_system -> archive_current_state); the
         # archive is the recovery machinery's last-resort
@@ -196,7 +194,7 @@ class Map:
         # Remove connections between all pairs of keyframes that observe this point
         for i, kf1_id in enumerate(observing_kfs):
             # Remove point from kf observation (only for existing
-            # keyframes). NOTE (phase 2g): a direct del leaves STALE
+            # keyframes). NOTE: a direct del leaves STALE
             # keypoint_to_point_map entries that _filter_duplicate_
             # keypoints can later match against, resurrecting pruned
             # points as phantom observations. Cleaning them (via
@@ -307,9 +305,9 @@ class Map:
         return True
 
     def should_perform_global_bundle_adjustment(self, interval: int) -> bool:
-        # Phase 2a (finding 13): interval-triggered global BA is DISABLED
-        # (interval <= 0). Measured A/B across all four sequences (seed 42,
-        # full record in benchmarks/IMPROVEMENT.md): turning it off IMPROVED
+        # Interval-triggered global BA is DISABLED
+        # (interval <= 0). Measured A/B across all four sequences:
+        # turning it off IMPROVED
         # three of four (translation ATE 0.0845 -> 0.0181, orbit 1.72 ->
         # 1.04, forward_rotation 0.076 -> 0.065) at a large speed win, and
         # cost only +0.005 ATE on tum_xyz (0.177 -> 0.182, within
@@ -318,7 +316,7 @@ class Map:
         # accuracy in well-constrained regions to smooth systematic error
         # across the whole map, on a fixed cadence with no evidence of
         # need. Global BA remains available (and justified) on loop
-        # closure - Phase 3 triggers it on loop events, not on a timer.
+        # closure - loop events trigger it, not a timer.
         return interval > 0 and len(self.keyframes) % interval == 0
 
     def get_keyframe_by_id(self, frame_id: UUID) -> Frame:
@@ -335,7 +333,7 @@ class Map:
             self.consecutive_low_quality_frames = 0
 
     def needs_recovery(self) -> bool:
-        # Phase 8-4: RELOCALIZATION_FRAME_COUNT is a frame count whose
+        # RELOCALIZATION_FRAME_COUNT is a frame count whose
         # meaning is a TIME window of sustained low quality (~167 ms at
         # the 30 fps calibration anchor). At 60 fps the unscaled 5
         # frames is 83 ms - recovery triggers on transient dips and the
@@ -353,15 +351,15 @@ class Map:
             LOG_TAG, f"Successfully relocalized to keyframe {reference_keyframe_id}")
 
     def archive_current_state(self, exclude_frame: Frame = None):
-        """Phase 10: freeze the current map as an ArchivedMap, called
+        """Freeze the current map as an ArchivedMap, called
         by the tracker's _reset_system BEFORE map.reset() clears the
         collections (the objects move into the archive; reset()
         itself stays pure amnesia so every other reset caller is
         unaffected).
 
         exclude_frame: the frame about to anchor the NEW map (the
-        shipped reset overwrites its pose to identity; the phase-20
-        re-gauge continuation keeps the pre-reset pose — either way
+        shipped reset overwrites its pose to identity; the re-gauge
+        continuation keeps the pre-reset pose — either way
         it is re-added to the live map immediately after).
         Archiving it would alias an object the live pipeline keeps
         mutating (its archive geometry would be corrupted in
@@ -379,7 +377,7 @@ class Map:
                  f"target)")
 
     def rebuild_point_coords(self):
-        """Phase 10: the add_points coordinate-dedup set must follow
+        """The add_points coordinate-dedup set must follow
         the live geometry after the re-anchoring write (every map
         point is rigidly moved into the archive's world frame)."""
         self.point_coords = {tuple(np.round(pt.pt_3d, 3))
@@ -411,7 +409,7 @@ class Map:
     def remove_keyframes_after(self, reference_keyframe_id: UUID):
         """Remove every keyframe inserted AFTER the reference keyframe
         (aggressive relocalization drops the diverged branch it just
-        recovered from). Phase 2h repair: this used to compare frame_id
+        recovered from). Repair: this used to compare frame_id
         UUIDs with <= - frame ids are random uuid4 values, so their
         ordering is meaningless and the backwards walk removed a RANDOM
         suffix of the keyframe list. The keyframes list is insertion
@@ -448,8 +446,9 @@ class Map:
         return self._remove_keyframe(keyframe, idx)
 
     def _remove_keyframe(self, keyframe: Frame, idx: int) -> bool:
-        """Phase 2h machinery repair. Not invoked by the default
-        pipeline today (the redundancy-culling hook lands with step 3);
+        """Remove-redundant-keyframe machinery. Not invoked by the
+        default pipeline's culling today (the redundancy-culling hook
+        lives in cull_redundant_keyframe);
         the live caller is the aggressive-relocalization reset path via
         remove_keyframes_after. Repairs vs the draft:
 
@@ -473,7 +472,7 @@ class Map:
         keyframe_id = keyframe.frame_id
 
         # Remove observations of this keyframe from all points
-        # (point-side is the authoritative registry - phase 2g; the
+        # (point-side is the authoritative registry; the
         # keyframe's own frame-side entries, including dedup-only
         # matches, die with it). Collect points that fall below the
         # keyframe-observation minimum.
@@ -523,7 +522,7 @@ class Map:
         return True
 
     def cull_redundant_keyframe(self) -> bool:
-        """Phase 2h step 3: bound map growth by removing redundant
+        """Bound map growth by removing redundant
         keyframes (ORB-SLAM-style). Called once per keyframe insertion,
         AFTER optimize/triangulate, so the candidate scan sees the full
         fresh map. A candidate is redundant when at least
@@ -539,7 +538,7 @@ class Map:
           normal relocalization matches features against these;
           shrinking that pool mid-run would blind the recovery path).
 
-        Registry semantics (phases 2g/2h lessons): point-side
+        Registry semantics: point-side
         observations only (the frame-side registry holds dedup-only
         matches and phantom pruned points), and KEYFRAME observers only
         (never-promoted tracker frames are never optimized and never

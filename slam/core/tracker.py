@@ -16,47 +16,20 @@ from slam.utils.logger import *
 from slam.utils import telemetry
 from slam.features.matcher import *
 from slam.features.feature_extractor import FeatureExtractor
-# Phase 10 flags (RECOVERY_ARCHIVE_ENABLED / RECOVERY_ARCHIVE_SCAN_LIMIT)
-# live beside their machinery in the loop-closure module (the user's
-# constants.py is a live experiment file); read at CALL time via this
-# module alias so probes patch them in memory for A/B.
+# Loop-closure and rotation-model flags live beside their machinery
+# (slam/loop_closure, slam/features/matcher); read at CALL time via
+# module aliases so probes can pin them in memory for A/B.
 import slam.loop_closure as loop_closure_mod
-# Phase 13 rotation-model flags/constants (ROTATION_MODEL_*): same
-# module-level convention, read at CALL time for in-memory A/B.
 import slam.features.matcher as matcher_mod
 
-# Phase 20 (T3a) flag, beside its machinery (_reset_system below).
-# The shipped reset TELEPORTS the live trajectory to the world
-# origin (cur_frame.pose = identity) — the single mechanism behind
-# all three census SCALE_BLOWUP labels (road |t| 382.3 -> 0 in one
-# step, woods_1 148.1 -> 0, woods_2_15 273.4 -> 0) and the reason
-# nothing after a reset is comparable to anything before it (the
-# phase-18 record's four unjudgeable (b) legs). Flag 1 = RE-GAUGE
-# CONTINUATION: keep the pre-reset pose as the new map's anchor —
-# the live trajectory stays in the pre-reset world frame, and the
-# recovery archive (whose poses live in that same frame) becomes
-# gauge-consistent with the live map, so the archive-reloc
-# re-anchor degenerates to a no-op instead of a second teleport.
-# INT flag (the --override bool("0") trap); read at CALL time so
-# probes pin it in memory for A/B. Phase-20 plan: benchmarks/
-# IMPROVEMENT.md "Phase 20" (pre-registered).
-#
-# ADOPTED 2026-11-12 (the phase-20 A/B, both legs on the desktop
-# gate machine; output/benchmarks/ladder/phase20_gauge_contract.json):
-# the re-gauge continuation wins the pre-registered contract's
-# majority-benefit rule 4/5 — walking_woods_1 (boundary steps
-# 151.4/30.0/66.0 -> 1.0/0.15, SCALE_BLOWUP cleared), walking_woods_
-# 2_15 (105.0/105.5 -> 1.0/1.0, SCALE_BLOWUP cleared), kyoto_2_5
-# (2.16 -> 0.0), and the GT'd euroc_v1_01_easy (identical reset
-# indices [30, 60]; final KF-ATE 1.425 -> 1.038, per-frame 1.543 ->
-# 1.044). road is the lone vote AGAINST — its primary metric
-# improved (266.23 -> 0.5, SCALE_BLOWUP cleared) but the candidate
-# gained a second reset (529, 31 frames after 498; the T3b
-# trigger-side defect firing again) that tripped the pre-registered
-# RESET_STORM >=2-resets classifier — the label leg's conservative
-# guard. greece: bit-identical no-op guard. Battery (flag silent):
-# 0 non-timing diffs vs both references. The pre-adoption shipped
-# default was the teleport (0).
+# The reset TELEPORTS the live trajectory to the world origin
+# (cur_frame.pose = identity) — everything after a reset is then
+# incomparable to anything before it. Flag 1 = re-gauge continuation:
+# keep the pre-reset pose as the new map's anchor, so the live
+# trajectory stays in ONE world frame and the recovery archive
+# (whose poses share that frame) re-anchors as a no-op instead of a
+# second teleport. INT flag (the --override bool("0") trap); read
+# at CALL time so probes can pin it in memory for A/B.
 RESET_GAUGE_CONTINUITY_ENABLED = 1
 
 LOG_TAG = 'Tracker'
@@ -80,37 +53,34 @@ class Tracker:
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
         self.feature_extractor.set_multiscale_enabled(enable_multiscale)
 
-        # Phase 2j-4: the intrinsics refiter (the DroidCalib port).
-        # Created ONLY when the flag is set AND the run path wired the
-        # live estimate onto the map - the module is not even imported
-        # otherwise, so the default pipeline's import graph and
-        # behavior are untouched. ENABLED is an int flag because the
-        # benchmark override parser is type(current)(value) and
-        # bool("0") would parse True.
+        # The intrinsics refiter (the DroidCalib port). Created ONLY
+        # when the flag is set AND the run path wired the live
+        # estimate onto the map - the module is not even imported
+        # otherwise. INT flag because the benchmark override parser
+        # is type(current)(value) and bool("0") would parse True.
         self.calib_refiner = None
         if const.CALIB_REFIT_ENABLED and map.intrinsics is not None:
             from slam.calibration.refit import IntrinsicsRefiner
             self.calib_refiner = IntrinsicsRefiner(map, map.intrinsics)
 
-        # Phase 3c: set by the loop-closure hook when a correction
-        # moved keyframe poses mid-update; consumed AFTER the
-        # constant-velocity update in update() (which would otherwise
-        # bake the teleport into the next prediction - the reloc
-        # precedent, relocated because the hook runs at insertion
-        # time, before the velocity line).
+        # Set by the loop-closure hook when a correction moved
+        # keyframe poses mid-update; consumed AFTER the constant-
+        # velocity update in update() (which would otherwise bake the
+        # teleport into the next prediction - the reloc precedent,
+        # relocated because the hook runs at insertion time, before
+        # the velocity line).
         self._loop_correction_applied = False
-        # Phase 3c: insertions since the last correction (the
-        # cooldown starts ARMED so a mid-run closure is never blocked;
-        # a correction resets it to 0).
+        # Insertions since the last correction (the cooldown starts
+        # ARMED so a mid-run closure is never blocked; a correction
+        # resets it to 0).
         self._loop_kfs_since_correction = const.LOOP_CORRECTION_COOLDOWN_KF
 
-        # Phase 13: the rotation-dominant pair-pose gate (finding 37).
-        # VIDEO-PATH ONLY - slam.py enables it where it wires the
-        # intake gate (the coherence signal exists only at the fed
-        # cadence, where pairs carry >= 8 px of displacement above
-        # the ORB quantization noise; the benchmark harness's
-        # stride-1 feeds and every harness-path diagnostic keep the
-        # default OFF and are bit-identical by construction).
+        # The rotation-dominant pair-pose gate: VIDEO-PATH ONLY -
+        # slam.py enables it where it wires the intake gate (the
+        # coherence signal exists only at the fed cadence, where
+        # pairs carry >= 8 px of displacement above the ORB
+        # quantization noise; stride-1 harness feeds keep the default
+        # OFF and are bit-identical by construction).
         self.rotation_model_enabled = False
         # The t-coherence EMA state (see
         # _update_rotation_model_gate): EMA of |cos| between
@@ -141,7 +111,7 @@ class Tracker:
 
         # Try to refine with feature matching if possible. The motion prior
         # for the essential-matrix disambiguation is the previous
-        # frame-to-frame relative pose (phase 1a); the identity carries no
+        # frame-to-frame relative pose; the identity carries no
         # information (run start / post-reloc reset), so branch selection
         # is then purely geometric.
         motion_prior = None if np.array_equal(
@@ -150,11 +120,10 @@ class Tracker:
             Rt = match_features_between_frames(
                 self.cur_frame, self.prev_frame, self.feature_extraction_method,
                 motion_prior=motion_prior)
-        # Phase 13: the t-coherence gate. The legacy E path ALWAYS
-        # runs first, identically (same cv-RNG consumption, same
-        # match data, same events) - the EMA is fed by its
-        # translation directions, and only the COMMITTED pose step
-        # swaps when the gate is engaged.
+        # The t-coherence gate: the legacy E path ALWAYS runs first,
+        # identically (same cv-RNG consumption, same match data, same
+        # events) - the EMA is fed by its translation directions, and
+        # only the COMMITTED pose step swaps when the gate is engaged.
         Rt = self._update_rotation_model_gate(Rt)
         if Rt is not None:
             # Refine the kinematic estimate with the feature-based relative
@@ -180,15 +149,15 @@ class Tracker:
         # observations. This registration used to happen inside
         # _handle_keyframe_insertion - i.e. AFTER the per-frame PnP - which
         # is why that PnP read the previous keyframe's stale observations
-        # and refined the wrong frame entirely (finding 9).
+        # and refined the wrong frame entirely.
         for obs in observations:
             obs.point.add_observation(obs)
 
         # Refine the current frame's pose against the map. The E-chained
         # estimate is only the SEED; PnP over the frame's map-point
         # observations is the map-anchoring step - the long-baseline
-        # constraint that per-frame essential matrices cannot provide
-        # (finding 12). Divergent solutions are guarded and rejected.
+        # constraint that per-frame essential matrices cannot provide.
+        # Divergent solutions are guarded and rejected.
         if len(observations) >= 10:
             with telemetry.stage("pnp"):
                 pose_refined, input_count = self.map.g2o_optimizer.refine_pose_pnp(
@@ -211,11 +180,11 @@ class Tracker:
         self.velocity = np.linalg.inv(
             self.prev_frame.pose) @ self.cur_frame.pose
 
-        # Phase 3c: a loop correction moved keyframe poses mid-update
-        # (including this frame's, if it was just inserted and queried
-        # as the loop keyframe) - the constant-velocity line above has
-        # the teleport baked in. Reset it (the reloc precedent): the
-        # next prediction is the corrected pose itself, and matching
+        # A loop correction moved keyframe poses mid-update (including
+        # this frame's, if it was just inserted and queried as the
+        # loop keyframe) - the constant-velocity line above has the
+        # teleport baked in. Reset it (the reloc precedent): the next
+        # prediction is the corrected pose itself, and matching
         # re-establishes motion from there.
         if self._loop_correction_applied:
             self.velocity = np.eye(4)
@@ -228,41 +197,34 @@ class Tracker:
         return self.cur_frame.is_keyframe
 
     def _update_rotation_model_gate(self, Rt):
-        """Phase 13: the t-coherence rotation-dominant gate (finding
-        37; the 13a-13c measured baseline arc in IMPROVEMENT.md).
+        """The t-coherence rotation-dominant gate.
 
         On rotation-only motion the E-chain pair pose is degenerate -
         with true t~0 the epipolar constraint holds for ANY
         translation, so every pair commits unit-normalized |t|=1.0
-        in noise-driven directions (measured on the kyoto_2_5 pan:
-        forward / backward / backward / forward across 4 sampled
-        pairs, 100-220 map units of accumulated fake translation on
-        a pan in place). Five PER-PAIR gate candidates died in
-        measurement; what separates rotation-only motion from real
-        translation is TEMPORAL - real translation keeps the
-        committed t direction coherent pair after pair, rotation-only
-        commits noise. This gate tracks exactly that: an EMA of
-        |cos(t_k, t_{k-1})| over consecutive frame-chain pair E-t
-        directions.
+        in noise-driven directions (on a pan in place: accumulated
+        fake translation of hundreds of map units). What separates
+        rotation-only motion from real translation is TEMPORAL -
+        real translation keeps the committed t direction coherent
+        pair after pair, rotation-only commits noise. This gate
+        tracks exactly that: an EMA of |cos(t_k, t_{k-1})| over
+        consecutive frame-chain pair E-t directions.
 
-        Semantics (13c-pinned constants, sticky both ways): ENGAGE the
-        rotation model when the EMA drops below
-        ROTATION_MODEL_T_COHERENCE_ENGAGE; RE-ARM legacy when it
-        recovers above ROTATION_MODEL_T_COHERENCE_REARM. No basis
-        (run start, a failed pair) never updates the EMA and never
-        engages - the legacy estimate always stands when the gate
-        cannot arbitrate. The legacy E estimate ALWAYS runs first and
-        feeds the EMA even while engaged (so real translation
-        re-arms); the engaged commit swaps only the pose step for
+        Semantics (sticky both ways): ENGAGE the rotation model when
+        the EMA drops below ROTATION_MODEL_T_COHERENCE_ENGAGE; re-arm
+        legacy when it recovers above
+        ROTATION_MODEL_T_COHERENCE_REARM. No basis (run start, a
+        failed pair) never updates the EMA and never engages - the
+        legacy estimate always stands when the gate cannot
+        arbitrate. The legacy E estimate ALWAYS runs first and feeds
+        the EMA even while engaged (so real translation re-arms);
+        the engaged commit swaps only the pose step for
         rotation_model_pose_between_frames' [R | 0] and its consensus
         matches.
 
-        VIDEO-PATH ONLY (self.rotation_model_enabled, set by slam.py
-        where it wires the intake gate; default False): the coherence
-        signal exists only at the fed cadence (>= 8 px pairs, above
-        the ORB quantization noise); the benchmark harness and every
-        harness-path diagnostic keep the legacy path bit-identical by
-        construction.
+        VIDEO-PATH ONLY (self.rotation_model_enabled): the coherence
+        signal exists only at the fed cadence; harness-path feeds
+        keep the legacy path bit-identical by construction.
 
         Returns the pair pose to COMMIT (the legacy Rt, or the
         rotation-model override).
@@ -321,26 +283,26 @@ class Tracker:
             triangulated_points = self._triangulate()
         self.map.add_points(triangulated_points)
 
-        # Phase 2h step 3: bound map growth - at most one redundant
-        # older keyframe per insertion (never the gauge anchor or the
-        # BA/relocation windows). Runs after triangulation so the
-        # candidate scan sees the full fresh map.
+        # Bound map growth - at most one redundant older keyframe per
+        # insertion (never the gauge anchor or the BA/relocation
+        # windows). Runs after triangulation so the candidate scan
+        # sees the full fresh map.
         with telemetry.stage("cull"):
             self.map.cull_redundant_keyframe()
 
-        # Phase 2j-4: the intrinsics refit hook. Runs AFTER the local
-        # BA of this insertion (the refit alternates with it - see
-        # slam/calibration/refit.py), inside its own profile stage. A
-        # LOCKED gate or a frozen estimate is a no-op by construction.
+        # The intrinsics refit hook. Runs AFTER the local BA of this
+        # insertion (the refit alternates with it), inside its own
+        # profile stage. A LOCKED gate or a frozen estimate is a
+        # no-op by construction.
         if self.calib_refiner is not None:
             with telemetry.stage("calib"):
                 self.calib_refiner.on_keyframe_inserted()
 
-        # Phase 3b: the loop-closure detection hook (telemetry-only;
-        # the correction path lands in 3c). Keyframe cadence - one
-        # query per insertion, on the freshly inserted keyframe, after
-        # the map state is final for this insertion. The module is
-        # RNG-transparent by construction, so this stage is
+        # The loop-closure detection hook (telemetry-only; the
+        # correction path is flag-gated below). Keyframe cadence -
+        # one query per insertion, on the freshly inserted keyframe,
+        # after the map state is final for this insertion. The module
+        # is RNG-transparent by construction, so this stage is
         # numerically inert wherever no loop verifies.
         with telemetry.stage("loop"):
             self._handle_loop_closure_detection()
@@ -365,9 +327,9 @@ class Tracker:
 
             self.cur_frame.kp_unique_mask[match.queryIdx] = False
 
-            # Finding 17 fix - the CONSISTENCY CORE only. The old code
-            # unconditionally wrote the frame-side registry, which
-            # OVERWROTE the existing (projection-matched) observation
+            # CONSISTENCY CORE only: the old code unconditionally
+            # wrote the frame-side registry, which OVERWROTE the
+            # existing (projection-matched) observation
             # for the same (point, frame) with a different measurement:
             # the two registries then disagreed, and insertion-time PnP
             # consumed a different pixel than BA's constraint for the
@@ -381,30 +343,13 @@ class Tracker:
             # Dedup-only matches stay FRAME-SIDE ONLY, exactly as
             # before: they are load-bearing for insertion-time PnP and
             # tracking-quality counts, but deliberately NOT promoted to
-            # full (point-side) observations. The promotion was
-            # measured and REJECTED TWICE, in six configurations:
-            # - 2g (five configs: no gate; 10/5/3 px geometric gates):
-            #   the raw chains gave tum its best-ever ATE (0.038) but
-            #   poisoned orbit's map in every config that kept tum's
-            #   win.
-            # - 2i Q1 (rotation-gated, the reliability signal the 2g
-            #   record said was missing): the inter-frame rotation of
-            #   the chain hop DOES separate the regimes (orbit's chains
-            #   hop at 7.3-13.5 deg, every other sequence below
-            #   3.7 deg) - but the gate still fails: orbit's tail
-            #   leaks (262 promotions at <5 deg dropped its surf
-            #   50.8 -> 38.2), fr/translation's promotions are REAL
-            #   (sub-pixel geometric consistency) and still hurt them
-            #   deterministically (fr 0.0548 -> 0.1201, exactly the
-            #   2g-era value - the harm is not constraint-unreliability
-            #   but real constraints destabilizing insertion/pruning
-            #   dynamics, which no reliability gate can fix), and the
-            #   promotion x culling interaction destroys tum's win
-            #   (promoted observations inflate point-observer counts,
-            #   32 keyframes culled as redundant vs 2 in the control,
-            #   max_pose_jump 84 over its 50 baseline). Full record in
-            #   benchmarks/IMPROVEMENT.md "Phase 2g results" and
-            #   "Phase 2i record - Q1".
+            # full (point-side) observations. Promotion was measured
+            # and REJECTED twice, across six gate configurations: the
+            # inter-frame chains that help tum poison orbit's map, the
+            # genuinely-consistent fr constraints destabilize
+            # insertion/pruning dynamics everywhere, and the promoted
+            # observations x culling interaction destroys tum's win.
+            # Full record in benchmarks/IMPROVEMENT.md.
             self.cur_frame.add_point_observation(
                 Observation(self.cur_frame, point, match.queryIdx))
 
@@ -418,14 +363,14 @@ class Tracker:
 
     def _handle_keyframe_insertion(self):
         # Observations were already registered in update() before the
-        # per-frame PnP (see finding 9 notes there).
+        # per-frame PnP.
         should_insert, result = should_insert_keyframe(
             self.cur_frame, self.map.cur_keyframe,
             frames_since_last_keyframe=self.iterations_since_last_keyframe,
             video_fps=self.map.video_fps)
 
-        # Phase 8-4: the forced-insert backstop is a FRAME count with a
-        # TIME meaning (~333 ms at the 30 fps calibration anchor); it
+        # The forced-insert backstop is a FRAME count with a TIME
+        # meaning (~333 ms at the 30 fps calibration anchor); it
         # scales with the video fps (identity at 30 - the harness
         # never sets one). Measured on walking_salem: this path never
         # fires (the baseline criterion pre-empts at ~3 frames), but
@@ -454,11 +399,9 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _project_visible_map_points(self) -> List[Tuple[Point, np.ndarray]]:
-        # Phase 2c/2e: batch-projected. The original per-point loop called
-        # project_point for every map point every frame (a 4x4 @ 4 GEMV
-        # each, ~800 frames x 10k points on TUM); Frame.project_points
-        # does the same math as one GEMM. In-front filtering matches the
-        # old per-point semantics exactly (behind-camera -> skipped).
+        # Batch-projected: project_points does the per-point math as
+        # one GEMM. In-front filtering matches the per-point
+        # semantics exactly (behind-camera -> skipped).
         points = self.map.points
         if not points:
             return []
@@ -475,10 +418,10 @@ class Tracker:
         self, projected_points: List[Tuple[Point, np.ndarray]],
         dist_thresh: int = None
     ) -> List[Observation]:
-        # Phase 8-2: the search radius is ANGULAR, resolved per call
-        # from the live K (a 2j-4 refit's focal propagates here). The
-        # historical hard-coded 5 px is the floor: every benchmark
-        # focal (450-518) resolves BELOW it and stays at exactly 5 px
+        # The search radius is ANGULAR, resolved per call from the
+        # live K (a refit's focal propagates here). The historical
+        # hard-coded 5 px is the floor: every benchmark focal
+        # (450-518) resolves BELOW it and stays at exactly 5 px
         # (bit-identical battery), while long-focal videos get the
         # tolerance the pipeline was measured healthy at (0.55 deg -
         # see PROJECTION_MATCH_RADIUS_DEG's provenance). The descriptor
@@ -508,12 +451,12 @@ class Tracker:
 
         tree = cKDTree(kp_coords)
 
-        # Phase 2c: visibility bounds on the ALREADY projected pixel
+        # Visibility bounds on the ALREADY projected pixel
         # coordinates (same margin-10 bounds semantics as the previous
         # is_point_visible call, which re-projected every map point a
-        # second time per frame - the second of the projection costs).
-        # Phase 2e: pre-filter (bounds + not-yet-observed) so the KD-tree
-        # runs as ONE batched ball query instead of a per-point scipy call.
+        # second time per frame). Pre-filter (bounds + not-yet-
+        # observed) so the KD-tree runs as ONE batched ball query
+        # instead of a per-point scipy call.
         H, W = self.cur_frame.image.shape[:2]
         margin = 10
 
@@ -526,12 +469,9 @@ class Tracker:
                     margin <= v_proj < H - margin):
                 continue
 
-            # Skip points this frame already observes (finding 17's
-            # latent bug: this compared a Frame object against UUID
-            # keys - always False, so the guard never fired; harmless
-            # today because nothing point-side-observes the current
-            # frame before projection matching within an update, but
-            # load-bearing now that the registries are consistent).
+            # Skip points this frame already observes (the check is
+            # load-bearing now that the frame-side and point-side
+            # registries are consistent).
             if self.cur_frame.frame_id in mp.observations:
                 continue
 
@@ -550,11 +490,11 @@ class Tracker:
         # update order in _recompute_point_errors, fixed separately).
         nearby_lists = tree.query_ball_point(centers, r=dist_thresh)
 
-        # Phase 24: the accept threshold is per descriptor KIND - the
-        # old literal 20 was an ORB-Hamming pin (on unit-normalized
-        # float vectors the L2 max is 2.0, so it accepted everything).
+        # The accept threshold is per descriptor KIND - the old
+        # literal 20 was an ORB-Hamming pin (on unit-normalized float
+        # vectors the L2 max is 2.0, so it accepted everything).
         # EXTRACTOR_RELOC_DESC_THRESHOLDS carries the kind->threshold
-        # map ('float' pinned by the [24a] reloc-threshold probe).
+        # map.
         reloc_kind = EXTRACTOR_DESCRIPTOR_KINDS[self.feature_extraction_method]
         reloc_thresh = const.EXTRACTOR_RELOC_DESC_THRESHOLDS[reloc_kind]
 
@@ -627,10 +567,10 @@ class Tracker:
             failed_codes = point_validation_result['failed_codes']
             if failed_codes:
                 rejected_points += 1
-                # Phase 5c: PER-GATE counts (multi-failures count in
-                # every bucket - the former cascade hid all but the
-                # last failure, making cheirality unreachable in
-                # telemetry; the 5a probe had to re-derive this).
+                # PER-GATE counts (multi-failures count in every
+                # bucket - a cascade would hide all but the last
+                # failure and make cheirality unreachable in
+                # telemetry).
                 for c in failed_codes:
                     validation_results[TRIANGULATION_VALIDATION_CODE[c]] += 1
                 continue
@@ -684,29 +624,29 @@ class Tracker:
         return self.prev_frame.pose @ self.velocity
 
     def _handle_loop_closure_detection(self):
-        """Phase 3b/3c: the loop-closure hook at KEYFRAME cadence -
-        one query per insertion on the freshly inserted keyframe (the
-        milestone-3 step%10 frame cadence re-queried the same
-        cur_keyframe repeatedly). Detection -> reloc-grade PnP
-        verification (3a/3b) -> the drift-magnitude gate -> the
-        correction: pose graph (gauge at KF0) -> global BA (the
-        finding-13-justified trigger) -> the motion-model reset.
+        """The loop-closure hook at KEYFRAME cadence - one query per
+        insertion on the freshly inserted keyframe (a step-based
+        cadence re-queried the same cur_keyframe repeatedly).
+        Detection -> reloc-grade PnP verification -> the
+        drift-magnitude gate -> the correction: pose graph (gauge at
+        KF0) -> global BA (the justified trigger) -> the motion-model
+        reset.
 
-        The module is cv-RNG-transparent by construction (see
-        slam/loop_closure.py: no cv RANSAC anywhere in the path), so
-        the default pipeline's numerics are untouched wherever no
-        loop verifies AND corrects. LOOP_CLOSURE_ENABLED is an INT
-        flag (the --override parser's bool("0") trap)."""
+        The module is cv-RNG-transparent by construction (no cv
+        RANSAC anywhere in the path), so the default pipeline's
+        numerics are untouched wherever no loop verifies AND
+        corrects. LOOP_CLOSURE_ENABLED is an INT flag (the
+        --override parser's bool("0") trap)."""
         if not const.LOOP_CLOSURE_ENABLED:
             return
 
-        # The correction cooldown (phase 3c, the tum runtime lesson):
+        # The correction cooldown (the dense-keyframe runtime lesson):
         # skip the whole detector - not just the correction - while
         # armed, because the verification's BF matching is itself a
         # per-frame cost at dense keyframe rates. The cooldown gates
         # only when the correction path is ARMED: with the correction
         # inert (LOOP_CORRECTION_ENABLED=0) detection runs
-        # unthrottled so 3d's chaos A/B sees the full landscape.
+        # unthrottled.
         if const.LOOP_CORRECTION_ENABLED and (
                 self._loop_kfs_since_correction
                 < const.LOOP_CORRECTION_COOLDOWN_KF):
@@ -732,12 +672,9 @@ class Tracker:
         info_log(LOG_TAG, f"Verified {len(verified_loops)} loop "
                  f"closure(s)")
 
-        # The correction flag (the 3c landing decision): everything
-        # above is live telemetry (RNG-transparent, zero numeric
-        # effect); everything below is the correction path, inert by
-        # default pending 3d's multi-seed chaos verdict (the boundary
-        # measurement: orbit's lone end-closure is out of rigid
-        # closure's regime; tum's dense corrections help).
+        # The correction flag: everything above is live telemetry
+        # (RNG-transparent, zero numeric effect); everything below is
+        # the correction path, inert by default.
         if not const.LOOP_CORRECTION_ENABLED:
             debug_log(LOG_TAG, "Correction inert "
                       "(LOOP_CORRECTION_ENABLED=0)")
@@ -746,9 +683,8 @@ class Tracker:
         # --- the drift-magnitude gate then the correction ---
         # A verified constraint that AGREES with the odometry chain is
         # a no-op - closing it would be a harmless-but-wasteful pose
-        # graph + global BA (tum's 199 verified near-revisits, measured
-        # in 3b). Only DISAGREEMENT with the chain justifies the
-        # global rearrangement (finding 13's spirit).
+        # graph + global BA. Only DISAGREEMENT with the chain
+        # justifies the global rearrangement.
         constraints = []
         for loop in verified_loops:
             match_kf = self.map.get_keyframe_by_id(loop.match_keyframe_id)
@@ -794,12 +730,9 @@ class Tracker:
 
         # Re-align the map points: the pose graph moved keyframe
         # poses, so the existing triangulations are stale - the global
-        # BA re-solves poses+points together (finding 13's reserved
-        # trigger: the global rearrangement justified by a genuine
-        # loop constraint; the milestone-3 disabled block had this
-        # exact call). Phase 18 [18a-2]: gated=True opts THIS call
-        # site into the acceptance gate — the solve writes back only
-        # if it improved the objective it minimizes; a diverged
+        # BA re-solves poses+points together. gated=True opts THIS
+        # call site into the acceptance gate — the solve writes back
+        # only if it improved the objective it minimizes; a diverged
         # rearrangement restores the re-anchored pre-solve state
         # instead of teleporting the map. The Map's PERIODIC global
         # BA stays ungated (bit-transparent legacy path).
@@ -819,27 +752,22 @@ class Tracker:
         self._loop_kfs_since_correction = 0
 
     def _handle_relocalization_check(self):
-        # Phase 8-3: recovery-streak hygiene - 'consecutive' finally
-        # means consecutive. Genuinely healthy tracking (map quality
-        # at or above the recovery threshold) clears BOTH streak
-        # counters, so the success counter reaches its cap only across
-        # recovery cycles with NO healthy frame anywhere between them:
-        # a demonstrated-ineffective recovery streak, never successes
-        # spread across healthy gaps. (Finding 30: the old cumulative
-        # counter survived 265 healthy checks and wiped the map on the
-        # 5th success however far apart; on the walking_salem config
-        # video the better observation coverage raises recovery
-        # frequency and the cumulative cap converted that into 7 map
-        # wipes in 600 frames - finding 32.) The clear is deliberately
-        # gated on QUALITY, not on needs_recovery():
+        # Recovery-streak hygiene: 'consecutive' means consecutive.
+        # Genuinely healthy tracking (map quality at or above the
+        # recovery threshold) clears BOTH streak counters, so the
+        # success counter reaches its cap only across recovery cycles
+        # with NO healthy frame anywhere between them - a
+        # demonstrated-ineffective recovery streak, never successes
+        # spread across healthy gaps. The clear is deliberately gated
+        # on QUALITY, not on needs_recovery():
         # on_relocalization_successful resets
         # consecutive_low_quality_frames, so the frames after every
         # successful recovery are always 'no recovery needed' - gating
         # the clear there would make the cap unreachable dead code.
         # The failure counter gets the same lifetime: a healthy frame
-        # ends a failure streak too. No telemetry event is added (the
-        # 7a discipline: frozen-control event comparisons stay exact
-        # wherever the intervention changes nothing observable).
+        # ends a failure streak too. No telemetry event is added so
+        # frozen-control event comparisons stay exact wherever this
+        # changes nothing observable.
         if self.map.avg_tracking_quality >= const.RELOCALIZATION_QUALITY_THRESHOLD:
             self.consecutive_successful_relocalizations = 0
             self.consecutive_relocalization_failures = 0
@@ -847,12 +775,12 @@ class Tracker:
         if not self.map.needs_recovery():
             return
 
-        # Phase 8-3: reaching the cap now means a full streak of
-        # recoveries was accepted yet quality never once recovered
-        # between them (the hygiene clear above) - each recovery
-        # demonstrably failed to restore tracking. The reset is the
-        # last resort for a map that cannot support tracking, not a
-        # penalty for successful recoveries.
+        # Reaching the cap now means a full streak of recoveries was
+        # accepted yet quality never once recovered between them (the
+        # hygiene clear above) - each recovery demonstrably failed to
+        # restore tracking. The reset is the last resort for a map
+        # that cannot support tracking, not a penalty for successful
+        # recoveries.
         debug_log(
             LOG_TAG, f"Checking consecutive successful relocs: {self.consecutive_successful_relocalizations}/{MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS}")
         if self.consecutive_successful_relocalizations >= MAX_CONSECUTIVE_SUCCESSFUL_RELOCALIZATIONS:
@@ -871,14 +799,14 @@ class Tracker:
             debug_log(LOG_TAG, "Aggressive relocalization successful!")
             return
 
-        # Phase 10: the frozen pre-reset maps are the LAST recovery
-        # resort before the failure path. A verified cross-map match
+        # The frozen pre-reset maps are the LAST recovery resort
+        # before the failure path. A verified cross-map match
         # (the loop-grade PnP stack against an archived keyframe's
         # map points) re-anchors the ENTIRE live map into the
         # archive's world frame: the emitted trajectory continues
-        # there instead of re-originating at identity (the 10a probe
-        # measured the amnesia alternative - total map loss plus an
-        # immediate post-reset re-collapse). No archives exist on
+        # there instead of re-originating at identity (the measured
+        # amnesia alternative: total map loss plus an immediate
+        # post-reset re-collapse). No archives exist on
         # any run that never reset (the whole curated battery), so
         # this returns before any event or work there.
         if self._attempt_archive_relocalization():
@@ -914,20 +842,16 @@ class Tracker:
             self.map.keyframes) > RELOCALIZATION_WINDOW else self.map.keyframes
 
         for kf in reversed(recent_keyframes):
-            # Finding 29 (rotation/recovery diagnosis): recovery runs AFTER
-            # insertion, so the newest keyframe can BE this frame. Matching
-            # a frame against itself has zero baseline - the two-view
-            # geometry is undefined - yet identical images still fit an
-            # essential matrix with hundreds of epipolar inliers and can
-            # propose a catastrophic ~180deg rotation (measured: RPY
-            # frames 434/553 accepted 686/565-inlier half-turns that
-            # survived as 175.8/179.4deg stream errors; TUM frame 327
-            # accepted a 503-inlier half-turn that only local BA's unwind
-            # happened to contain). A frame is never its own
-            # relocalization reference; the next-newest keyframe is tried
-            # exactly as before. No telemetry event is added so frozen
-            # control comparisons stay exact wherever no self-pair was
-            # ever accepted.
+            # Recovery runs AFTER insertion, so the newest keyframe
+            # can BE this frame. Matching a frame against itself has
+            # zero baseline - the two-view geometry is undefined - yet
+            # identical images still fit an essential matrix with
+            # hundreds of epipolar inliers and can propose a
+            # catastrophic ~180deg rotation. A frame is never its own
+            # relocalization reference; the next-newest keyframe is
+            # tried exactly as before. No telemetry event is added so
+            # frozen control comparisons stay exact wherever no
+            # self-pair was ever accepted.
             if kf is self.cur_frame:
                 continue
             pose, inliers = self._match_frame_to_keyframe(self.cur_frame, kf)
@@ -947,7 +871,7 @@ class Tracker:
     def _attempt_aggressive_relocalization(self) -> bool:
         telemetry.event("reloc_aggressive_attempt")
         for kf in reversed(self.map.keyframes):
-            # Same exclusion as _attempt_relocalization (finding 29): the
+            # Same exclusion as _attempt_relocalization: the
             # permissive matcher's relaxed gates admit zero-baseline
             # self-pairs even more readily than the normal path.
             if kf is self.cur_frame:
@@ -968,8 +892,8 @@ class Tracker:
         return False
 
     def _attempt_archive_relocalization(self) -> bool:
-        """Phase 10: the frozen pre-reset maps as the last recovery
-        resort (archive-and-re-anchor instead of amnesia).
+        """The frozen pre-reset maps as the last recovery resort
+        (archive-and-re-anchor instead of amnesia).
 
         Candidates are the archived keyframes, newest archive first,
         newest keyframe first within each (the reset just happened -
@@ -990,12 +914,9 @@ class Tracker:
         success counter, the quality-streak clear + local BA via
         on_relocalization_successful. The scan bound caps the
         candidates examined per cycle (early-out on the first
-        verified match).
-
-        The attempt event fires only when archives EXIST - recovery
-        on a run that never reset (the whole curated battery) returns
-        before any event or work, so frozen-control comparisons stay
-        exact.
+        verified match). The attempt event fires only when archives
+        EXIST, so recovery on a run that never reset returns before
+        any event or work.
         """
         if not loop_closure_mod.RECOVERY_ARCHIVE_ENABLED:
             return False
@@ -1030,7 +951,7 @@ class Tracker:
         return False
 
     def _reanchor_map_to(self, pose_pnp: np.ndarray):
-        """Phase 10: rigidly move the ENTIRE live map into a recovered
+        """Rigidly move the ENTIRE live map into a recovered
         world frame (the archive's). The verified PnP pose is the
         current frame's pose in the ARCHIVE frame; the live map's
         poses are in its own (identity-origin) frame; G transforms
@@ -1040,16 +961,14 @@ class Tracker:
 
         RIGID only - the live map's internal scale is preserved; if
         the live and archive scales disagree, the re-anchored live
-        geometry sits in the archive frame at its own scale (phase
-        3's parked Sim3 question - recorded open, measured before
-        anything more is adopted). The persistent local-BA graph is
-        invalidated BEFORE the write (the 5e-0 discipline for
-        external pose/point mutations), and the add_points dedup set
-        is rebuilt from the moved geometry.
+        geometry sits in the archive frame at its own scale (a
+        recorded-open Sim3 question). The persistent local-BA graph
+        is invalidated BEFORE the write (external pose/point
+        mutations must never mix with the persistent graph's
+        retained estimates), and the add_points dedup set is rebuilt
+        from the moved geometry.
         """
-        # Invalidation BEFORE any external write (the 5e-0 lesson:
-        # the persistent graph's retained estimates must never be
-        # mixed with a re-gauged map).
+        # Invalidation BEFORE any external write.
         self.map.g2o_optimizer.reset_persistent_graph()
         G = pose_pnp @ np.linalg.inv(self.cur_frame.pose)
         for kf in self.map.keyframes:
@@ -1089,21 +1008,21 @@ class Tracker:
             # Rt is the pose of this frame expressed in the keyframe's frame
             # (T_{kf<-frame}), so: Twc_frame = Twc_keyframe @ Rt
             pose = keyframe.pose @ Rt
-            # Phase 9 recovery validation: the proposal is checked
-            # against the map BEFORE any state is committed (finding
-            # 29: recovery accepted high-inlier E-proposals - including
-            # ~180-deg half-turns - with no geometric check and no
-            # rollback; the per-frame PnP guard rejected the pose only
-            # AFTER commit). A rejected candidate returns exactly like a
-            # failed match - the caller's loop falls through to the
-            # next candidate, the pose was never written, the streaks
-            # were never cleared, and the aggressive path's
-            # remove_keyframes_after never ran (rollback is factored
-            # out). The gate rejects only on positive contradiction
-            # and accepts wherever it cannot validate (see
-            # validate_map_anchored_pose); the telemetry event fires
-            # only on rejection so frozen-control comparisons stay
-            # exact wherever the gate is silent (the 7a discipline).
+            # The proposal is checked against the map BEFORE any
+            # state is committed (recovery once accepted high-inlier
+            # E-proposals - including ~180-deg half-turns - with no
+            # geometric check and no rollback; the per-frame PnP
+            # guard rejected the pose only AFTER commit). A rejected
+            # candidate returns exactly like a failed match - the
+            # caller's loop falls through to the next candidate, the
+            # pose was never written, the streaks were never cleared,
+            # and the aggressive path's remove_keyframes_after never
+            # ran (rollback is factored out). The gate rejects only
+            # on positive contradiction and accepts wherever it
+            # cannot validate (see validate_map_anchored_pose); the
+            # telemetry event fires only on rejection so
+            # frozen-control comparisons stay exact wherever the
+            # gate is silent.
             if not self.map.loop_detector.validate_map_anchored_pose(
                     frame, keyframe, pose):
                 telemetry.event("reloc_rejected_validation")
@@ -1136,14 +1055,13 @@ class Tracker:
         telemetry.event("system_reset")
         info_log(LOG_TAG, "System reset triggered - clearing map and restarting")
 
-        # Phase 10: archive-and-re-anchor replaces amnesia (finding
-        # 32's measured middle path). The pre-reset map is FROZEN as
-        # the recovery machinery's last-resort relocalization target
-        # BEFORE the clear - the objects move into the archive intact
-        # (poses, points, descriptors, observations). The current
-        # frame is excluded: it becomes the new origin immediately
-        # after, and the archive must not alias an object the live
-        # pipeline keeps mutating.
+        # Archive-and-re-anchor replaces amnesia: the pre-reset map
+        # is FROZEN as the recovery machinery's last-resort
+        # relocalization target BEFORE the clear - the objects move
+        # into the archive intact (poses, points, descriptors,
+        # observations). The current frame is excluded: it becomes
+        # the new origin immediately after, and the archive must not
+        # alias an object the live pipeline keeps mutating.
         self.map.archive_current_state(exclude_frame=self.cur_frame)
 
         # Reset the map completely
@@ -1156,19 +1074,15 @@ class Tracker:
         self.consecutive_successful_relocalizations = 0
         self.consecutive_relocalization_failures = 0
 
-        # Set current frame as new origin
-        # Phase 20 (T3a): the shipped path TELEPORTS the live
-        # trajectory to the world origin here — every census
-        # SCALE_BLOWUP label is this one write (road |t| 382.3 -> 0,
-        # woods_1 148.1 -> 0, woods_2_15 273.4 -> 0). Flag 1 keeps
-        # the pre-reset pose instead: the new map's gauge CONTINUES
-        # the old world frame (the pose-graph gauge anchors at KF0's
+        # Set current frame as new origin. Flag 0 = the teleport: the
+        # live trajectory re-originates at identity. Flag 1 keeps the
+        # pre-reset pose instead: the new map's gauge CONTINUES the
+        # old world frame (the pose-graph gauge anchors at KF0's
         # CURRENT pose wherever it is; the E-chain/PnP compose
         # relative motions; the harness's Umeyama is global — all
-        # verified gauge-agnostic in the phase-20 plan). The
-        # recovery archive lives in that same frame, so the
-        # archive-reloc re-anchor degenerates to a no-op instead of
-        # a second teleport. Flag 0 = the shipped teleport, exactly.
+        # gauge-agnostic). The recovery archive lives in that same
+        # frame, so the archive-reloc re-anchor degenerates to a
+        # no-op instead of a second teleport.
         if not RESET_GAUGE_CONTINUITY_ENABLED:
             self.cur_frame.pose = np.eye(4)
         # (flag 1: keep self.cur_frame.pose — the pre-reset estimate)

@@ -1,4 +1,4 @@
-"""Phase 6a: benchmark-only, observation-only keyframe decision audit.
+"""Benchmark-only, observation-only keyframe decision audit.
 
 Run: uv run python -m benchmarks.keyframe_audit
 
@@ -300,7 +300,7 @@ class KeyframeAudit:
                 self._tracker = None
 
         def policy(frame, reference, frames_since_last_keyframe=0, **kwargs):
-            # Phase 8-4: the tracker passes the run's video_fps through
+            # the tracker passes the run's video_fps through
             # here (time-normalized cadence constants); the observer is
             # a pure passthrough - it never reads or alters it.
             result = original_policy(frame, reference, frames_since_last_keyframe,

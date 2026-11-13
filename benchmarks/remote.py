@@ -148,7 +148,7 @@ def cmd_sync(args):
     # .python-version + uv.lock on first run)
     print("[remote] uv sync (env provision) ...", flush=True)
     # --all-extras: the gate machine holds the superset (calib +
-    # learned) - phases measure every optional stack here.
+    # learned) - benchmark tiers measure every optional stack here.
     r = _ssh(args.host, [f"cd {REMOTE_DIR} && uv sync --frozen --all-extras"])
     print(r.stdout[-2000:] if r.stdout else "", end="")
     if r.returncode != 0:

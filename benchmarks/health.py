@@ -1,11 +1,11 @@
-"""The SHARED health-signature module (phase 14; used by the video
-census AND the phase-15 GT ladder, so both benchmark tiers speak one
+"""The SHARED health-signature module (used by the video
+census AND the GT ladder, so both benchmark tiers speak one
 language).
 
 Pure numpy over plain dicts — no slam imports, so it stays importable
 from any bench context and trivially testable. Consumers record the
 per-processed-frame health stream (the proven kyoto_pan_slam probe
-schema, plus the phase-13 gate state) and this module turns it into:
+schema, plus the rotation-model gate state) and this module turns it into:
 
 - summarize(): the per-run health summary (rates, percentiles,
   starvation, churn, pose plausibility, timing);
@@ -13,7 +13,7 @@ schema, plus the phase-13 gate state) and this module turns it into:
   below were stated in IMPROVEMENT.md BEFORE any corpus data was
   seen, and are guarded by pins; the corpus can never tune them;
 - motion_signal(): the pre-registered interpretive motion-class
-  signal (the phase-13 gate IS a rotation-dominance detector on the
+  signal (the rotation-model gate IS a rotation-dominance detector on the
   fed cadence);
 - health_table(): the printable cross-video comparison.
 
@@ -27,31 +27,30 @@ census runner):
     low_q    map.consecutive_low_quality_frames after the update
     kfs      keyframes in the map
     pts      map points
-    archives archived maps (phase 10)
+    archives archived maps
     head     camera heading, world XZ (deg; Twc column-2 atan2)
     t        |camera center| so far
     d_rot    rotation angle vs the previous fed frame (deg)
     d_t      camera-center step vs the previous fed frame
     v_rot    velocity rotation magnitude (deg)
     v_t      velocity translation magnitude
-    rm       the phase-13 rotation-model gate state for this pair
+    rm       the rotation-model gate state for this pair
     ev       per-frame telemetry event deltas (dict)
 """
 import numpy as np
 
-# ===== pre-registered classifier thresholds (phase 14 plan) =====
-# Recorded in IMPROVEMENT.md before the first corpus run; each traced
-# to its finding lineage. MEASURED pins, not tuning targets.
-RESET_STORM_MIN_RESETS = 2        # findings 33/36
+# ===== pre-registered classifier thresholds =====
+# Measured pins, not tuning targets (pre-registered in IMPROVEMENT.md).
+RESET_STORM_MIN_RESETS = 2
 RESET_STORM_EARLY_FED_FRAC = 0.10
-RELOC_CHURN_MIN_ATTEMPTS = 5      # finding 37 layer 4
+RELOC_CHURN_MIN_ATTEMPTS = 5
 RELOC_CHURN_RECOVERY_Q_P50 = 0.3
-MAP_STARVATION_MIN_POINTS = 50    # finding 37 layer 3
+MAP_STARVATION_MIN_POINTS = 50
 MAP_STARVATION_FED_FRAC = 0.20
-QUALITY_COLLAPSE_Q_P50 = 0.2      # findings 35/36
+QUALITY_COLLAPSE_Q_P50 = 0.2
 QUALITY_COLLAPSE_STREAK_FED_FRAC = 0.30
-INTAKE_STARVATION_FED_RATE = 0.25  # finding 33 (review-flag)
-SCALE_BLOWUP_MAX_STEP = 100.0     # finding-8 class
+INTAKE_STARVATION_FED_RATE = 0.25  # review-flag
+SCALE_BLOWUP_MAX_STEP = 100.0
 HEADING_ANOMALY_TOTAL_DEG = 720.0  # review-flag
 # motion signal (pre-registered)
 MOTION_RM_ENGAGED_DOMINANT_FRAC = 0.5
@@ -174,28 +173,28 @@ def classify(s):
     labels = []
     n_resets = len(s.get("resets", []))
     fed = s.get("fed", 0) or 0
-    # RESET_STORM (findings 33/36)
+    # RESET_STORM
     if (n_resets >= RESET_STORM_MIN_RESETS
             or (n_resets and (s.get("reset_first_fed_frac") is not None
                               and s["reset_first_fed_frac"]
                               < RESET_STORM_EARLY_FED_FRAC))):
         labels.append("RESET_STORM")
-    # RELOC_CHURN (finding 37 layer 4)
+    # RELOC_CHURN
     if (s["reloc"]["attempts"] >= RELOC_CHURN_MIN_ATTEMPTS
             and s.get("quality") is not None
             and s["quality"]["p50"] < RELOC_CHURN_RECOVERY_Q_P50):
         labels.append("RELOC_CHURN")
-    # MAP_STARVATION (finding 37 layer 3)
+    # MAP_STARVATION
     if s.get("map") is not None and (
             s["map"]["starved_frac"] >= MAP_STARVATION_FED_FRAC):
         labels.append("MAP_STARVATION")
-    # QUALITY_COLLAPSE (findings 35/36)
+    # QUALITY_COLLAPSE
     if s.get("quality") is not None and (
             s["quality"]["p50"] < QUALITY_COLLAPSE_Q_P50
             or s["quality"]["max_lowq_streak_frac"]
             >= QUALITY_COLLAPSE_STREAK_FED_FRAC):
         labels.append("QUALITY_COLLAPSE")
-    # SCALE_BLOWUP (finding-8 class)
+    # SCALE_BLOWUP
     if (s.get("pose") is not None
             and s["pose"]["max_step"] > SCALE_BLOWUP_MAX_STEP):
         labels.append("SCALE_BLOWUP")
@@ -211,7 +210,7 @@ def classify(s):
 
 
 def motion_signal(s):
-    """The pre-registered interpretive motion class. The phase-13
+    """The pre-registered interpretive motion class. The rotation-model
     t-coherence gate is a rotation-dominance DETECTOR on the fed
     cadence: sustained engagement means rotation-only content;
     near-zero engagement with a healthy feed means translation

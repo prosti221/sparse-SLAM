@@ -19,7 +19,7 @@ Event keys (counted pipeline decisions - deterministic per run):
                                refine_pose_pnp outcomes (all call sites)
                                pnp_few_inliers is a legacy name: the
                                iterative solver counts INPUTS, not a
-                               robust inlier set (phase 6b)
+                               robust inlier set
   ba_local_call / ba_global_call / ba_success / ba_failure
                               map.optimize BA branch outcomes
   ba_iterations              total LM iterations actually run by BA
@@ -34,15 +34,14 @@ Event keys (counted pipeline decisions - deterministic per run):
                               frame) pair was already registered by
                               projection matching - the projection
                               observation is kept and only the keypoint
-                              is masked (phase 2g, finding 17)
+                              is masked
   reloc_attempt / reloc_success / reloc_aggressive_attempt /
   reloc_aggressive_success / reloc_failed / system_reset
                               relocalization machinery
   points_pruned               outlier points removed by map pruning
   kf_culled / points_culled   keyframes removed by map culling, and the
                               map points orphan-removed with them
-                              (below the keyframe-observation minimum;
-                              phase 2h)
+                              (below the keyframe-observation minimum)
   calib_gate_locked / calib_gate_freed / calib_gate_frozen
                               the 2j intrinsics refit's observability
                               gate: stays locked on critical-motion
@@ -64,7 +63,7 @@ Event keys (counted pipeline decisions - deterministic per run):
                               coordinate caches recomputed), or no
                               candidate produced a usable solve
   loop_detected / loop_verified
-                              phase 3 loop closure: the detector found
+                              loop closure: the detector found
                               similarity candidates for a new keyframe;
                               a candidate PASSED the reloc-grade PnP
                               verification (the metric constraint)
@@ -77,7 +76,7 @@ Event keys (counted pipeline decisions - deterministic per run):
                               disagreement (the degeneracy guard)
   loop_correction_skipped / loop_corrected / loop_global_ba /
   loop_correction_failed
-                              phase 3c's correction: a verified
+                              the correction: a verified
                               constraint that AGREES with the odometry
                               chain (drift below
                               LOOP_MIN_DRIFT_M - tum's near-revisits);
@@ -86,7 +85,7 @@ Event keys (counted pipeline decisions - deterministic per run):
                               or a failed pose graph
   intake_first_frame / intake_feed_displacement / intake_forced_max_gap /
   intake_few_features / intake_few_matches / intake_skip
-                              phase 8-5 displacement-gated frame
+                              displacement-gated frame
                               intake (video path only - the harness
                               feeds frame files and never constructs
                               a gate): why each DECODED frame was fed

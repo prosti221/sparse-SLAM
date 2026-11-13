@@ -143,7 +143,7 @@ def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
     s, R, t = metrics["alignment"]
     metrics.pop("alignment")
 
-    # Phase 3c: the KEYFRAME-trajectory ATE - the FINAL map keyframe
+    # the KEYFRAME-trajectory ATE - the FINAL map keyframe
     # poses vs GT at their frame indices (the ORB-SLAM-standard
     # loop-closure evaluation: an end-of-run closure rewrites the
     # keyframe trajectory AFTER the per-frame stream is history - a
@@ -177,7 +177,7 @@ def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
     metrics["resets"] = result.resets
     metrics["fps"] = result.fps
 
-    # ---- phase 14/15 additions (additive observables only) ----
+    # ---- additive observables only ----
     # The shared health summary (same module the video census uses):
     # on ladder entries this joins with GT accuracy in the analysis;
     # on battery entries it is harmless extra context. The harness
@@ -210,7 +210,7 @@ def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
                 pre["ate_rmse"] - metrics["ate_kf_rmse"])
 
     # Collapse tripwire: the largest single-step camera-center displacement.
-    # A finding-8-style blowup (pose chain stepping backward, PnP diverging
+    # A blowup (pose chain stepping backward, PnP diverging
     # to |t| ~ 1e4) flags itself here instead of hiding behind an ATE number.
     centers = result.poses[:, :3, 3]
     if len(centers) > 1:

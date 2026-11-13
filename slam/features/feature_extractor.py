@@ -40,18 +40,18 @@ def _create_image_pyramid(img: np.ndarray, n_levels: int, scale_factor: float) -
     return pyramid
 
 
-# ===== Phase 23: the extractor registry =====
+# ===== the extractor registry =====
 # One builder per extractor name. A builder owns its DEFAULT config,
 # merges the caller's overrides, and returns the merged config, the
 # detector, and the (multiscale, single-scale) extraction handlers as
 # closures. FeatureExtractor dispatches through this dict only, so a
-# new extractor (the planned ALIKED + LightGlue) is ONE builder plus
-# ONE constants.EXTRACTOR_DESCRIPTOR_KINDS entry (the matcher's norm
+# new extractor is ONE builder plus ONE
+# constants.EXTRACTOR_DESCRIPTOR_KINDS entry (the matcher's norm
 # seam) - no class or call-site edits.
 #
-# AKAZE and SuperPoint ("DNN") were REMOVED in phase 23: neither ever
-# won a measured adoption gate, and every tier constructs ORB. The
-# phase-23 record in benchmarks/IMPROVEMENT.md holds the history.
+# AKAZE and SuperPoint ("DNN") were removed: neither ever won a
+# measured adoption gate, and every tier constructs ORB. The
+# IMPROVEMENT.md record holds the history.
 
 def _build_orb(config: Dict):
     merged = {**DEFAULT_ORB_CONFIG, **(config or {})}
@@ -177,7 +177,7 @@ def _build_orb(config: Dict):
 
 
 def _build_aliked(config: Dict):
-    """Phase 24: the learned frontend. The models live in
+    """The learned frontend. The models live in
     aliked_backend (lazy torch/lightglue imports - the geocalib
     pattern); the builder only wires the handlers. ALIKED handles
     scale internally (the deformable detector is natively

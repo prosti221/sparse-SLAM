@@ -311,12 +311,17 @@ def main():
     # The DERIVED combined table (guarded per-video files are the
     # evidence; this is a re-projection of them). The summary file
     # itself is excluded (different shape; regenerated every run).
+    # Old-schema artifacts (pre-rotation_model summaries) are skipped:
+    # the derived table is a projection of the current schema.
     summaries = {}
     for p in sorted(OUT_DIR.glob("*.json")):
         if p.name == "video_census_summary.json":
             continue
         d = json.loads(p.read_text())
-        summaries[d["video"]] = d["summary"]
+        s = d.get("summary")
+        if not isinstance(s, dict) or "rotation_model" not in s:
+            continue
+        summaries[d["video"]] = s
     print(health_table(summaries))
     (OUT_DIR / "video_census_summary.json").write_text(
         json.dumps({"videos": summaries}, indent=1) + "\n")

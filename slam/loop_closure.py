@@ -1,27 +1,25 @@
 """
 Loop Closure Detection and Optimization for SLAM.
 
-Phase 3a repair of the dormant milestone-3 machinery. The milestone-3
-detector verified candidates with a two-view essential matrix and fed
-its Rt DIRECTLY to the pose graph as the loop edge measurement -
-doubly wrong: the E-translation is UNIT-SCALE (monocular scale) while
-the graph's odometry edges are metric world-frame transforms (the
-SCALE BUG: a ~3.5-unit-apart revisit pair would be dragged to ~1 unit
-apart - map shrinkage, not closure), and the camera-frame Rt does not
-match the graph's measurement form M(a,b) = pose_a @ inv(pose_b). The
-verification gates compounded it: the reprojection check compared
-NORMALIZED coordinates against a "2.0 pixels" constant (~1000 px -
-it filtered nothing) and cheirality used np.all (a single outlier
-killed a genuine loop).
+The loop-closure verification is reloc-grade map-anchored PnP: an
+earlier two-view-essential-matrix verification was doubly wrong - the
+E-translation is UNIT-SCALE (monocular scale) while the graph's
+odometry edges are metric world-frame transforms (a ~3.5-unit-apart
+revisit pair would be dragged to ~1 unit apart - map shrinkage, not
+closure), and the camera-frame Rt does not match the graph's
+measurement form M(a,b) = pose_a @ inv(pose_b). Its verification
+gates compounded it: the reprojection check compared NORMALIZED
+coordinates against a "2.0 pixels" constant (~1000 px - it filtered
+nothing) and cheirality used np.all (a single outlier killed a
+genuine loop).
 
-The landed verification is reloc-grade (finding 12's map-anchored cure
-applied to the loop pair): unseeded PnP against the match KF's map
+The landed verification: unseeded PnP against the match KF's map
 points, gated on inliers / ratio / median TRUE-pixel reprojection,
 with the PnP rotation cross-checked against the independent two-view
 E rotation (catches mirrored / degenerate PnP solutions that reproject
 well). See LoopClosureDetector._estimate_loop_constraint.
 
-RANSAC determinism / RNG transparency (phase 3b): the module NEVER
+RANSAC determinism / RNG transparency: the module NEVER
 draws from OpenCV's global RNG - solvePnPRansac / findEssentialMat
 would advance the stream for every subsequent tracker RANSAC call,
 breaking default-path bit-identity wherever the module merely runs
@@ -45,66 +43,45 @@ from slam.utils.utils import extractRtFromE
 
 LOG_TAG = 'LoopClosure'
 
-# Phase 9 recovery validation kill-switch. MODULE-level for now: the
-# user's constants.py is a live experiment file (their intake sweep),
-# so this lands beside the only code that reads it and migrates to
-# the constants module (the --override-sweepable convention) once
-# their file stabilizes. An INT flag, not a bool - the --override
-# parser's type(current)(value) trap (bool("0") is True). Read via
-# this module's namespace at CALL time so probes can patch it
-# in memory for A/B.
+# Recovery-validation kill-switch. MODULE-level for now (the
+# constants.py migration awaits the user's file stabilizing). An INT
+# flag, not a bool - the --override parser's type(current)(value)
+# trap (bool("0") is True). Read via this module's namespace at CALL
+# time so probes can patch it in memory for A/B.
 RECOVERY_VALIDATION_ENABLED = 1
 
-# Phase 10 archive kill-switch + archive-query scan bound (same
-# module-level placement / INT-flag convention / call-time reads as
-# RECOVERY_VALIDATION_ENABLED). OFF reproduces legacy amnesia
-# exactly: no archive is created at reset, and the archive recovery
-# returns before any work. The scan bound caps the archived-keyframe
-# candidates examined per recovery cycle (newest-first, early-out on
-# the first verified match); resets are rare so archives are few,
-# but a salem-scale pre-reset map holds 150+ keyframes and a recovery
-# spiral must not pay for all of them every cycle.
+# Archive kill-switch + archive-query scan bound (same module-level
+# placement / INT-flag convention / call-time reads). OFF reproduces
+# legacy amnesia exactly: no archive is created at reset, and the
+# archive recovery returns before any work. The scan bound caps the
+# archived-keyframe candidates examined per recovery cycle (newest-
+# first, early-out on the first verified match); resets are rare so
+# archives are few, but a salem-scale pre-reset map holds 150+
+# keyframes and a recovery spiral must not pay for all of them every
+# cycle.
 RECOVERY_ARCHIVE_ENABLED = 1
 RECOVERY_ARCHIVE_SCAN_LIMIT = 40
 
-# Phase 17 (T1) point re-anchor kill-switch (same module-level
-# placement / INT-flag / call-time-read convention). The verdict
-# evidence: the pose graph moves keyframe poses while the map
-# points stay triangulated under the OLD poses, so the global BA
-# that follows starts from an inconsistent state (moved cameras,
-# stale structure) and lands wherever LM takes it — measured as
-# single-keyframe teleports of 21-160 map units per solve and 2-3x
-# KF-ATE explosions (fr1/fr2/fr3, both hosts; the same stage
-# REPAIRS dramatically when it happens to land in the right basin:
-# mh_01 desktop, all six events). The re-anchor moves each point
-# with its earliest observing keyframe's rigid correction (the
-# ORB-SLAM2 reference-KF practice) BEFORE the BA, making the
-# consistent basin the starting point.
+# Point re-anchor kill-switch (same module-level placement / INT-flag
+# / call-time-read convention). The mechanism: the pose graph moves
+# keyframe poses while the map points stay triangulated under the
+# OLD poses, so the global BA that follows starts from an
+# inconsistent state (moved cameras, stale structure) and lands
+# wherever LM takes it - measured as single-keyframe teleports of
+# 21-160 map units per solve and 2-3x KF-ATE explosions (the same
+# stage REPAIRS dramatically when it happens to land in the right
+# basin). The re-anchor moves each point with its earliest observing
+# keyframe's rigid correction BEFORE the BA, making the consistent
+# basin the starting point.
 #
-# A/B VERDICT (2026-11-11, phase 17d-1): REJECTED as a STANDALONE
-# fix — the pre-registered adoption contract FAILED on all 8
-# sequence x host legs. The measured mechanism of the failure: the
-# stale points were LOAD-BEARING — they anchored the per-frame
-# stream in the pre-correction gauge and often pulled the BA back
-# toward the better-aligned geometry; making corrections propagate
-# consistently amplified HARMFUL corrections into the live stream
-# (fr1 laptop per-frame 0.067 -> 0.180; desktop legs gained reset
-# storms where OFF had zero resets). And the BA still explodes
-# from the consistent init (fr2: d_ba +0.086/+0.114 — larger than
-# OFF's worst), so stale-init was not the explosions' whole cause;
-# the missing piece is an acceptance GATE on the BA write-back
-# (phase 11's planned machinery), not only the initialization.
-# Retained OFF (the pre-17 passthrough) for the eventual
-# combination: a corrected graph (17d-2) + the gate, then the
-# re-anchor re-tried as one unit. MEASURED (phase 18, desktop
-# x86_64): the combination AND every pre-registered ablation
-# FAILED the amended contract — and the re-anchor is the
-# destabilizer (reset storms on fr3/mh_01 in BOTH normalization
-# regimes; the one bright leg, fr1 -0.080 final with gate-only,
-# does not survive the conjunctive contract). Stays OFF. Evidence:
-# output/benchmarks/ladder/phase17_t1_events_*_{,_on}{,_c18*}.json
-# and phase18_t1_contract*.json; the phase-17/18 records in
-# benchmarks/IMPROVEMENT.md.
+# MEASURED: REJECTED - standalone (failed the adoption contract on
+# all 8 sequence x host legs: the stale points were LOAD-BEARING,
+# anchoring the per-frame stream in the pre-correction gauge, and
+# propagating corrections consistently amplified harmful ones), and
+# again in combination with the graph correction + BA acceptance
+# gate (the re-anchor is the destabilizer: reset storms on two
+# sequences in BOTH normalization regimes). Stays OFF - the
+# IMPROVEMENT.md records hold the full evidence.
 LOOP_POINT_REANCHOR_ENABLED = 0
 
 
@@ -139,8 +116,8 @@ class KeyframeFeatureDatabase:
             LOG_TAG, f"Stored features for keyframe {keyframe_id} ({len(descriptors)} features)")
 
     def remove_keyframe_features(self, keyframe_id: UUID):
-        """Remove a keyframe's stored features (phase 2h keyframe
-        culling): a culled keyframe must stop being a loop-closure
+        """Remove a keyframe's stored features: a culled keyframe must
+        stop being a loop-closure
         candidate, or find_similar_keyframes would keep matching future
         frames against a dead keyframe."""
         if keyframe_id in self.feature_storage:
@@ -169,10 +146,10 @@ class KeyframeFeatureDatabase:
         if len(self.keyframe_order) <= exclude_recent:
             return []
 
-        # Exclude recent keyframes. NOTE (phase 3a): exclude_recent=0
-        # must mean "no exclusion", but the milestone-3 slice
-        # [:-exclude_recent] degenerates to [:-0] = the EMPTY list (a
-        # Python gotcha the 3a exclusion pin caught).
+        # Exclude recent keyframes. NOTE: exclude_recent=0
+        # must mean "no exclusion", but a naive slice
+        # [:-exclude_recent] degenerates to [:-0] = the EMPTY list
+        # (a Python gotcha the exclusion pin caught).
         if exclude_recent <= 0:
             candidate_keyframes = self.keyframe_order
         else:
@@ -258,10 +235,10 @@ class LoopClosureDetector:
 
     def detect_potential_loops(self, current_frame: Frame) -> List[LoopClosureCandidate]:
         """Query the feature DB for keyframes visually similar to the
-        given (just-inserted) keyframe. One query per new keyframe is
-        the phase-3 cadence (the milestone-3 `step % 10` frame cadence
-        re-queried the same cur_keyframe repeatedly); the exclusion
-        window is in KEYFRAMES (the milestone-3 detector called the
+        given (just-inserted) keyframe. One query per new keyframe
+        (an earlier step-based cadence re-queried the same
+        cur_keyframe repeatedly); the exclusion
+        window is in KEYFRAMES (an earlier version called the
         same number "frames" - resolved to keyframes, sweepable). The
         query keyframe itself is never a candidate (the pipeline adds
         it to the DB at insertion, before this runs).
@@ -325,7 +302,7 @@ class LoopClosureDetector:
 
     def _estimate_loop_constraint(self, query_kf: Frame,
                                   match_kf: Frame) -> Optional[np.ndarray]:
-        """The metric loop constraint between two keyframes (phase 3a).
+        """The metric loop constraint between two keyframes.
 
         Descriptor-match the query KF's keypoints against the MATCH
         KF'S MAP POINTS (the point-side registry - the 2f/2g lesson),
@@ -440,7 +417,7 @@ class LoopClosureDetector:
 
     def _pnp_ransac(self, obj: np.ndarray, img: np.ndarray,
                     fx: float):
-        """Deterministic PnP RANSAC (phase 3b). cv.solvePnPRansac
+        """Deterministic PnP RANSAC. cv.solvePnPRansac
         draws from OpenCV's GLOBAL RNG, and any mid-run draw would
         shift the stream for every subsequent tracker RANSAC call -
         breaking default-path bit-identity wherever the module merely
@@ -510,7 +487,7 @@ class LoopClosureDetector:
         """Normalized 8-point essential matrix over an already-clean
         inlier set (Hartley normalization, SVD, essential-matrix
         projection). No RANSAC - the PnP inlier set IS the filter
-        (phase 3b's RNG-transparency note). Both inputs are
+        (the RNG-transparency constraint). Both inputs are
         undistorted normalized coordinates, so the result composes
         directly with extractRtFromE(K = eye(3))."""
         pts_q = np.asarray(pts_q, dtype=np.float64)
@@ -559,7 +536,7 @@ class LoopClosureDetector:
         degeneracy guard, not a precision gate.
 
         The essential matrix is the normalized 8-POINT over the
-        already-clean PnP inlier set (phase 3b: findEssentialMat's
+        already-clean PnP inlier set (findEssentialMat's
         RANSAC draws from OpenCV's global RNG - see the module
         docstring's RNG-transparency note)."""
         pts_q = img[inliers]
@@ -594,10 +571,10 @@ class LoopClosureDetector:
     def map_anchored_pnp_pose(self, frame: Frame, match_kf: Frame,
                               points) -> Tuple[Optional[np.ndarray],
                                                Optional[dict]]:
-        """Phase 10 shared front: the reloc-grade map-anchored PnP over
+        """Shared front: the reloc-grade map-anchored PnP over
         a candidate keyframe's described map points, parameterized by
-        the POINT SOURCE (the live map for phase 9's validation, an
-        ArchivedMap's points for phase 10's archive recovery).
+        the POINT SOURCE (the live map for recovery validation, an
+        ArchivedMap's points for archive recovery).
 
         Descriptor-match the frame against the candidate's point-side
         described map points (BF knn + LOWE_RATIO, no cv-RNG draws),
@@ -611,7 +588,7 @@ class LoopClosureDetector:
         why the archive recovery commits the PnP pose, not an E-chain
         proposal). Returns (None, {'reason': ...}) on every gate
         failure or inability: a low-quality PnP cannot arbitrate
-        anything (phase 9's no-basis principle).
+        anything (the no-basis principle).
         """
         corr = []  # (pt_3d, descriptor, Point) rows
         for pt in points:
@@ -669,10 +646,10 @@ class LoopClosureDetector:
 
     def verify_archive_recovery(self, frame: Frame, match_kf: Frame,
                                 points) -> Optional[np.ndarray]:
-        """Phase 10: the loop-grade verification stack for an ARCHIVE
+        """The loop-grade verification stack for an ARCHIVE
         recovery candidate - map_anchored_pnp_pose plus the E-vs-PnP
         ROTATION CROSS- CHECK (the archive path has no E-chain proposal
-        for the phase-9 disagreement check; the PnP IS the estimator,
+        for the disagreement check; the PnP IS the estimator,
         so it gets the loop detector's degeneracy guard: the archived
         keyframe's own observations of the inlier points give the
         match-side view, and a mirrored / degenerate PnP shows up as a
@@ -703,21 +680,22 @@ class LoopClosureDetector:
 
     def validate_map_anchored_pose(self, frame: Frame, match_kf: Frame,
                                    proposed_pose: np.ndarray) -> bool:
-        """Phase 9 recovery validation: check a recovery proposal
+        """Recovery validation: check a recovery proposal
         against the map BEFORE the caller commits anything.
 
-        The defect class (finding 29): both recovery paths accepted
+        The defect class: both recovery paths accepted
         candidates on epipolar inlier support alone and committed
         immediately - RPY frames 434/553 accepted 686/565-inlier
         half-turns that survived as 175.8/179.4-deg stream errors
         DESPITE the per-frame PnP guard rejecting them afterwards;
         recovery had no rollback (local BA unwound 579/681, the rest
-        persisted). 7a removed the zero-baseline self-pair admission
+        persisted). An earlier fix removed the zero-baseline self-pair
+        admission
         path; this closes the remaining no-validation architecture.
 
-        REJECT only on POSITIVE contradiction (phase 10 refactor: the
+        REJECT only on POSITIVE contradiction (the
         correspondence/PnP/quality work lives in
-        map_anchored_pnp_pose; this wrapper keeps the phase-9
+        map_anchored_pnp_pose; this wrapper keeps the original
         contract bit-for-bit): a HIGH-QUALITY PnP whose rotation
         disagrees with the proposal by more than
         LOOP_MAX_ROTATION_DISAGREEMENT_DEG. Every inability to
@@ -729,8 +707,8 @@ class LoopClosureDetector:
 
         Returns True (accept) / False (reject). Fires no telemetry;
         the tracker hook owns the rejection event so it fires only on
-        actual rejections (the 7a discipline: exact frozen-control
-        comparisons wherever the gate is silent).
+        actual rejections (frozen-control
+        comparisons stay exact wherever the gate is silent).
         """
         if not RECOVERY_VALIDATION_ENABLED:
             # Flag OFF: bit-transparent - return before constructing
@@ -771,8 +749,8 @@ class PoseGraphConstraint:
     """A pose-graph LOOP edge (the odometry/chain edges are built
     inside the optimizer from consecutive keyframes). The edge
     information weights are applied by the optimizer from the
-    LOOP_INFO_* constants - the milestone-3 per-constraint information
-    matrix was never consumed (a dead field; removed in 3a)."""
+    LOOP_INFO_* constants - an earlier per-constraint information
+    matrix was never consumed (a dead field; removed)."""
 
     def __init__(self, from_keyframe_id: UUID, to_keyframe_id: UUID,
                  relative_pose: np.ndarray):
@@ -795,7 +773,7 @@ class PoseGraphOptimizer:
         edges built internally from consecutive keyframes; the loop
         edges carry the verified metric constraints).
 
-        Phase 17 (T1): on success, the write-back RE-ANCHORS the map
+        On success, the write-back RE-ANCHORS the map
         points with the correction (see _reanchor_points_with_
         correction) so the global BA that follows starts from a
         consistent state instead of the moved-cameras/stale-structure
@@ -829,7 +807,7 @@ class PoseGraphOptimizer:
 
     def _reanchor_points_with_correction(self,
                                           pre_poses: dict) -> None:
-        """Phase 17 (T1): move every map point with the rigid
+        """Move every map point with the rigid
         correction of its EARLIEST observing keyframe, after the pose
         graph moved the keyframes and before the global BA runs.
 
