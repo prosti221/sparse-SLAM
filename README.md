@@ -4,27 +4,10 @@ This is a monocular visual SLAM system that builds a sparse 3D map of the enviro
 ### Key Features
 - Camera tracking through feature matching and pose estimation
 - Sparse 3D reconstruction of environmental features
-- Multiple feature extractors supported (ORB, AKAZE, SuperPoint)
+- Feature extraction via ORB with multiscale pyramid support (learned extractors planned)
 - Bundle adjustment for map and pose optimization (using g2o)
 - Keyframe-based mapping
 - Visualization using Open3D
-
-### Eamples
-#### Example run using A-KAZE for feature extraction with dashcam video input:
-
-https://github.com/user-attachments/assets/ff7c8afa-c63a-49e7-aa66-5c6ffd1ad6b9
-
-
-### Example run using SuperPoint on [TUM rgbd](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download) dataset (fr1/xyz)
-#### A-KAZE
-Below is a full run using the AKAZE feature extractor.
-
-https://github.com/user-attachments/assets/ccb063bc-40e7-4074-a757-5cdbfd994c67
-
-#### SuperPoint
-This is using the SuperPoint feature extractor. Generates tons of good keypoints and its able to produce fairly dense maps, but its quite costly to run.
-
-https://github.com/user-attachments/assets/cb612c58-9a4e-4216-81dc-7656cf5de836
 
 ## Setup and run
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management. Install uv, then run:
@@ -41,8 +24,6 @@ On the first run, uv automatically downloads the pinned Python version (see `.py
 brew install libusb
 ```
 
-The weights for SuperPoint are already provided in the repo.
-
 ## Custom keybindings for the renderer
 - Press "q" to quit the application and store the session data
 - Press "t" to toggle for automatic camera tracking
@@ -52,7 +33,7 @@ The weights for SuperPoint are already provided in the repo.
 Modify slam/config/config.yaml to customize:
 ```yaml
 global:
-  feature_extractor: "DNN"  # ORB, AKAZE, or DNN
+  feature_extractor: "ORB"
   enable_multiscale_features: true
   record_session: true
 
@@ -75,9 +56,10 @@ videos:
 - Open3D
 - NumPy
 - SciPy
-- PyTorch (for SuperPoint)
 - g2o (for bundle adjustment)
 - Colorama (for logging)
+
+Optional extras: `calib` (GeoCalib intrinsics priors), `learned` (PyTorch + torchvision — reserved for planned learned extractors/matchers).
 
 ## Future TODOs
 - Improve keyframe selection logic. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.

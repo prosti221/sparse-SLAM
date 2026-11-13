@@ -66,19 +66,27 @@ ROTATION_MODEL_T_COHERENCE_ENGAGE = 0.80
 ROTATION_MODEL_T_COHERENCE_REARM = 0.95
 
 
+def descriptor_norm(feature_extraction_method: str) -> int:
+    """The cv norm for an extractor's descriptor kind - the phase-23
+    seam: constants.EXTRACTOR_DESCRIPTOR_KINDS holds ONE entry per
+    extractor name ('binary' = Hamming, 'float' = L2); a learned
+    float-descriptor extractor (ALIKED) adds its own line there.
+    Unknown names raise KeyError - the registry declares, never
+    silently defaults."""
+    kind = EXTRACTOR_DESCRIPTOR_KINDS[feature_extraction_method]
+    return cv.NORM_HAMMING if kind == 'binary' else cv.NORM_L2
+
+
 def _get_or_create_matcher(feature_extraction_method: str) -> cv.DescriptorMatcher:
     cache_key = feature_extraction_method
     if cache_key in _matcher_cache:
         return _matcher_cache[cache_key]
 
-    if feature_extraction_method == DNN_EXTRACTOR_NAME:
-        index_params = dict(algorithm=1, trees=5)
-        search_params = dict(checks=50)
-        matcher = cv.FlannBasedMatcher(index_params, search_params)
-    else:
-        is_binary_desc = feature_extraction_method in BINARY_DESCRIPTION_METHODS
-        matcher = cv.BFMatcher(
-            cv.NORM_HAMMING if is_binary_desc else cv.NORM_L2, crossCheck=False)
+    # Phase 23: the FLANN branch died with SuperPoint. Every
+    # extractor now matches with brute-force knn - deterministic, and
+    # the triangulation-partner tool depends on that property.
+    matcher = cv.BFMatcher(
+        descriptor_norm(feature_extraction_method), crossCheck=False)
 
     _matcher_cache[cache_key] = matcher
     debug_log(
@@ -96,27 +104,6 @@ def estimate_essential_matrix(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) 
     )
     inliers = np.sum(mask) if mask is not None else 0
     return E, mask, inliers
-
-
-def estimate_homography(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
-    H, mask = cv.findHomography(
-        pts_f1_norm, pts_f2_norm,
-        method=cv.RANSAC,
-        ransacReprojThreshold=MATCHER_RANSAC_THRESHOLD,
-        confidence=MATCHER_RANSAC_PROBABILITY
-    )
-    inliers = np.sum(mask) if mask is not None else 0
-    return H, mask, inliers
-
-
-def homography_to_essential(H_norm: np.ndarray) -> np.ndarray:
-    # Ensure E has the proper essential matrix constraints
-    U, S, Vt = np.linalg.svd(H_norm)
-    # Essential matrix should have two equal singular values
-    S_corrected = np.array([1, 1, 0])
-    E_corrected = U @ np.diag(S_corrected) @ Vt
-
-    return E_corrected
 
 
 def evaluate_model_quality(mask: np.ndarray) -> float:
@@ -137,36 +124,51 @@ def select_best_model(
     pts_f1_norm: np.ndarray,
     pts_f2_norm: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, str]:
-    # Estimate Essential Matrix
+    """Essential-matrix estimation with RANSAC + the quality score.
+
+    Phase 23: the homography alternative is REMOVED. It was disabled
+    in practice since its introduction (the early return made the
+    entire selection branch dead code - the "disabling model
+    selection until I figure out why the Homography is so shit for
+    planar scenes" question was never answered), and no measured
+    tier ever exercised it. The E-only policy is now the stated
+    contract instead of an accident of statement ordering.
+    """
     E, E_mask, E_inliers = estimate_essential_matrix(pts_f1_norm, pts_f2_norm)
     E_quality = evaluate_model_quality(E_mask)
 
-    # Disabling model selection until I figure out why the Homogrophy is so shit for planar scenes    return E, E_mask, "essential"
-    return E, E_mask, "essential"
-
-    # Estimate Homography
-    H, H_mask, H_inliers = estimate_homography(pts_f1_norm, pts_f2_norm)
-    H_quality = evaluate_model_quality(H_mask)
-
     debug_log(
         LOG_TAG, f"Essential Matrix - Inliers: {E_inliers}, Quality: {E_quality:.3f}")
-    debug_log(
-        LOG_TAG, f"Homography - Inliers: {H_inliers}, Quality: {H_quality:.3f}")
+    return E, E_mask, "essential"
 
-    # Additional heuristics for model selection
-    # If homography quality is much higher, scene might be planar
 
-    if H_quality > E_quality * 1.3 and H_inliers > E_inliers:
-        # Homography fits better - likely planar scene
-        debug_log(LOG_TAG, "Selected Homography model (planar scene detected)")
+def lowe_ratio_filter(matches) -> List[cv.DMatch]:
+    """Lowe's ratio test + one-to-one enforcement over knnMatch(k=2)
+    results. Phase 23: extracted from its two inline copies
+    (match_features and rotation_model_pose_between_frames) so the
+    planned ALIKED+LightGlue seam has ONE named insertion point to
+    replace.
 
-        # Convert homography to essential matrix for pose estimation
-        E_from_H = homography_to_essential(H)
-        return E_from_H, H_mask, "homography"
-    else:
-        # Essential matrix fits better - general 3D scene
-        debug_log(LOG_TAG, "Selected Essential Matrix model (3D scene)")
-        return E, E_mask, "essential"
+    One deliberate semantic touch-up, pre-declared in the phase-23
+    plan: the len(pair) < 2 guard (from the rotation-model copy) now
+    protects BOTH callers - a knnMatch query with fewer than 2
+    neighbors (tiny descriptor sets) previously crashed
+    match_features' unpacking. Unexercised on every measured tier
+    (the finding-35 featureless path returns earlier).
+    """
+    good_matches = []
+    indices_f1_set, indices_f2_set = set(), set()
+    for pair in matches:
+        if len(pair) < 2:
+            continue
+        m, n = pair
+        if (m.distance < LOWE_RATIO * n.distance
+                and m.queryIdx not in indices_f1_set
+                and m.trainIdx not in indices_f2_set):
+            indices_f1_set.add(m.queryIdx)
+            indices_f2_set.add(m.trainIdx)
+            good_matches.append(m)
+    return good_matches
 
 
 def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
@@ -197,19 +199,16 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         return [], None
 
     matches = matcher.knnMatch(f1_desc, f2_desc, k=2)
-
-    good_matches = []
-    indices_f1_set, indices_f2_set = set(), set()
-    for m, n in matches:
-        if m.distance < LOWE_RATIO * n.distance and m.queryIdx not in indices_f1_set and m.trainIdx not in indices_f2_set:
-            indices_f1_set.add(m.queryIdx)
-            indices_f2_set.add(m.trainIdx)
-            good_matches.append(m)
+    # The planned ALIKED+LightGlue seam: a learned matcher would
+    # replace matcher.knnMatch + lowe_ratio_filter with per-pair
+    # confidences; everything downstream (the RANSAC E, extractRtFromE,
+    # set_match_data contract) is unchanged.
+    good_matches = lowe_ratio_filter(matches)
 
     debug_log(
         LOG_TAG, f"Found {len(good_matches)} good matches from ratio test")
 
-    # Filter using RANSAC with model selection
+    # Geometric filter: RANSAC on the essential matrix
     if len(good_matches) > MATCHER_RANSAC_MINIMUM_INLIERS:
         indices_f1 = [m.queryIdx for m in good_matches]
         indices_f2 = [m.trainIdx for m in good_matches]
@@ -217,7 +216,6 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         pts_f1_norm = frame1.kp_pts_norm[indices_f1]
         pts_f2_norm = frame2.kp_pts_norm[indices_f2]
 
-        # Select best model between Essential Matrix and Homography
         E, mask, selected_model = select_best_model(
             pts_f1_norm, pts_f2_norm)
 
@@ -237,16 +235,6 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         # decompositions, with the constant-velocity motion prior (the
         # previous frame-to-frame relative pose) breaking the ties that a
         # cheirality vote alone coin-flips under lateral motion (phase 1a).
-        # Only E-inliers participate: outliers would corrupt both the
-        # cheirality support and the reprojection tiebreak.
-        # Convention: Rt is T_{f2<-f1}, the pose of frame1's camera in
-        # frame2's camera frame, so Twc_f1 = Twc_f2 @ Rt. Translation is
-        # unit-normalized (monocular scale).
-        # Recover the relative pose from the essential matrix. The four-fold
-        # ambiguity is resolved by explicit cheirality scoring of all
-        # decompositions, with the constant-velocity motion prior (the
-        # previous frame-to-frame relative pose) breaking the ties that a
-        # cheirality vote alone coin-flips under lateral motion (phase 1a).
         # All good matches participate, matching recoverPose's input set
         # (A/B measured: the E-inlier subset scores the same branches).
         # Convention: Rt is T_{f2<-f1}, the pose of frame1's camera in
@@ -259,7 +247,7 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         debug_log(
             LOG_TAG,
             f"Found {len(filtered_matches)} filtered matches using {selected_model} model, "
-            f"{len(filtered_matches) / len(matches) * 100:.2f}% inliers"
+            f"{len(filtered_matches) / len(good_matches) * 100:.2f}% inliers"
         )
         return filtered_matches, Rt
     else:
@@ -337,18 +325,7 @@ def rotation_model_pose_between_frames(frame1: Frame, frame2: Frame,
 
     matcher = _get_or_create_matcher(feature_extraction_method)
     matches = matcher.knnMatch(f1_desc, f2_desc, k=2)
-    good_matches = []
-    indices_f1_set, indices_f2_set = set(), set()
-    for pair in matches:
-        if len(pair) < 2:
-            continue
-        m, n = pair
-        if (m.distance < LOWE_RATIO * n.distance
-                and m.queryIdx not in indices_f1_set
-                and m.trainIdx not in indices_f2_set):
-            indices_f1_set.add(m.queryIdx)
-            indices_f2_set.add(m.trainIdx)
-            good_matches.append(m)
+    good_matches = lowe_ratio_filter(matches)
     if len(good_matches) < ROTATION_MODEL_MIN_INLIERS:
         return None
 
