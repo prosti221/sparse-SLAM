@@ -116,18 +116,24 @@ def _get_models():
 
     _weights_note()
     device = _device()
+    # Inference-only modules: requires_grad frozen at load AND both
+    # forwards wrapped in inference_mode (see the call sites) - the
+    # backend never builds autograd graphs, and LightGlue's output
+    # tensors must be .numpy()-able on ANY thread regardless of which
+    # thread loaded the models (the [26c] pipeline's worker loads and
+    # runs them; the main thread matches).
     extractor = ALIKED(
         model_name=const.ALIKED_MODEL_NAME,
         max_num_keypoints=const.ALIKED_MAX_NUM_KEYPOINTS,
         detection_threshold=const.ALIKED_DETECTION_THRESHOLD,
         nms_radius=const.ALIKED_NMS_RADIUS,
-    ).eval().to(device)
+    ).eval().to(device).requires_grad_(False)
     matcher = LightGlue(
         features="aliked",
         depth_confidence=const.LIGHTGLUE_DEPTH_CONFIDENCE,
         width_confidence=const.LIGHTGLUE_WIDTH_CONFIDENCE,
         filter_threshold=const.LIGHTGLUE_FILTER_THRESHOLD,
-    ).eval().to(device)
+    ).eval().to(device).requires_grad_(False)
     _backend_cache["models"] = (torch, extractor, matcher, device)
     return _backend_cache["models"]
 
@@ -155,7 +161,8 @@ def extract_aliked(img_bgr: np.ndarray
     handling applies unchanged).
     """
     torch, extractor, _, device = _get_models()
-    feats = extractor.extract(_to_tensor(img_bgr).to(device))
+    with torch.inference_mode():
+        feats = extractor.extract(_to_tensor(img_bgr).to(device))
     kps = feats["keypoints"][0].cpu().numpy()
     desc = feats["descriptors"][0].cpu().numpy()
     scores = feats.get("keypoint_scores")
@@ -208,8 +215,10 @@ def match_aliked(frame1, frame2) -> List[cv.DMatch]:
                 [[w, h]], dtype=torch.float32, device=device),
         }
 
-    pred = matcher({"image0": _image_dict(f1_kp, f1_desc, frame1),
-                    "image1": _image_dict(f2_kp, f2_desc, frame2)})
+    inputs = {"image0": _image_dict(f1_kp, f1_desc, frame1),
+              "image1": _image_dict(f2_kp, f2_desc, frame2)}
+    with torch.inference_mode():
+        pred = matcher(inputs)
     matches = pred["matches"][0].cpu().numpy()
     scores = pred["scores"][0].cpu().numpy()
     # DMatch's constructor is POSITIONAL-ONLY in the OpenCV Python
