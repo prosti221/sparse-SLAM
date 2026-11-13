@@ -26,7 +26,7 @@ import pytest
 
 import slam.features.aliked_backend as backend
 import slam.features.matcher as matcher_mod
-from benchmarks.stages.helpers import make_frame, set_keypoints
+from benchmarks.stages.helpers import make_K, make_frame, set_keypoints
 from slam.core.frame import Frame
 from slam.features.feature_extractor import FeatureExtractor
 from slam.features.matcher import match_features
@@ -148,8 +148,8 @@ def test_real_aliked_matching_contract():
     views of the same texture produces cv.DMatch objects (positional
     construction - the DMatch ctor is positional-only in the OpenCV
     Python bindings), and the consensus lands in frame1's match list."""
-    f1 = Frame(_textured())
-    f2 = Frame(_textured_shifted(dx=6))
+    f1 = Frame(_textured(), make_K())
+    f2 = Frame(_textured_shifted(dx=6), make_K())
     f1.set_features(*FeatureExtractor("ALIKED").extract(_textured()))
     f2.set_features(*FeatureExtractor("ALIKED").extract(_textured_shifted(dx=6)))
     matches = match_features(f1, f2, "ALIKED")
