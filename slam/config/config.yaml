@@ -16,6 +16,11 @@ global:
 videos:
   salem:
     path: ./videos/walking_salem.mp4
+    fx: 1458.6
+    fy: 1458.6
+    cx: 960.0
+    cy: 540.0
+    k1: -0.06168
   kyoto:
     path: ./videos/kyoto_original.mp4
     fx: 940.3
