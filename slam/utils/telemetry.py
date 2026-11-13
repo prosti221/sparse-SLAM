@@ -114,6 +114,7 @@ class TelemetryRecorder:
         self.stage_seconds = {}   # stage name -> total seconds
         self.stage_calls = {}     # stage name -> call count
         self.events = {}          # event name -> count
+        self.values = {}          # name -> [recorded values, in order]
 
     def add_stage_time(self, name, seconds):
         self.stage_seconds[name] = self.stage_seconds.get(name, 0.0) + seconds
@@ -122,11 +123,19 @@ class TelemetryRecorder:
     def add_event(self, name, count=1):
         self.events[name] = self.events.get(name, 0) + count
 
+    def add_value(self, name, value):
+        """Append to the keyed value store. SEPARATE from the events
+        dict: nothing reads it unless the consumer asks, so runs that
+        never call value() are byte-identical in their event/stage
+        output (diagnostic-only instrumentation hangs off this)."""
+        self.values.setdefault(name, []).append(value)
+
     def snapshot(self):
         return {
             "stage_seconds": dict(self.stage_seconds),
             "stage_calls": dict(self.stage_calls),
             "events": dict(self.events),
+            "values": {k: list(v) for k, v in self.values.items()},
         }
 
 
@@ -149,3 +158,12 @@ def event(name, count=1):
     rec = _recorder
     if rec is not None:
         rec.add_event(name, count)
+
+
+def value(name, v):
+    """Record a diagnostic value (drift, a stage's max move, ...);
+    no-op when no recorder is attached. Never read by the pipeline —
+    the keyed store exists for the attribution tooling only."""
+    rec = _recorder
+    if rec is not None:
+        rec.add_value(name, v)

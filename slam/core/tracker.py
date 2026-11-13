@@ -32,6 +32,15 @@ import slam.features.matcher as matcher_mod
 # at CALL time so probes can pin it in memory for A/B.
 RESET_GAUGE_CONTINUITY_ENABLED = 1
 
+# Per-correction attribution instrumentation: flag 1 records the
+# correction's measured magnitudes (drift, per-stage max pose move,
+# BA outcome, map size) into the telemetry VALUE store — observation
+# only, no behavior change at either value. Flag 0 (the shipped
+# default) writes nothing anywhere, so the battery is byte-identical
+# by construction. INT flag (the --override bool("0") trap); read at
+# CALL time so probes can pin it in memory for A/B.
+LOOP_CORRECTION_ATTRIB_ENABLED = 0
+
 LOG_TAG = 'Tracker'
 
 
@@ -689,6 +698,7 @@ class Tracker:
         # graph + global BA. Only DISAGREEMENT with the chain
         # justifies the global rearrangement.
         constraints = []
+        attrib = LOOP_CORRECTION_ATTRIB_ENABLED
         for loop in verified_loops:
             match_kf = self.map.get_keyframe_by_id(loop.match_keyframe_id)
             if match_kf is None:
@@ -699,6 +709,8 @@ class Tracker:
             implied = loop.relative_pose @ match_kf.pose
             drift = float(np.linalg.norm(
                 implied[:3, 3] - current_keyframe.pose[:3, 3]))
+            if attrib:
+                telemetry.value("loop_attr_drift", drift)
             if drift < const.LOOP_MIN_DRIFT_M:
                 telemetry.event("loop_correction_skipped")
                 debug_log(LOG_TAG, f"Verified loop agrees with the "
@@ -722,6 +734,8 @@ class Tracker:
 
         # The pose graph distributes the loop error across the chain
         # (odometry edges as the tautological prior, gauge at KF0).
+        graph_pre = ([kf.pose.copy() for kf in self.map.keyframes]
+                     if attrib else None)
         if not self.map.pose_graph_optimizer.optimize_with_loop_constraints(
                 constraints):
             telemetry.event("loop_correction_failed")
@@ -730,6 +744,15 @@ class Tracker:
         telemetry.event("loop_corrected")
         info_log(LOG_TAG, f"Loop correction applied "
                  f"({len(constraints)} constraint(s))")
+        if attrib:
+            telemetry.value("loop_attr_constraints", len(constraints))
+            graph_move = max(
+                (float(np.linalg.norm(
+                    (kf.pose[:3, 3] - pre[:3, 3])))
+                 for kf, pre in zip(self.map.keyframes, graph_pre)),
+                default=0.0)
+            telemetry.value("loop_attr_graph_maxmove", graph_move)
+            telemetry.value("loop_attr_map_points", len(self.map.points))
 
         # Re-align the map points: the pose graph moved keyframe
         # poses, so the existing triangulations are stale - the global
@@ -739,11 +762,22 @@ class Tracker:
         # rearrangement restores the re-anchored pre-solve state
         # instead of teleporting the map. The Map's PERIODIC global
         # BA stays ungated (bit-transparent legacy path).
-        if self.map.g2o_optimizer.global_bundle_adjustment(gated=True):
+        ba_pre = ([kf.pose.copy() for kf in self.map.keyframes]
+                  if attrib else None)
+        ba_ok = self.map.g2o_optimizer.global_bundle_adjustment(gated=True)
+        if ba_ok:
             telemetry.event("loop_global_ba")
         else:
             warning_log(LOG_TAG, "Global BA after loop correction "
                         "failed - map may be inconsistent")
+        if attrib:
+            telemetry.value("loop_attr_ba_ok", 1.0 if ba_ok else 0.0)
+            ba_move = max(
+                (float(np.linalg.norm(
+                    (kf.pose[:3, 3] - pre[:3, 3])))
+                 for kf, pre in zip(self.map.keyframes, ba_pre)),
+                default=0.0)
+            telemetry.value("loop_attr_ba_maxmove", ba_move)
 
         # Motion-model consistency (the reloc precedent): this
         # frame's pose just jumped. update()'s constant-velocity line
