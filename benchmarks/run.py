@@ -196,6 +196,7 @@ def apply_overrides(pairs) -> None:
     import slam.utils.constants as const
     import slam.features.matcher as matcher_mod
     import slam.core.tracker as tracker_mod
+    import slam.core.intake as intake_mod
     import slam.loop_closure as loop_closure_mod
     import slam.ba.bundle_adjustment_g2o as ba_mod
     # Resolution order is LOAD-BEARING: modules that STAR-IMPORT
@@ -204,7 +205,7 @@ def apply_overrides(pairs) -> None:
     # copy would never reach the machinery that reads the origin's
     # own global. Origins resolve first: constants, then matcher,
     # then tracker.
-    flag_modules = (const, matcher_mod, tracker_mod,
+    flag_modules = (const, matcher_mod, tracker_mod, intake_mod,
                     loop_closure_mod, ba_mod)
 
     for pair in pairs:
