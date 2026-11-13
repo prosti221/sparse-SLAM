@@ -1,3 +1,15 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[tool.scikit-build]
+cmake.source-dir = "native"
+# The wheel ships ONLY the compiled extension; the slam/ package stays
+# importable from the repo checkout (benchmarks and slam.py run from
+# the repo root).
+wheel.packages = []
+build-dir = "build/{wheel_tag}"
+
 [project]
 name = "sparse-slam"
 version = "0.1.0"

@@ -62,7 +62,7 @@ DATA_TREES = {
 SYNC_EXCLUDES = [
     ".venv", ".git", "output", "data", "videos", "weights",
     ".pytest_cache", "__pycache__", ".DS_Store", "debug.txt",
-    "*.pyc", ".vscode", "*.egg-info",
+    "*.pyc", ".vscode", "*.egg-info", "build",
 ]
 
 
@@ -103,6 +103,11 @@ def cmd_probe(args):
 def cmd_sync(args):
     t0 = time.time()
     excludes = sum((["--exclude", e] for e in SYNC_EXCLUDES), [])
+    # --delete: the mirror propagates deletions, or stale remote copies
+    # of removed code accumulate (measured: a deleted stage-test file
+    # broke the desktop's pytest collection). Excluded patterns are
+    # also protected from deletion by rsync's exclude semantics.
+    excludes += ["--delete"]
     r = _rsync(f"{REPO_ROOT}/", REMOTE_DIR + "/", args.host, excludes)
     if r.returncode != 0:
         print(r.stderr or r.stdout)

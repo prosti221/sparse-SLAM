@@ -5,6 +5,10 @@ __pycache__/
 # uv virtual environment
 .venv/
 
+# C++ build artifacts (scikit-build-core in-tree build dir; the
+# vendored third_party sources at native/third_party/ ARE committed)
+build/
+
 output/
 videos/
 data/
