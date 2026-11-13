@@ -203,13 +203,11 @@ def _cull_map(K):
     return m, kfs, shared, weak, masked
 
 
-def test_remove_keyframe_cleans_all_registries(monkeypatch):
+def test_remove_keyframe_cleans_all_registries():
     """Removing a keyframe must clean every
     map registry (keyframes list/by-id, tracking-quality history,
     covisibility graph, loop-closure feature DB, orphaned points) and
     the persistent local-BA graph must self-heal on the next call."""
-    from slam.ba import bundle_adjustment_g2o as _ba_mod
-    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)  # persistent-machinery pin
     K = make_K()
     m, kfs, shared, weak, masked = _cull_map(K)
 
