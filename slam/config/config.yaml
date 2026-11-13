@@ -1,4 +1,5 @@
 const_tag: &ORB "ORB"
+const_tag: &ALIKED "ALIKED"
 
 # Global config properties
 global:
