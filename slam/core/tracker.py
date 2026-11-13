@@ -41,6 +41,17 @@ RESET_GAUGE_CONTINUITY_ENABLED = 1
 # CALL time so probes can pin it in memory for A/B.
 LOOP_CORRECTION_ATTRIB_ENABLED = 0
 
+# The post-correction global BA: the pose graph moved keyframe poses
+# (modestly — measured max per-KF moves 1.6-13.5 units), leaving the
+# triangulations stale; the global BA re-solves poses+points
+# together and is the measured destroyer ([25b]: per-KF moves up to
+# 89 units with ba_ok=1 on every event — its own objective "improved"
+# while GT alignment collapsed). Flag 0 skips it (the graph-corrected
+# pose + stale-points state; the stale points are measured
+# load-bearing as the stream's anchor). INT flag (the --override
+# bool("0") trap); read at CALL time so probes can pin it for A/B.
+LOOP_GLOBAL_BA_AFTER_CORRECTION = 1
+
 LOG_TAG = 'Tracker'
 
 
@@ -754,23 +765,30 @@ class Tracker:
             telemetry.value("loop_attr_graph_maxmove", graph_move)
             telemetry.value("loop_attr_map_points", len(self.map.points))
 
-        # Re-align the map points: the pose graph moved keyframe
-        # poses, so the existing triangulations are stale - the global
-        # BA re-solves poses+points together. gated=True opts THIS
-        # call site into the acceptance gate — the solve writes back
-        # only if it improved the objective it minimizes; a diverged
+        # Re-align the map points (flag 1, the shipped behavior): the
+        # pose graph moved keyframe poses, so the existing
+        # triangulations are stale - the global BA re-solves
+        # poses+points together. gated=True opts THIS call site into
+        # the acceptance gate — the solve writes back only if it
+        # improved the objective it minimizes; a diverged
         # rearrangement restores the re-anchored pre-solve state
         # instead of teleporting the map. The Map's PERIODIC global
         # BA stays ungated (bit-transparent legacy path).
+        # Flag 0 skips the BA entirely (the [25c] A/B).
         ba_pre = ([kf.pose.copy() for kf in self.map.keyframes]
                   if attrib else None)
-        ba_ok = self.map.g2o_optimizer.global_bundle_adjustment(gated=True)
-        if ba_ok:
-            telemetry.event("loop_global_ba")
+        ba_ok = False
+        if LOOP_GLOBAL_BA_AFTER_CORRECTION:
+            ba_ok = self.map.g2o_optimizer.global_bundle_adjustment(
+                gated=True)
+            if ba_ok:
+                telemetry.event("loop_global_ba")
+            else:
+                warning_log(LOG_TAG, "Global BA after loop correction "
+                            "failed - map may be inconsistent")
         else:
-            warning_log(LOG_TAG, "Global BA after loop correction "
-                        "failed - map may be inconsistent")
-        if attrib:
+            telemetry.event("loop_global_ba_skipped")
+        if attrib and LOOP_GLOBAL_BA_AFTER_CORRECTION:
             telemetry.value("loop_attr_ba_ok", 1.0 if ba_ok else 0.0)
             ba_move = max(
                 (float(np.linalg.norm(

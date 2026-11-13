@@ -119,3 +119,56 @@ def test_override_unknown_name_fails_loudly():
     from benchmarks.run import apply_overrides
     with pytest.raises(SystemExit):
         apply_overrides(["NO_SUCH_FLAG_ANYWHERE=1"])
+
+
+def test_global_ba_flag_shipped_default_on():
+    assert tracker_mod.LOOP_GLOBAL_BA_AFTER_CORRECTION == 1
+
+
+def test_global_ba_flag_0_skips_the_ba_stage(monkeypatch):
+    """Flag 0: the correction's graph stage still runs (graph
+    telemetry fires), the BA stage does not — no loop_global_ba
+    event, no loop_attr_ba_* values even with attribution ON, and the
+    loop_global_ba_skipped event marks the path."""
+    m, f, info = _loop_fixture()
+    monkeypatch.setattr(tracker_mod, "LOOP_CORRECTION_ATTRIB_ENABLED", 1)
+    monkeypatch.setattr(tracker_mod,
+                        "LOOP_GLOBAL_BA_AFTER_CORRECTION", 0)
+    import slam.utils.constants as const
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    tracker = tracker_mod.Tracker(m)
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+    assert rec.events.get("loop_corrected", 0) >= 1
+    assert rec.events.get("loop_global_ba_skipped", 0) >= 1
+    assert rec.events.get("loop_global_ba", 0) == 0
+    assert "loop_attr_ba_ok" not in rec.values
+    assert "loop_attr_ba_maxmove" not in rec.values
+    # the graph stage's attribution still fired
+    assert "loop_attr_graph_maxmove" in rec.values
+
+
+def test_global_ba_flag_1_keeps_the_shipped_contract(monkeypatch):
+    """Flag 1: identical to the pre-flag behavior — loop_global_ba
+    fires, the BA-stage attribution records, and no skipped event
+    exists."""
+    m, f, info = _loop_fixture()
+    monkeypatch.setattr(tracker_mod, "LOOP_CORRECTION_ATTRIB_ENABLED", 1)
+    monkeypatch.setattr(tracker_mod,
+                        "LOOP_GLOBAL_BA_AFTER_CORRECTION", 1)
+    import slam.utils.constants as const
+    monkeypatch.setattr(const, "LOOP_EXCLUDE_RECENT_KF", 0)
+    tracker = tracker_mod.Tracker(m)
+    rec = telemetry.TelemetryRecorder()
+    telemetry.set_recorder(rec)
+    try:
+        tracker._handle_loop_closure_detection()
+    finally:
+        telemetry.set_recorder(None)
+    assert rec.events.get("loop_global_ba", 0) >= 1
+    assert rec.events.get("loop_global_ba_skipped", 0) == 0
+    assert rec.values.get("loop_attr_ba_ok", []) == [1.0]
