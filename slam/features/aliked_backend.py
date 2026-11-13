@@ -212,6 +212,7 @@ def match_aliked(frame1, frame2) -> List[cv.DMatch]:
                     "image1": _image_dict(f2_kp, f2_desc, frame2)})
     matches = pred["matches"][0].cpu().numpy()
     scores = pred["scores"][0].cpu().numpy()
-    return [cv.DMatch(queryIdx=int(m[0]), trainIdx=int(m[1]),
-                      distance=float(1.0 - s))
+    # DMatch's constructor is POSITIONAL-ONLY in the OpenCV Python
+    # bindings (keyword args fail on 4.11 and 5.0 alike).
+    return [cv.DMatch(int(m[0]), int(m[1]), float(1.0 - s))
             for m, s in zip(matches, scores)]

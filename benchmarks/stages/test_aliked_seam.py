@@ -1,7 +1,7 @@
-"""Phase 24: the ALIKED + LightGlue seam pins.
+"""The ALIKED + LightGlue seam pins.
 
 The learned stack (torch/lightglue) is OPTIONAL ('learned' extra);
-every pin here runs WITHOUT it except the last one, which skips
+every pin here runs WITHOUT it except the last two, which skip
 unless the weights are already in the torch.hub cache (the desktop
 probe downloads them; the laptop stays skip-until-provisioned - the
 suite must never download weights). The seam contract:
@@ -27,13 +27,21 @@ import pytest
 import slam.features.aliked_backend as backend
 import slam.features.matcher as matcher_mod
 from benchmarks.stages.helpers import make_frame, set_keypoints
+from slam.core.frame import Frame
 from slam.features.feature_extractor import FeatureExtractor
+from slam.features.matcher import match_features
 from slam.utils import constants as const
 
 
 def _textured(w=120, h=90, seed=3):
     rng = np.random.default_rng(seed)
     return (rng.integers(0, 255, (h, w, 3))).astype(np.uint8)
+
+
+def _textured_shifted(dx=6, w=120, h=90, seed=3):
+    """The same texture shifted horizontally (the same content, a
+    different camera center) for the matching pin."""
+    return np.roll(_textured(w=w, h=h, seed=seed), dx, axis=1)
 
 
 def test_registry_declares_aliked_and_the_kind_map_routes_l2():
@@ -130,3 +138,25 @@ def test_real_aliked_extraction_contract():
     for kp in kps:
         assert 0 <= kp.pt[0] < w and 0 <= kp.pt[1] < h
         assert kp.response > 0
+
+
+@pytest.mark.skipif(not _learned_stack_ready(),
+                    reason="learned stack not provisioned on this "
+                           "machine (suite never downloads weights)")
+def test_real_aliked_matching_contract():
+    """The REAL matcher, where provisioned: matching two shifted
+    views of the same texture produces cv.DMatch objects (positional
+    construction - the DMatch ctor is positional-only in the OpenCV
+    Python bindings), and the consensus lands in frame1's match list."""
+    f1 = Frame(_textured())
+    f2 = Frame(_textured_shifted(dx=6))
+    f1.set_features(*FeatureExtractor("ALIKED").extract(_textured()))
+    f2.set_features(*FeatureExtractor("ALIKED").extract(_textured_shifted(dx=6)))
+    matches = match_features(f1, f2, "ALIKED")
+    assert isinstance(matches, list)
+    assert len(matches) > 0
+    for m in matches:
+        assert isinstance(m, cv.DMatch)
+        assert 0 <= m.queryIdx < len(f1.get_keypoints_descriptors()[0])
+        assert 0 <= m.trainIdx < len(f2.get_keypoints_descriptors()[0])
+        assert 0.0 <= m.distance <= 1.0
