@@ -3,8 +3,8 @@ const_tag: &ALIKED "ALIKED"
 
 # Global config properties
 global:
-  load_video: "kyoto"
-  feature_extractor: *ORB
+  load_video: "salem"
+  feature_extractor: *ALIKED
   enable_multiscale_features: false
   enable_ba: true
   record_session: false 
