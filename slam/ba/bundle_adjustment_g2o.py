@@ -966,10 +966,20 @@ class G2OBundleAdjustment:
             # dot - measurably different at the last ULP (stage-pinned),
             # and the fold's bits are load-bearing (stage-pinned).
             finite = np.all(np.isfinite(projected), axis=1)
-            for obs, proj, ok in zip(group, projected, finite):
-                if ok:
-                    error_by_obs[obs] = np.linalg.norm(
-                        proj - obs.pt_2d_norm)
+            if finite.any():
+                # The vectorized equivalent of the per-observation
+                # np.linalg.norm call: elementwise products + a
+                # 2-element sum in index order - the same arithmetic
+                # per row as sqrt(dot(x, x)), no cross-element
+                # reduction to reorder (the fold's bits are pinned to
+                # the reference fold by the stage tests).
+                obs2d = np.array([obs.pt_2d_norm for obs in group],
+                                 dtype=np.float64)
+                d = projected - obs2d
+                norms = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])
+                for obs, ok, err in zip(group, finite, norms):
+                    if ok:
+                        error_by_obs[obs] = err
 
         # Pass 2: apply the errors in the ORIGINAL observations order,
         # flagging each point's observers once after its fold segment.

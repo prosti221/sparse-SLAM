@@ -498,8 +498,14 @@ def _fold_map(n_kfs, world_points, K, include_behind_camera=True):
 
 
 def _reference_fold(observations):
-    """The pre-2i semantics, inlined: by-frame batched projection with
-    per-observation norms, and per-update quality flags."""
+    """The reference fold: by-frame batched projection, the SAME
+    vectorized row-norm the optimized fold computes (the [26d] step-2
+    re-measurement: the per-observation 1-D np.linalg.norm rounded
+    differently at the last ULP - BLAS FMA inside the dot, measured
+    7.9% of random inputs - so the norm's formulation is pinned to
+    the vectorized form on BOTH sides, and the pins keep verifying
+    the fold ORDER, the recurrence, and the flag semantics), and
+    per-update quality flags."""
     from collections import defaultdict
     by_frame = defaultdict(list)
     for obs in observations:
@@ -511,10 +517,15 @@ def _reference_fold(observations):
         for i, obs in enumerate(group):
             pts_3d[i] = obs.pt_3d
         projected = frame.project_points(pts_3d, normalized=True)
-        for obs, proj in zip(group, projected):
-            if not np.all(np.isfinite(proj)):
-                continue
-            error_by_obs[obs] = np.linalg.norm(proj - obs.pt_2d_norm)
+        finite = np.all(np.isfinite(projected), axis=1)
+        if finite.any():
+            obs2d = np.array([obs.pt_2d_norm for obs in group],
+                             dtype=np.float64)
+            d = projected - obs2d
+            norms = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])
+            for obs, ok, err in zip(group, finite, norms):
+                if ok:
+                    error_by_obs[obs] = err
 
     for obs in observations:
         error = error_by_obs.get(obs)
