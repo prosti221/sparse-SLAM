@@ -95,6 +95,7 @@ Event keys (counted pipeline decisions - deterministic per run):
                               impossible - too few features or too
                               few matches) or skipped
 """
+import threading
 import time
 from contextlib import contextmanager
 
@@ -115,20 +116,29 @@ class TelemetryRecorder:
         self.stage_calls = {}     # stage name -> call count
         self.events = {}          # event name -> count
         self.values = {}          # name -> [recorded values, in order]
+        # Worker threads emit into the same dicts (the loop-scan pool):
+        # `+=` on a dict value is not atomic under threads, so every
+        # mutation takes this lock. Uncontended on the single-thread
+        # path (one acquire per event, ~microseconds).
+        self._lock = threading.Lock()
 
     def add_stage_time(self, name, seconds):
-        self.stage_seconds[name] = self.stage_seconds.get(name, 0.0) + seconds
-        self.stage_calls[name] = self.stage_calls.get(name, 0) + 1
+        with self._lock:
+            self.stage_seconds[name] = (self.stage_seconds.get(name, 0.0)
+                                        + seconds)
+            self.stage_calls[name] = self.stage_calls.get(name, 0) + 1
 
     def add_event(self, name, count=1):
-        self.events[name] = self.events.get(name, 0) + count
+        with self._lock:
+            self.events[name] = self.events.get(name, 0) + count
 
     def add_value(self, name, value):
         """Append to the keyed value store. SEPARATE from the events
         dict: nothing reads it unless the consumer asks, so runs that
         never call value() are byte-identical in their event/stage
         output (diagnostic-only instrumentation hangs off this)."""
-        self.values.setdefault(name, []).append(value)
+        with self._lock:
+            self.values.setdefault(name, []).append(value)
 
     def snapshot(self):
         return {
