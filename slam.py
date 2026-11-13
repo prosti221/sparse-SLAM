@@ -4,6 +4,7 @@ import numpy as np
 from slam.calibration import IntrinsicsEstimate
 from slam.config.config_parser import ConfigParser
 from slam.core.frame import Frame
+from slam.core import intake as intake_mod
 from slam.core.intake import FrameIntakeGate
 from slam.core.map import Map
 from slam.core.tracker import Tracker
@@ -151,6 +152,14 @@ if __name__ == "__main__":
 
         frame = Frame(img, global_map.intrinsics.K,
                        global_map.intrinsics.k1)
+        if intake_gate is not None:
+            # The gate's extraction of THIS frame is the tracker's
+            # (same gray image; [26c] dedup - the [26a] probe measured
+            # every fed frame paying the extraction twice). The
+            # INTAKE_CARRY_EXTRACTION flag 0 keeps the pre-dedup
+            # behavior for the A/B.
+            if intake_mod.INTAKE_CARRY_EXTRACTION:
+                frame.set_features(*intake_gate.last_extraction)
         is_new_keyframe = tracker.update(frame)
 
         if is_new_keyframe:

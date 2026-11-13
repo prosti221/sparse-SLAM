@@ -203,3 +203,63 @@ def test_projection_match_explicit_radius_override_still_honored():
     projected = [(point, np.array([30.0, 30.0]))]
     assert tracker._match_projected_points(projected, dist_thresh=5) == []
     assert len(tracker._match_projected_points(projected, dist_thresh=14)) == 1
+
+
+def test_update_skips_extraction_when_features_carried(monkeypatch):
+    """[26c] the dedup: a frame whose features the caller attached
+    (the intake gate's carry) takes NO extractor call, and the
+    tracker's outcome is identical to the bare-frame extract path on
+    the same image - the carry is a wall-clock win with zero numeric
+    effect."""
+    import cv2 as cv
+    from benchmarks.stages.helpers import make_K
+    from slam.core.frame import Frame
+    from slam.core.map import Map
+    from slam.core.tracker import Tracker
+
+    img = (np.random.default_rng(9).integers(0, 256, (240, 320, 3))
+           .astype(np.uint8))
+    K = make_K()
+
+    extract_calls = []
+    real_extract = Tracker.__init__
+
+    def counting_init(self, *a, **k):
+        real_extract(self, *a, **k)
+        orig = self.feature_extractor.extract
+
+        def counting(img):
+            extract_calls.append(1)
+            return orig(img)
+
+        self.feature_extractor.extract = counting
+
+    monkeypatch.setattr(Tracker, "__init__", counting_init)
+
+    # path A: bare frame (the extract path)
+    extract_calls.clear()
+    mA = Map()
+    tA = Tracker(mA)
+    fA = Frame(img, K)
+    assert fA.keypoints is None
+    tA.update(fA)
+    assert len(extract_calls) == 1
+    state_a = (fA.keypoints is not None, len(fA.descriptors),
+               fA.pose.tobytes())
+
+    # path B: the carried features (the gate-carry path)
+    extract_calls.clear()
+    mB = Map()
+    tB = Tracker(mB)
+    fB = Frame(img, K)
+    from slam.core.intake import _frame_gray
+    fB.set_features(*tB.feature_extractor.extract(_frame_gray(img)))
+    extract_calls.clear()
+    tB.update(fB)
+    assert len(extract_calls) == 0, \
+        "a carried frame must not re-extract"
+    state_b = (fB.keypoints is not None, len(fB.descriptors),
+               fB.pose.tobytes())
+    assert state_a == state_b
+    np.testing.assert_array_equal(fA.descriptors, fB.descriptors)
+    assert [kp.pt for kp in fA.keypoints] == [kp.pt for kp in fB.keypoints]

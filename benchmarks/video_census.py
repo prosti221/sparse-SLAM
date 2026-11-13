@@ -187,6 +187,10 @@ def run_one(config, video_path, frames_cap, seed,
             before_ev = dict(recorder.events)
             frame = Frame(img, world_map.intrinsics.K,
                           world_map.intrinsics.k1)
+            if gate is not None and intake_mod.INTAKE_CARRY_EXTRACTION:
+                # The live path's [26c] dedup, mirrored here: the
+                # census measures the production video loop's wall.
+                frame.set_features(*gate.last_extraction)
             prev_pose = (tracker.cur_frame.pose.copy()
                          if tracker.cur_frame is not None else None)
             prev_step = tracker.step

@@ -51,6 +51,15 @@ from slam.utils.logger import debug_log
 
 LOG_TAG = 'Intake'
 
+# The gate's extraction carry (the [26c] dedup): the live loop
+# attaches should_feed's cached extraction to the fed frame, so the
+# tracker's update() skips its own re-extraction. Flag 0 = the
+# pre-dedup behavior (double extraction); flag 1 = the shipped
+# default (the carried features are bit-identical by construction -
+# the gate extracts from the same gray image). INT flag (the
+# --override trap); read at call time via the module alias.
+INTAKE_CARRY_EXTRACTION = 1
+
 
 def _frame_gray(img: np.ndarray) -> np.ndarray:
     """The same grayscale conversion Frame.gray_image applies, so the
@@ -72,12 +81,17 @@ class FrameIntakeGate:
                  enable_multiscale: bool = False,
                  container_fps: float = 30.0):
         # The same extractor construction as Tracker.__init__ - the
-        # gate's features ARE the tracker's features (the double
-        # extraction on fed frames is ~ms against the BA stages).
+        # gate's features ARE the tracker's features (identical gray
+        # conversion; the [26a] probe measured the double extraction
+        # on fed frames at ~23% of the live-path wall on ALIKED,
+        # which is why should_feed now carries them).
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
         self.feature_extractor.set_multiscale_enabled(enable_multiscale)
         # The shared matcher cache (binary/L2 norm choice included).
         self.matcher = _get_or_create_matcher(feature_extraction_method)
+        # The current decoded frame's extraction, carried for the
+        # caller (see should_feed's docstring).
+        self.last_extraction = None
         self.container_fps = float(container_fps) or 30.0
         # The valve in DECODED frames: FRAME_INTAKE_MAX_GAP_S of
         # container time, floored at 3 frames so slow containers
@@ -100,9 +114,19 @@ class FrameIntakeGate:
 
         Deterministic, input-side only - no tracker/map state is
         touched. Every call counts one decoded frame.
+
+        The extraction is CACHED in last_extraction: the caller (the
+        live loop) attaches it to the fed frame, so the tracker's
+        update() skips its own re-extraction — the gate's features
+        come from the SAME gray image Frame.gray_image produces
+        (_frame_gray mirrors that conversion exactly), so the carried
+        features are bit-identical to what the tracker would have
+        computed ([26a] measured every fed frame paying the
+        extraction twice).
         """
         self.decoded_frames += 1
         kps, desc = self.feature_extractor.extract(_frame_gray(img))
+        self.last_extraction = (kps, desc)
         kp_pts = cv.KeyPoint.convert(kps) if len(kps) else None
         has_features = (kp_pts is not None and desc is not None
                        and len(kps) >= FRAME_INTAKE_MIN_MATCHES)

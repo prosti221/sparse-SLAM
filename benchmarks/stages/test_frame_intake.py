@@ -178,3 +178,23 @@ def test_effective_fps_tracks_the_fed_ratio():
     assert gate.effective_fps == 15.0                 # 1/2
     gate.should_feed(b)                               # feed
     assert gate.effective_fps == 20.0                 # 2/3
+
+
+def test_gate_carries_the_extraction(monkeypatch):
+    """[26c] the dedup: should_feed caches the decoded frame's
+    extraction in last_extraction, bit-identical to what the tracker's
+    extractor computes from the same gray image (the gate's gray
+    conversion mirrors Frame.gray_image exactly)."""
+    from slam.core.intake import _frame_gray, INTAKE_CARRY_EXTRACTION
+    from slam.features.feature_extractor import FeatureExtractor
+
+    assert INTAKE_CARRY_EXTRACTION == 1
+    gate = FrameIntakeGate('ORB', False, 30.0)
+    img = textured()
+    assert gate.should_feed(img)
+    direct_kps, direct_desc = gate.feature_extractor.extract(
+        _frame_gray(img))
+    carried_kps, carried_desc = gate.last_extraction
+    assert len(carried_kps) == len(direct_kps)
+    np.testing.assert_array_equal(carried_desc, direct_desc)
+    assert [kp.pt for kp in carried_kps] == [kp.pt for kp in direct_kps]

@@ -103,11 +103,16 @@ class Tracker:
         self._rot_model_engaged = False
 
     def update(self, new_frame: Frame) -> bool:
-        # Extract features from the new frame
-        with telemetry.stage("extract"):
-            new_kps, new_descs = self.feature_extractor.extract(
-                new_frame.gray_image)
-        new_frame.set_features(new_kps, new_descs)
+        # Extract features from the new frame — unless the caller
+        # already attached them (the intake gate carries every fed
+        # frame's extraction; the [26a] probe measured the double
+        # extraction at ~23% of the live-path wall on ALIKED). The
+        # harness path (bare frames) extracts exactly as before.
+        if new_frame.keypoints is None:
+            with telemetry.stage("extract"):
+                new_kps, new_descs = self.feature_extractor.extract(
+                    new_frame.gray_image)
+            new_frame.set_features(new_kps, new_descs)
 
         # If this is the first frame, initialize the current frame
         if not self.cur_frame:
