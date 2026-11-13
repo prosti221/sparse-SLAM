@@ -3,7 +3,6 @@ import cv2 as cv
 from scipy.spatial import cKDTree
 from collections import defaultdict
 from typing import List, Optional, Tuple
-from uuid import UUID
 
 from slam.core.point import Point
 from slam.core.frame import Frame

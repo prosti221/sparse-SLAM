@@ -154,7 +154,12 @@ def cmd_sync(args):
     print("[remote] uv sync (env provision) ...", flush=True)
     # --all-extras: the gate machine holds the superset (calib +
     # learned) - benchmark tiers measure every optional stack here.
-    r = _ssh(args.host, [f"cd {REMOTE_DIR} && uv sync --frozen --all-extras"])
+    # --reinstall-package: the extension's C++ sources are invisible to
+    # uv's version fingerprint (a stale .so on either machine breaks
+    # the import), and the rebuild is an incremental cmake run.
+    r = _ssh(args.host, [
+        f"cd {REMOTE_DIR} && uv sync --frozen --all-extras "
+        f"--reinstall-package sparse-slam"])
     print(r.stdout[-2000:] if r.stdout else "", end="")
     if r.returncode != 0:
         print(r.stderr[-2000:])

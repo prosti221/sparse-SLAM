@@ -1,20 +1,25 @@
-import uuid
+import itertools
+
 import numpy as np
 from typing import List, Dict
-from uuid import UUID
 from slam.utils.constants import MAX_POINT_AVG_REPROJECTION_ERROR
 from slam.core.observation import Observation
+
+# u64 identity (migration locked decision 3): native handles ARE
+# these ids; creation is main-thread-only and count() is atomic
+# under the GIL.
+_next_point_id = itertools.count(1)
 
 
 class Point:
     def __init__(self, pt_3d: np.ndarray, color: np.ndarray = None, descriptor: np.ndarray = None):
-        self.point_id: UUID = uuid.uuid4()
+        self.point_id: int = next(_next_point_id)
         self.pt_3d: np.ndarray = pt_3d
         self.color: np.ndarray = color
         self.descriptor: np.ndarray = descriptor
 
         # Track which keyframes observe this point
-        self.observations: Dict[UUID, Observation] = {}
+        self.observations: Dict[int, Observation] = {}
 
         # Track quality metrics
         self.average_reprojection_error = 0.0
@@ -24,7 +29,7 @@ class Point:
         observation.frame.add_point_observation(observation)
         self._update_observing_keyframe_quality()
 
-    def remove_observation(self, frame_id: UUID):
+    def remove_observation(self, frame_id: int):
         if frame_id in self.observations:
             del self.observations[frame_id]
             # num_observations is a setter-less property that computes
@@ -32,7 +37,7 @@ class Point:
             # the property reads through.
         self._update_observing_keyframe_quality()
 
-    def is_observed_by(self, frame_id: UUID) -> bool:
+    def is_observed_by(self, frame_id: int) -> bool:
         return frame_id in self.observations
 
     def update_reprojection_error(self, error: float,
@@ -60,7 +65,7 @@ class Point:
             obs.frame.tracking_quality_needs_update = True
 
     @property
-    def observing_keyframes(self) -> List[UUID]:
+    def observing_keyframes(self) -> List[int]:
         return list(self.observations.keys())
 
     @property

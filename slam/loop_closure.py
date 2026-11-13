@@ -30,7 +30,6 @@ the (already clean) PnP inlier set. The module is deterministic AND
 cv-RNG-transparent by construction.
 """
 from typing import List, Tuple, Dict, Optional, NamedTuple, TYPE_CHECKING
-from uuid import UUID
 import numpy as np
 import cv2 as cv
 from slam.core.frame import Frame
@@ -93,8 +92,8 @@ LOOP_POINT_REANCHOR_ENABLED = 0
 
 class LoopClosureCandidate(NamedTuple):
     """Represents a potential loop closure between two keyframes"""
-    query_keyframe_id: UUID
-    match_keyframe_id: UUID
+    query_keyframe_id: int
+    match_keyframe_id: int
     similarity_score: float
     geometric_verified: bool = False
     relative_pose: Optional[np.ndarray] = None
@@ -110,18 +109,18 @@ class KeyframeFeatureDatabase:
 
     def __init__(self):
         # keyframe_id -> feature descriptors
-        self.feature_storage: Dict[UUID, np.ndarray] = {}
+        self.feature_storage: Dict[int, np.ndarray] = {}
         # Maintains temporal order for exclusion
-        self.keyframe_order: List[UUID] = []
+        self.keyframe_order: List[int] = []
 
-    def add_keyframe_features(self, keyframe_id: UUID, descriptors: np.ndarray):
+    def add_keyframe_features(self, keyframe_id: int, descriptors: np.ndarray):
         """Store features for a keyframe"""
         self.feature_storage[keyframe_id] = descriptors.copy()
         self.keyframe_order.append(keyframe_id)
         debug_log(
             LOG_TAG, f"Stored features for keyframe {keyframe_id} ({len(descriptors)} features)")
 
-    def remove_keyframe_features(self, keyframe_id: UUID):
+    def remove_keyframe_features(self, keyframe_id: int):
         """Remove a keyframe's stored features: a culled keyframe must
         stop being a loop-closure
         candidate, or find_similar_keyframes would keep matching future
@@ -131,7 +130,7 @@ class KeyframeFeatureDatabase:
         if keyframe_id in self.keyframe_order:
             self.keyframe_order.remove(keyframe_id)
 
-    def get_keyframe_features(self, keyframe_id: UUID) -> Optional[np.ndarray]:
+    def get_keyframe_features(self, keyframe_id: int) -> Optional[np.ndarray]:
         """Retrieve features for a keyframe"""
         return self.feature_storage.get(keyframe_id)
 
@@ -775,7 +774,7 @@ class PoseGraphConstraint:
     LOOP_INFO_* constants - an earlier per-constraint information
     matrix was never consumed (a dead field; removed)."""
 
-    def __init__(self, from_keyframe_id: UUID, to_keyframe_id: UUID,
+    def __init__(self, from_keyframe_id: int, to_keyframe_id: int,
                  relative_pose: np.ndarray):
         self.from_keyframe_id = from_keyframe_id
         self.to_keyframe_id = to_keyframe_id

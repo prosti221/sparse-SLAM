@@ -1,6 +1,5 @@
 from collections import defaultdict
 from typing import List, Tuple, Set
-from uuid import UUID
 import numpy as np
 from slam.utils.logger import info_log, debug_log, error_log, warning_log
 from slam.utils.utils import scaled_frame_count
@@ -43,18 +42,18 @@ class Map:
         self.keyframes: List[Frame] = []
         self.point_coords: Set[Tuple[float, float, float]] = set()
 
-        self.points_by_id: dict[UUID, Point] = {}
-        self.keyframes_by_id: dict[UUID, Frame] = {}
+        self.points_by_id: dict[int, Point] = {}
+        self.keyframes_by_id: dict[int, Frame] = {}
 
         # Covisibility graph: {keyframe_id: {keyframe_id: shared_observations_count}}
-        self.covisibility_graph: dict[UUID, dict[UUID, int]] = defaultdict(
+        self.covisibility_graph: dict[int, dict[int, int]] = defaultdict(
             lambda: defaultdict(int))
 
         # Cache for covisibility scores to avoid recomputation
-        self._covisibility_score_cache: dict[Tuple[UUID, UUID], int] = {}
+        self._covisibility_score_cache: dict[Tuple[int, int], int] = {}
 
         # Tracking quality history
-        self.tracking_quality_history: dict[UUID, float] = {}
+        self.tracking_quality_history: dict[int, float] = {}
 
         # Recovery state tracking
         self.consecutive_low_quality_frames = 0
@@ -86,6 +85,14 @@ class Map:
         # mutates it; None means the run path never wired it (tests
         # construct Frames directly).
         self.intrinsics = None
+
+        # The native map window (migration C1): the C++ side's copy of
+        # the BA input, REPLACED wholesale at every get_observations
+        # call (the transaction point). No granular accessors - the
+        # Python graph stays the working state until its readers go
+        # native (C2 the fold, C3 the correspondence, C5 the rest).
+        from slam_native import MapCore
+        self._native_core = MapCore()
 
         # Loop closure components
         self.feature_db = KeyframeFeatureDatabase()
@@ -184,7 +191,7 @@ class Map:
                 # Invalidate cached scores for these keyframes
                 self._invalidate_covisibility_cache(kf1_id, kf2_id)
 
-    def _add_keyframe_to_point_covisibility(self, new_kf_id: UUID, point: Point):
+    def _add_keyframe_to_point_covisibility(self, new_kf_id: int, point: Point):
         observing_kfs = point.observing_keyframes
 
         for other_kf_id in observing_kfs:
@@ -233,7 +240,7 @@ class Map:
                 # Invalidate cached scores
                 self._invalidate_covisibility_cache(kf1_id, kf2_id)
 
-    def _invalidate_covisibility_cache(self, kf1_id: UUID, kf2_id: UUID):
+    def _invalidate_covisibility_cache(self, kf1_id: int, kf2_id: int):
         cache_key1 = (kf1_id, kf2_id)
         cache_key2 = (kf2_id, kf1_id)
 
@@ -242,7 +249,7 @@ class Map:
         if cache_key2 in self._covisibility_score_cache:
             del self._covisibility_score_cache[cache_key2]
 
-    def get_local_keyframes(self, reference_frame_id: UUID, window_size: int = 5) -> List[Frame]:
+    def get_local_keyframes(self, reference_frame_id: int, window_size: int = 5) -> List[Frame]:
         if reference_frame_id not in self.keyframes_by_id:
             error_log(
                 LOG_TAG, f"Reference keyframe {reference_frame_id} not found")
@@ -258,7 +265,115 @@ class Map:
         return local_points
 
     def get_observations(self, local_keyframes: List[Frame]) -> List[Observation]:
-        return [obs for kf in local_keyframes for obs in kf.observed_points.values()]
+        observations = [obs for kf in local_keyframes
+                        for obs in kf.observed_points.values()]
+        self._push_native_window(local_keyframes, observations)
+        return observations
+
+    def _push_native_window(self, local_keyframes: List[Frame],
+                            observations: List[Observation]):
+        """Copy the BA input window into the native core (REPLACE
+        semantics - always consistent, no event hooks). The assembly is
+        the transaction's Python side; the core releases the GIL for
+        the bulk copies."""
+        import numpy as np
+        frames = local_keyframes
+        F = len(frames)
+        O = len(observations)
+
+        pose_arr = np.empty((F, 4, 4))
+        k_arr = np.empty((F, 3, 3))
+        k1_arr = np.empty(F)
+        kp_off = np.zeros(F + 1, dtype=np.int64)
+        kp_slices = []
+        norm_slices = []
+        desc_mats = []
+        desc_dtype = 0
+        for i, kf in enumerate(frames):
+            pose_arr[i] = kf.pose
+            k_arr[i] = kf.K
+            k1_arr[i] = kf.k1
+            pts = kf.kp_pts
+            n = 0 if pts is None else len(pts)
+            kp_off[i + 1] = kp_off[i] + n
+            if n:
+                kp_slices.append(np.ascontiguousarray(pts, dtype=np.float64))
+                norm = kf.kp_pts_norm
+                norm_slices.append(
+                    np.ascontiguousarray(norm, dtype=np.float64))
+                desc = kf.descriptors
+                if desc is not None and len(desc):
+                    desc_mats.append(
+                        np.ascontiguousarray(desc).view(np.uint8).reshape(
+                            len(desc), -1))
+                    desc_dtype = 2 if np.issubdtype(
+                        np.asarray(desc).dtype, np.floating) else 1
+        if kp_slices:
+            kp_arr = np.concatenate(kp_slices)
+            norm_arr = np.concatenate(norm_slices)
+        else:
+            kp_arr = np.empty((0, 2))
+            norm_arr = np.empty((0, 2))
+        if desc_mats and all(m.shape[1] == desc_mats[0].shape[1]
+                             for m in desc_mats):
+            fdesc_arr = np.concatenate(desc_mats)
+        else:
+            fdesc_arr = np.empty((0, 0), dtype=np.uint8)
+
+        obs_f = np.empty(O, dtype=np.uint64)
+        obs_p = np.empty(O, dtype=np.uint64)
+        obs_k = np.empty(O, dtype=np.int64)
+        obs_n = np.empty((O, 2))
+        for j, ob in enumerate(observations):
+            obs_f[j] = ob.frame_id
+            obs_p[j] = ob.point_id
+            obs_k[j] = ob.kp_idx
+            obs_n[j] = ob.pt_2d_norm
+
+        # Unique points in window order (dict preserves insertion).
+        points = {}
+        for ob in observations:
+            if ob.point_id not in points:
+                points[ob.point_id] = ob.point
+        M = len(points)
+        pos_arr = np.empty((M, 3))
+        nobs_arr = np.empty(M, dtype=np.int64)
+        pdescs = []
+        for i, (pid, pt) in enumerate(points.items()):
+            pos_arr[i] = pt.pt_3d
+            nobs_arr[i] = len(pt.observations)
+            if pt.descriptor is not None and len(pt.descriptor):
+                pdescs.append(
+                    np.ascontiguousarray(pt.descriptor).view(np.uint8).reshape(
+                        1, -1))
+        if pdescs and all(m.shape[1] == pdescs[0].shape[1] for m in pdescs):
+            pdesc_arr = np.concatenate(pdescs)
+            pdesc_dtype = 2 if np.issubdtype(
+                np.asarray(list(points.values())[0].descriptor).dtype,
+                np.floating) else 1
+        else:
+            pdesc_arr = np.empty((0, 0), dtype=np.uint8)
+            pdesc_dtype = 0
+
+        self._native_core.push_window(
+            frame_ids=[kf.frame_id for kf in frames],
+            poses=pose_arr,
+            Ks=k_arr,
+            k1s=k1_arr,
+            kp_offsets=kp_off,
+            kp_pts=kp_arr,
+            kp_pts_norm=norm_arr,
+            frame_desc_bytes=fdesc_arr,
+            frame_desc_dtype=desc_dtype,
+            point_ids=list(points.keys()),
+            positions=pos_arr,
+            point_desc_bytes=pdesc_arr,
+            point_desc_dtype=pdesc_dtype,
+            point_num_obs=nobs_arr,
+            obs_frame_ids=obs_f.tolist(),
+            obs_point_ids=obs_p.tolist(),
+            obs_kp_idx=obs_k,
+            obs_pt2d_norm=obs_n)
 
     def prune_outlier_points(self):
         redundant_points = bad_points = 0
@@ -326,7 +441,7 @@ class Map:
         # closure - loop events trigger it, not a timer.
         return interval > 0 and len(self.keyframes) % interval == 0
 
-    def get_keyframe_by_id(self, frame_id: UUID) -> Frame:
+    def get_keyframe_by_id(self, frame_id: int) -> Frame:
         return self.keyframes_by_id.get(frame_id, None)
 
     def update_tracking_quality(self):
@@ -350,7 +465,7 @@ class Map:
                 self.consecutive_low_quality_frames >=
                 scaled_frame_count(const.RELOCALIZATION_FRAME_COUNT, self.video_fps))
 
-    def on_relocalization_successful(self, reference_keyframe_id: UUID):
+    def on_relocalization_successful(self, reference_keyframe_id: int):
         self.consecutive_low_quality_frames = 0
         # Trigger local BA to refine the area
         self.optimize(enable_ba=True)
@@ -402,6 +517,7 @@ class Map:
         self.covisibility_graph.clear()
         self._covisibility_score_cache.clear()
         self.tracking_quality_history.clear()
+        self._native_core.clear()
 
         # Reset state counters
         self.consecutive_low_quality_frames = 0
@@ -413,7 +529,7 @@ class Map:
 
         debug_log(LOG_TAG, "Map reset complete")
 
-    def remove_keyframes_after(self, reference_keyframe_id: UUID):
+    def remove_keyframes_after(self, reference_keyframe_id: int):
         """Remove every keyframe inserted AFTER the reference keyframe
         (aggressive relocalization drops the diverged branch it just
         recovered from). Repair: this used to compare frame_id
@@ -435,7 +551,7 @@ class Map:
     def detect_loop_closures(self, current_frame: Frame) -> List['LoopClosureCandidate']:
         return self.loop_detector.detect_potential_loops(current_frame)
 
-    def remove_keyframe_by_id(self, keyframe_id: UUID) -> bool:
+    def remove_keyframe_by_id(self, keyframe_id: int) -> bool:
         if keyframe_id not in self.keyframes_by_id:
             error_log(LOG_TAG, f"Keyframe {keyframe_id} not found")
             return False
@@ -565,7 +681,7 @@ class Map:
         # count the point's OTHER keyframe observers once (a point
         # needs >= CULL_MIN_OTHER_OBSERVERS+1 keyframe observers in
         # total to be redundant evidence for anyone).
-        candidate_points: dict[UUID, list] = defaultdict(list)
+        candidate_points: dict[int, list] = defaultdict(list)
         for point in self.points:
             kf_observers = [fid for fid in point.observations
                             if fid in self.keyframes_by_id]
@@ -590,7 +706,7 @@ class Map:
                 return self.remove_keyframe_by_id(kf.frame_id)
         return False
 
-    def _remove_keyframe_from_covisibility_graph(self, keyframe_id: UUID):
+    def _remove_keyframe_from_covisibility_graph(self, keyframe_id: int):
         if keyframe_id not in self.covisibility_graph:
             return
 

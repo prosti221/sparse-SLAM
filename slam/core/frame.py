@@ -1,8 +1,12 @@
 from functools import cached_property
 import numpy as np
 import cv2 as cv
-import uuid
-from uuid import UUID
+# u64 identity (migration locked decision 3): native handles ARE
+# these ids; creation is main-thread-only and count() is atomic
+# under the GIL.
+import itertools
+_next_frame_id = itertools.count(1)
+
 from slam.utils.logger import debug_log, error_log, warning_log
 from slam.utils.constants import MAX_POINT_AVG_REPROJECTION_ERROR
 from slam.utils.utils import normalize, undistort_points_norm
@@ -16,7 +20,7 @@ LOG_TAG = 'Frame'
 
 class Frame:
     def __init__(self, image: np.ndarray, K: np.ndarray, k1: float = 0.0):
-        self.frame_id: UUID = uuid.uuid4()
+        self.frame_id: int = next(_next_frame_id)
         self.image = image
         self.H, self.W = image.shape[:2]
 
@@ -39,7 +43,7 @@ class Frame:
         # Matching data
         self.matches = None
 
-        self.observed_points: Dict[UUID, Observation] = {}
+        self.observed_points: Dict[int, Observation] = {}
 
         self.keypoint_to_point_map: Dict[int, Point] = {}
 

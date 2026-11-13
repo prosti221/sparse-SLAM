@@ -10,7 +10,6 @@ from slam.utils.logger import *
 from slam.utils.constants import *
 from slam.utils import constants as const
 from slam.utils import telemetry
-from uuid import UUID
 from typing import List, Tuple
 import cv2 as cv
 
@@ -267,7 +266,7 @@ class G2OBundleAdjustment:
 
         return True, input_count
 
-    def local_bundle_adjustment(self, reference_frame_id: UUID, window_size: int = 5, fix_points=True) -> bool:
+    def local_bundle_adjustment(self, reference_frame_id: int, window_size: int = 5, fix_points=True) -> bool:
         debug_log(
             LOG_TAG, f"Starting local BA with g2o around keyframe {reference_frame_id}")
 
@@ -630,7 +629,7 @@ class G2OBundleAdjustment:
             return np.eye(6) * (LOOP_INFO_ODOMETRY_AGGREGATE / n_odo)
         return np.eye(6) * const.LOOP_INFO_ODOMETRY
 
-    def pose_graph_optimization(self, loop_constraints: List[Tuple[UUID, UUID, np.ndarray]]) -> bool:
+    def pose_graph_optimization(self, loop_constraints: List[Tuple[int, int, np.ndarray]]) -> bool:
         debug_log(
             LOG_TAG, f"Starting pose graph optimization with {len(loop_constraints)} loop constraints")
 

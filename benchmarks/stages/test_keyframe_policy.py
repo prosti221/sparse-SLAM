@@ -255,12 +255,14 @@ def test_remove_keyframe_cleans_all_registries():
 
 def test_remove_keyframes_after_is_positional():
     """remove_keyframes_after must use keyframe LIST
-    POSITION (insertion order), not frame_id ordering - frame ids are
-    random uuid4 values, so the old `kf.frame_id <= reference` walk
-    removed a RANDOM suffix of the keyframe list. The crafted ids below
-    invert uuid ordering relative to insertion order, which made the
-    old code keep keyframes that must go."""
-    import uuid as _uuid
+    POSITION (insertion order), not frame_id ordering - frame ids used
+    to be random uuid4 values, so the old `kf.frame_id <= reference`
+    walk removed a RANDOM suffix of the keyframe list. The crafted ids
+    below invert id ordering relative to insertion order, which made
+    the old code keep keyframes that must go. (Since the u64 identity
+    sweep the ids ARE insertion-ordered counters - the pin keeps the
+    inverted fixture so the positional contract stays enforced against
+    any future id-ordered walk.)"""
     from slam.core.map import Map
 
     K = make_K()
@@ -268,7 +270,7 @@ def test_remove_keyframes_after_is_positional():
     kfs = []
     for i in range(5):
         kf = make_frame(yaw_pose(0.0, (0.0, 0.0, 0.5 * i)), K)
-        kf.frame_id = _uuid.UUID(int=5 - i)  # kf0=5 ... kf4=1
+        kf.frame_id = 5 - i  # kf0=5 ... kf4=1
         set_keypoints(kf, [(10.0, 10.0)])
         m.add_keyframe(kf)
         kfs.append(kf)
