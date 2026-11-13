@@ -421,6 +421,14 @@ LOOP_CORRECTION_ENABLED = 1
 LOOP_SIMILARITY_THRESHOLD = 0.3
 LOOP_EXCLUDE_RECENT_KF = 20
 LOOP_MAX_CANDIDATES = 5
+# The similarity score's distance normalization, per descriptor KIND:
+# the scale is 2x the "typical good match threshold" ('binary': 30 for
+# ORB Hamming -> 60.0; 'float': 2 x the measured ALIKED accept threshold
+# EXTRACTOR_RELOC_DESC_THRESHOLDS['float'] = 0.8639 -> 1.73). The
+# similarity score's distance_quality term contributes at most 30% of
+# the score, so the threshold's meaning is preserved on the float
+# scale. Read at call time via the module alias.
+LOOP_SIMILARITY_DISTANCE_SCALE = {'binary': 60.0, 'float': 1.73}
 # Geometric verification (reloc-grade PnP against the match KF's map
 # points - the metric fix):
 LOOP_MIN_CORRESPONDENCES = 30   # descriptor-matched map points entering PnP

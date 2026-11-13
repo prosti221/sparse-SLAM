@@ -152,7 +152,7 @@ def test_real_aliked_matching_contract():
     f2 = Frame(_textured_shifted(dx=6), make_K())
     f1.set_features(*FeatureExtractor("ALIKED").extract(_textured()))
     f2.set_features(*FeatureExtractor("ALIKED").extract(_textured_shifted(dx=6)))
-    matches = match_features(f1, f2, "ALIKED")
+    matches, _ = match_features(f1, f2, "ALIKED")
     assert isinstance(matches, list)
     assert len(matches) > 0
     for m in matches:

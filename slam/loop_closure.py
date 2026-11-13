@@ -131,7 +131,8 @@ class KeyframeFeatureDatabase:
 
     def find_similar_keyframes(self, query_descriptors: np.ndarray,
                                exclude_recent: int = 20,
-                               similarity_threshold: float = 0.1) -> List[LoopClosureCandidate]:
+                               similarity_threshold: float = 0.1,
+                               extractor_name: str = const.ORB_EXTRACTOR_NAME) -> List[LoopClosureCandidate]:
         """
         Find keyframes similar to query using direct feature matching.
 
@@ -163,7 +164,7 @@ class KeyframeFeatureDatabase:
 
             # Compute similarity score (simple ratio of matched features)
             similarity = self._compute_similarity_score(
-                query_descriptors, kf_descriptors)
+                query_descriptors, kf_descriptors, extractor_name)
 
             if similarity >= similarity_threshold:
                 candidates.append(LoopClosureCandidate(
@@ -179,7 +180,8 @@ class KeyframeFeatureDatabase:
             LOG_TAG, f"Found {len(candidates)} potential loop candidates")
         return candidates
 
-    def _compute_similarity_score(self, desc1: np.ndarray, desc2: np.ndarray) -> float:
+    def _compute_similarity_score(self, desc1: np.ndarray, desc2: np.ndarray,
+                                  extractor_name: str = const.ORB_EXTRACTOR_NAME) -> float:
         """
         Compute similarity between two feature sets using multiple metrics.
         Returns a score between 0-1 where higher values indicate more similar scenes.
@@ -188,8 +190,15 @@ class KeyframeFeatureDatabase:
             return 0.0
 
         try:
-            # Use BFMatcher with cross-check for bidirectional consistency
-            bf = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
+            # The norm is per descriptor KIND (the ORB-era
+            # NORM_HAMMING is an ORB-Hamming pin: float descriptors
+            # crash batchDistance on it), and the distance scale
+            # likewise - both read at call time via the module alias
+            # (probe-pinnable).
+            kind = const.EXTRACTOR_DESCRIPTOR_KINDS[extractor_name]
+            norm = cv.NORM_HAMMING if kind == 'binary' else cv.NORM_L2
+            scale = const.LOOP_SIMILARITY_DISTANCE_SCALE[kind]
+            bf = cv.BFMatcher(norm, crossCheck=True)
             matches = bf.match(desc1, desc2)
 
             if len(matches) == 0:
@@ -205,7 +214,7 @@ class KeyframeFeatureDatabase:
 
             # Distance-based quality (lower distance = better match)
             # Normalize by typical good match threshold (30 for ORB)
-            distance_quality = max(0, 1 - (avg_distance / 60.0))
+            distance_quality = max(0, 1 - (avg_distance / scale))
 
             # Combine metrics: prioritize match ratio but weight by quality
             # High match ratio with poor distances = coincidental matches
@@ -216,10 +225,6 @@ class KeyframeFeatureDatabase:
         except Exception as e:
             warning_log(LOG_TAG, f"Error computing similarity: {e}")
             return 0.0
-
-        self.keyframe_order = self.keyframe_order[-keep_recent:]
-        debug_log(
-            LOG_TAG, f"Cleaned up features, keeping {len(self.keyframe_order)} recent keyframes")
 
 
 class LoopClosureDetector:
@@ -250,7 +255,8 @@ class LoopClosureDetector:
         candidates = self.feature_db.find_similar_keyframes(
             descriptors,
             exclude_recent=const.LOOP_EXCLUDE_RECENT_KF,
-            similarity_threshold=const.LOOP_SIMILARITY_THRESHOLD)
+            similarity_threshold=const.LOOP_SIMILARITY_THRESHOLD,
+            extractor_name=self.map.extractor_name)
         candidates = candidates[:const.LOOP_MAX_CANDIDATES]
 
         out = []
@@ -339,7 +345,12 @@ class LoopClosureDetector:
             telemetry.event("loop_rejected_correspondences")
             return None
         point_descs = np.asarray([c[1] for c in corr])
-        bf = cv.BFMatcher(cv.NORM_HAMMING)
+        # The norm is per descriptor KIND (the ORB-era NORM_HAMMING is
+        # an ORB-Hamming pin: float descriptors crash batchDistance on
+        # it). Read at call time via the module alias.
+        kind = const.EXTRACTOR_DESCRIPTOR_KINDS[self.map.extractor_name]
+        norm = cv.NORM_HAMMING if kind == 'binary' else cv.NORM_L2
+        bf = cv.BFMatcher(norm)
         knn = bf.knnMatch(query_desc, point_descs, k=2)
         q_idx, c_idx = [], []
         for pair in knn:
@@ -602,7 +613,10 @@ class LoopClosureDetector:
         if frame_desc is None or len(frame_desc) == 0:
             return None, {'reason': 'featureless_frame'}
         point_descs = np.asarray([c[1] for c in corr])
-        bf = cv.BFMatcher(cv.NORM_HAMMING)
+        # Same per-kind norm seam as the loop constraint (above).
+        kind = const.EXTRACTOR_DESCRIPTOR_KINDS[self.map.extractor_name]
+        norm = cv.NORM_HAMMING if kind == 'binary' else cv.NORM_L2
+        bf = cv.BFMatcher(norm)
         knn = bf.knnMatch(frame_desc, point_descs, k=2)
         q_idx, c_idx = [], []
         for pair in knn:

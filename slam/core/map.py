@@ -69,6 +69,13 @@ class Map:
         # it from the capture.
         self.video_fps = 30.0
 
+        # The extractor whose descriptors this map's loop-closure
+        # machinery matches against (the feature DB + the map-anchored
+        # PnP verification all resolve their per-kind norm and
+        # similarity scale from it at call time). ORB is the historical
+        # default; the tracker wires the run's actual extractor over it.
+        self.extractor_name = ORB_EXTRACTOR_NAME
+
         # Bundle adjustment optimizer
         self.g2o_optimizer = G2OBundleAdjustment(self)
 

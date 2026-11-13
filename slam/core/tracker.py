@@ -52,6 +52,9 @@ class Tracker:
 
         self.feature_extractor = FeatureExtractor(feature_extraction_method)
         self.feature_extractor.set_multiscale_enabled(enable_multiscale)
+        # The loop-closure machinery's per-kind norm + similarity scale
+        # resolve from the Map's extractor_name at call time.
+        self.map.extractor_name = feature_extraction_method
 
         # The intrinsics refiter (the DroidCalib port). Created ONLY
         # when the flag is set AND the run path wired the live
