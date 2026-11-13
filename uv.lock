@@ -2296,6 +2296,8 @@ dependencies = [
 [package.optional-dependencies]
 calib = [
     { name = "geocalib" },
+    { name = "torch" },
+    { name = "torchvision" },
 ]
 learned = [
     { name = "torch" },
@@ -2318,7 +2320,9 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "scikit-image", specifier = ">=0.26.0" },
     { name = "scipy", specifier = ">=1.17.1" },
+    { name = "torch", marker = "extra == 'calib'", specifier = ">=2.15.0" },
     { name = "torch", marker = "extra == 'learned'", specifier = ">=2.15.0" },
+    { name = "torchvision", marker = "extra == 'calib'", specifier = ">=0.29.2" },
     { name = "torchvision", marker = "extra == 'learned'", specifier = ">=0.29.2" },
 ]
 provides-extras = ["calib", "learned"]

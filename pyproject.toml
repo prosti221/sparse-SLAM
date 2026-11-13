@@ -14,8 +14,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# geocalib is a torch inference package: since phase 23 moved
+# torch/torchvision out of CORE deps (only super_point.py imported
+# them), this extra must declare torch itself to stay
+# self-sufficient (measured: the desktop re-provision dropped torch
+# and the fx:auto calibration path failed with 'No module named
+# torch').
 calib = [
     "geocalib",
+    "torch>=2.15.0",
+    "torchvision>=0.29.2",
 ]
 # Phase 23: learned extractors/matchers live behind this extra
 # (SuperPoint - the only torch consumer - was removed; the planned
