@@ -72,6 +72,7 @@ if __name__ == "__main__":
     # for A/B. The benchmark harness feeds frame FILES and never
     # constructs a gate - the frozen battery is untouched.
     intake_gate = None
+    intake_pipeline = None
     if config.get_global_config_property("enable_adaptive_frame_intake", True):
         intake_gate = FrameIntakeGate(
             FEATURE_EXTRACTOR, ENABLE_MULTISCALE, container_fps)
@@ -123,31 +124,43 @@ if __name__ == "__main__":
             # Replay the auto-calibration init batch
             # (consumed from the capture by estimate_video_intrinsics).
             img = init_frames.pop(0)
+            pre = None
         else:
-            ret, img = cap.read()
-            if not ret:
-                info_log(
-                    LOG_TAG,
-                    f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!",
-                )
-                slam_in_progress = False
-                continue
+            if intake_gate is not None and intake_mod.INTAKE_EXTRACT_AHEAD:
+                # The [26c] pipeline takes over the capture + the
+                # extractor AFTER the init replay (the replay extracts
+                # on the main thread; the worker must own the
+                # extractor exclusively from here on). 'pending'
+                # re-enters the renderer loop - the renderer stays
+                # live between SLAM frames.
+                if intake_pipeline is None:
+                    intake_pipeline = intake_mod.ExtractionPipeline(
+                        cap, intake_gate.feature_extractor)
+                state, item = intake_pipeline.pop()
+                if state == "pending":
+                    continue
+                if state == "eos":
+                    info_log(
+                        LOG_TAG,
+                        f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!",
+                    )
+                    slam_in_progress = False
+                    continue
+                img, pre_kps, pre_desc = item
+                pre = (pre_kps, pre_desc)
+            else:
+                ret, img = cap.read()
+                if not ret:
+                    info_log(
+                        LOG_TAG,
+                        f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!",
+                    )
+                    slam_in_progress = False
+                    continue
+                pre = None
 
         if intake_gate is not None:
-            # The gate decides which decoded frames carry
-            # motion signal. Skipped frames never reach the tracker;
-            # the renderer/pause loop above keeps running (the
-            # `continue` re-enters it). The cadence
-            # constants deliberately KEEP the container's time base:
-            # video_fps describes physical time, and the recovery
-            # window's health is a COUNT of consecutive quality-
-            # failing checks at the container-normalized scale -
-            # measured A/B on salem's hard segment (2024 decoded):
-            # container-declared 2 resets vs fed-cadence-declared 7
-            # (the latter collapses the window 10 -> 5 fed frames
-            # and re-arms the 8-3 spiral). gate.effective_fps remains
-            # a diagnostic only (fed/decoded ratio).
-            if not intake_gate.should_feed(img):
+            if not intake_gate.should_feed(img, pre):
                 continue
 
         frame = Frame(img, global_map.intrinsics.K,
