@@ -241,6 +241,29 @@ def normalize_vec(v):
     return v / np.linalg.norm(v)
 
 
+# Phase 21 [21c]: the degenerate-direction guard, beside its
+# machinery (the parallax gate in is_valid_triangulated_point).
+# A candidate whose direction vectors are non-normalizable
+# (||v|| = 0 or non-finite) has NO parallax: the guarded path
+# rejects it deterministically under the parallax gate's
+# attribution (the failing CHECK is the parallax check - the
+# existing code table is unchanged; no new code value). The
+# unguarded legacy path normalized zero/NaN vectors into NaN
+# comparisons - and NaN < threshold is False, so a degenerate
+# candidate PASSED every gate (a latent NaN-acceptance hazard;
+# only the exactly-at-camera case was caught, by cheirality) and
+# normalize_vec's 0/0 fired the utils.py:241 RuntimeWarning
+# (measured: both phase-20 kyoto legs at the 8.0 intake; absent
+# on the fresh production path [21a]). Normalizable candidates
+# compute IDENTICALLY either way (v / ||v||, the same float
+# arithmetic) - the guard is bit-transparent everywhere else, and
+# the battery never reaches the degenerate path (5a), so the
+# battery is bit-identical by construction. Kill-switch
+# transparency: pin 0 in memory reproduces the legacy semantics
+# exactly, warning included.
+TRIANGULATION_DEGENERATE_GUARD_ENABLED = 1
+
+
 def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     """Gate every triangulation candidate against geometry and
     consistency. ACCEPTANCE is unchanged from the original: VALID iff
@@ -294,15 +317,40 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
 
     # 3. Parallax floor (MIN_PARALLAX_DEG - the former MAX_PARALLAX
     #    was a misnomer: the check REJECTS parallax below it).
-    vec1 = normalize_vec(point_3d - cur_frame.pose[:3, 3])
-    vec2 = normalize_vec(point_3d - prev_frame.pose[:3, 3])
-
-    cos_parallax = np.dot(vec1, vec2)
-    parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax, -1.0, 1.0)))
-
-    if parallax_angle < const.MIN_PARALLAX_DEG:
+    v1 = point_3d - cur_frame.pose[:3, 3]
+    v2 = point_3d - prev_frame.pose[:3, 3]
+    n1 = np.linalg.norm(v1)
+    n2 = np.linalg.norm(v2)
+    degenerate = (TRIANGULATION_DEGENERATE_GUARD_ENABLED
+                  and (n1 == 0.0 or not np.isfinite(n1)
+                       or n2 == 0.0 or not np.isfinite(n2)))
+    if degenerate:
+        # no direction -> no parallax -> the floor cannot be
+        # certified: deterministic rejection (see the flag's
+        # comment above). The legacy path instead normalized into
+        # NaN comparisons that PASSED this gate.
         failed_codes.append(
             TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION'])
+    elif TRIANGULATION_DEGENERATE_GUARD_ENABLED:
+        # same arithmetic as normalize_vec (v / ||v||) - identical
+        # bits on every normalizable candidate
+        cos_parallax = np.dot(v1 / n1, v2 / n2)
+        parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax,
+                                                      -1.0, 1.0)))
+        if parallax_angle < const.MIN_PARALLAX_DEG:
+            failed_codes.append(
+                TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION'])
+    else:
+        vec1 = normalize_vec(v1)
+        vec2 = normalize_vec(v2)
+
+        cos_parallax = np.dot(vec1, vec2)
+        parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax,
+                                                      -1.0, 1.0)))
+
+        if parallax_angle < const.MIN_PARALLAX_DEG:
+            failed_codes.append(
+                TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION'])
 
     # 4. Reprojection consistency, in PLAIN PIXELS in both frames (the
     #    former MAX_SQUARED_REPROJECTION_ERROR was a misnomer - the
