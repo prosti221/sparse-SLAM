@@ -231,4 +231,8 @@ def evaluate(result, gt_poses: np.ndarray, scene_points: Optional[np.ndarray],
         / n * 1000.0
     metrics["timing_ms_per_frame"] = timing
     metrics["events"] = dict(result.telemetry.get("events", {}))
+    # The diagnostic value store (drift, per-stage moves, ...): empty
+    # on every default run, populated when the attribution flag is ON.
+    metrics["values"] = {k: list(v) for k, v
+                         in result.telemetry.get("values", {}).items()}
     return metrics

@@ -93,3 +93,29 @@ def test_value_store_contract():
     rec.add_value("probe_a", 9.9)
     assert snap["values"]["probe_a"] == [1.5, 2.5]
     assert rec.values["probe_a"] == [1.5, 2.5, 9.9]
+
+
+def test_override_reaches_machinery_flags(monkeypatch):
+    """--override resolves the beside-machinery INT flags (the
+    attribution flag lives in the tracker module) AND respects the
+    origin-before-star-importer order: a matcher flag must land on
+    matcher's own global, not tracker's star-imported copy."""
+    from benchmarks.run import apply_overrides
+    import slam.features.matcher as matcher_mod
+
+    old_attr = tracker_mod.LOOP_CORRECTION_ATTRIB_ENABLED
+    old_rot = matcher_mod.ROTATION_MODEL_ENABLED
+    try:
+        apply_overrides(["LOOP_CORRECTION_ATTRIB_ENABLED=1",
+                         "ROTATION_MODEL_ENABLED=0"])
+        assert tracker_mod.LOOP_CORRECTION_ATTRIB_ENABLED == 1
+        assert matcher_mod.ROTATION_MODEL_ENABLED == 0
+    finally:
+        tracker_mod.LOOP_CORRECTION_ATTRIB_ENABLED = old_attr
+        matcher_mod.ROTATION_MODEL_ENABLED = old_rot
+
+
+def test_override_unknown_name_fails_loudly():
+    from benchmarks.run import apply_overrides
+    with pytest.raises(SystemExit):
+        apply_overrides(["NO_SUCH_FLAG_ANYWHERE=1"])

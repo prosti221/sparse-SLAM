@@ -187,24 +187,44 @@ def apply_overrides(pairs) -> None:
     Consumers of the overridable family read the constants through the
     module (see should_insert_keyframe / tracker / map), so threshold
     sweeps reach the pipeline live.
+
+    The machinery-side INT flags (tracker, loop_closure, matcher,
+    bundle_adjustment_g2o — the beside-their-machinery convention)
+    resolve through the same NAME=VALUE syntax; constants.py wins on
+    a name collision.
     """
     import slam.utils.constants as const
+    import slam.features.matcher as matcher_mod
+    import slam.core.tracker as tracker_mod
+    import slam.loop_closure as loop_closure_mod
+    import slam.ba.bundle_adjustment_g2o as ba_mod
+    # Resolution order is LOAD-BEARING: modules that STAR-IMPORT
+    # another flag module (tracker star-imports matcher; matcher
+    # star-imports constants) hold COPY bindings - setattr on the
+    # copy would never reach the machinery that reads the origin's
+    # own global. Origins resolve first: constants, then matcher,
+    # then tracker.
+    flag_modules = (const, matcher_mod, tracker_mod,
+                    loop_closure_mod, ba_mod)
 
     for pair in pairs:
         name, sep, value = pair.partition("=")
         name = name.strip()
-        if not sep or not hasattr(const, name):
+        holder = next((m for m in flag_modules if hasattr(m, name)), None)
+        if not sep or holder is None:
             raise SystemExit(
-                f"[bench] --override expects NAME=VALUE of a slam.utils.constants "
-                f"constant; got {pair!r}")
-        current = getattr(const, name)
+                f"[bench] --override expects NAME=VALUE of a sweepable "
+                f"flag (slam.utils.constants or a machinery module); "
+                f"got {pair!r}")
+        current = getattr(holder, name)
         try:
             parsed = type(current)(value.strip())
         except ValueError:
             raise SystemExit(
                 f"[bench] cannot parse {value!r} as {type(current).__name__} for {name}")
-        setattr(const, name, parsed)
-        print(f"[bench] override: {name} = {parsed} (default {current})", flush=True)
+        setattr(holder, name, parsed)
+        print(f"[bench] override: {name} = {parsed} "
+              f"(default {current}, in {holder.__name__})", flush=True)
 
 
 def main() -> int:
