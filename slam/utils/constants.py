@@ -251,23 +251,30 @@ EXTRACTOR_DESCRIPTOR_KINDS = {
 # descriptor KIND (tracker.py's old `best_dist < 20` was an
 # ORB-Hamming pin - on unit-normalized float vectors the L2 max is
 # 2.0, so "20" accepts everything). 'binary' 20 = the measured
-# ORB-era value, unchanged. 'float' is PROVISIONAL until the [24a]
-# reloc-threshold probe pins it (plan: the L2 value under which
-# >=99% of geometrically-verified same-point pairs fall, on 3 corpus
-# stems) - 0.75 is the literature placeholder (cos > ~0.7 on unit
-# vectors). Read at call time via the module alias (probe-pinnable).
-EXTRACTOR_RELOC_DESC_THRESHOLDS = {'binary': 20.0, 'float': 0.75}
+# ORB-era value, unchanged. 'float' = the [24a] reloc-threshold
+# probe's MEASURED pin: the aggregate p99 (0.8639) of the L2
+# distances of ~9k geometrically-verified (RANSAC-E-inlier)
+# same-point ALIKED-n16 pairs across the 3 TUM stems (per-stem p99:
+# fr2_xyz 0.630 / fr1_desk 0.990 / fr3_long_office 0.553; evidence
+# output/benchmarks/phase24_probe_reloc_threshold.json). Read at
+# call time via the module alias (probe-pinnable).
+EXTRACTOR_RELOC_DESC_THRESHOLDS = {'binary': 20.0, 'float': 0.8639}
 
 # Phase 24: ALIKED + LightGlue configuration (read at call time via
-# the module alias - probe-pinnable for the [24a] sweep). The model
-# variant and keypoint budget are PROBE-PENDING: the [24a] timing
-# budget adjudicates t16 vs n16 x 2048 vs 4096 on the desktop GPU
-# and the winning values land here (defaults below are the LightGlue
-# upstream defaults - n16/2048). detection_threshold/nms_radius/
-# resize are LightGlue's ALIKED defaults; the LightGlue matcher
-# confidences are its adaptive-depth/pruning defaults (CPU disables
-# pruning automatically; we pin fp32 - the fp16 pruning path has a
-# known upstream bug, cvg/LightGlue issue #186).
+# the module alias - probe-pinnable). The [24a] timing budget
+# (output/benchmarks/phase24_probe_timing.json, desktop RTX 3060 Ti)
+# adjudicated: aliked-t16 is INCOMPATIBLE with the only available
+# aliked_lightglue matcher weights (64-dim descriptors vs the
+# matcher's 128-dim input) - dropped; n16 vs n32 x 2048 vs 4096 all
+# deterministic on both devices. MEASURED DECISION: n16 + 2048 - n16
+# detects ~2.2k keypoints at BOTH budgets on the corpus content (the
+# 4096 budget buys nothing) while n32 detects only ~1.06k (half the
+# map density); extraction 83 ms/f + matching 28 ms/pair on GPU.
+# detection_threshold/nms_radius/resize are LightGlue's ALIKED
+# defaults; the matcher confidences are its adaptive-depth/pruning
+# defaults (CPU and MPS disable pruning automatically; fp32 pinned -
+# the fp16 pruning path has a known upstream bug, cvg/LightGlue
+# issue #186).
 ALIKED_MODEL_NAME = 'aliked-n16'
 ALIKED_MAX_NUM_KEYPOINTS = 2048
 ALIKED_DETECTION_THRESHOLD = 0.2

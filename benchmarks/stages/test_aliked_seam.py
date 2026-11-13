@@ -61,11 +61,13 @@ def test_kind_map_rejects_unknown_names():
 
 def test_reloc_threshold_map_pins_the_kinds():
     """tracker.py's old literal 20 was an ORB-Hamming pin; the map
-    carries it for 'binary'. The 'float' value is PROVISIONAL
-    (literature placeholder) until the [24a] reloc-threshold probe
-    pins it - this pin is re-measured with the probe's number."""
+    carries it for 'binary'. The 'float' value is the [24a]
+    reloc-threshold probe's MEASURED pin: the aggregate p99 of
+    geometrically-verified inlier ALIKED descriptor L2 distances on
+    the 3 TUM stems (0.8639; evidence
+    output/benchmarks/phase24_probe_reloc_threshold.json)."""
     assert const.EXTRACTOR_RELOC_DESC_THRESHOLDS["binary"] == 20.0
-    assert 0 < const.EXTRACTOR_RELOC_DESC_THRESHOLDS["float"] < 2.0
+    assert const.EXTRACTOR_RELOC_DESC_THRESHOLDS["float"] == 0.8639
 
 
 def test_match_dispatch_routes_learned_pairs_to_the_backend(monkeypatch):
@@ -98,17 +100,24 @@ def test_backend_without_torch_gives_the_install_hint(monkeypatch):
         backend._import_torch()
 
 
-def _hub_weights_cached():
+def _learned_stack_ready():
+    """The real-inference pin runs ONLY where the stack is actually
+    provisioned: lightglue importable AND both weight files in the
+    torch.hub cache (the suite never downloads weights)."""
+    try:
+        import lightglue  # noqa: F401
+    except ImportError:
+        return False
     hub = Path(os.environ.get("TORCH_HOME",
                               "~/.cache/torch")).expanduser() / "hub"
     cache = hub / "checkpoints"
     needed = ["aliked-n16.pth", "aliked_lightglue_v0-1_arxiv.pth"]
-    return all((cache / n).exists() for n in needed), cache
+    return all((cache / n).exists() for n in needed)
 
 
-@pytest.mark.skipif(not _hub_weights_cached()[0],
-                    reason="learned weights not cached on this machine "
-                           "(the suite never downloads weights)")
+@pytest.mark.skipif(not _learned_stack_ready(),
+                    reason="learned stack not provisioned on this "
+                           "machine (suite never downloads weights)")
 def test_real_aliked_extraction_contract():
     """The REAL frontend, where provisioned: extract on a textured
     image and check the Frame contract end-to-end."""

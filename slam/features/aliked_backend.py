@@ -72,8 +72,23 @@ def _import_torch():
 
 
 def _device():
+    """Device priority: CUDA (the measurement/gate device - the [24a]
+    adjudicator passed it bit-identical double-runs) > MPS (the
+    production laptop: the [24a] MPS addendum probe MEASURED it
+    viable - deform_conv2d's Metal kernel exists and works, extract
+    + match bit-stable double-runs, steady-state extraction
+    138 ms/frame vs 639 ms CPU, ~4.6x; evidence
+    p24_mps probe JSON in the session temp, cited in the phase-24
+    record) > CPU. ALL devices run the same fp32 + deterministic-
+    algorithms pins; measured legs stay on the desktop regardless
+    (cross-device bit-identity is not a thing, phase 16)."""
     torch = _import_torch()
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) is not None \
+            and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def _weights_note() -> None:

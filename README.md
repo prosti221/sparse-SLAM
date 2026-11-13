@@ -4,7 +4,8 @@ This is a monocular visual SLAM system that builds a sparse 3D map of the enviro
 ### Key Features
 - Camera tracking through feature matching and pose estimation
 - Sparse 3D reconstruction of environmental features
-- Feature extraction via ORB with multiscale pyramid support (learned extractors planned)
+- Feature extraction via ORB with multiscale pyramid support
+- Optional learned frontend: ALIKED detection + LightGlue matching (`feature_extractor: "ALIKED"` with the `learned` extra; weights download on first use)
 - Bundle adjustment for map and pose optimization (using g2o)
 - Keyframe-based mapping
 - Visualization using Open3D
@@ -59,7 +60,7 @@ videos:
 - g2o (for bundle adjustment)
 - Colorama (for logging)
 
-Optional extras: `calib` (GeoCalib intrinsics priors), `learned` (PyTorch + torchvision — reserved for planned learned extractors/matchers).
+Optional extras: `calib` (GeoCalib intrinsics priors), `learned` (PyTorch + torchvision + LightGlue — the ALIKED feature frontend; weights download on first use into the torch hub cache).
 
 ## Future TODOs
 - Improve keyframe selection logic. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.
