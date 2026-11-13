@@ -1,16 +1,15 @@
 import g2o
 import numpy as np
 import time as _time
-from collections import defaultdict
 from slam.core.frame import Frame
 from slam.core.point import Point
 from slam.core.observation import Observation
+from slam_native import FoldInputs, error_fold
 from typing import List, Tuple
 from slam.utils.logger import *
 from slam.utils.constants import *
 from slam.utils import constants as const
 from slam.utils import telemetry
-from typing import List, Tuple
 import cv2 as cv
 
 LOG_TAG = 'g2oBA'
@@ -916,87 +915,58 @@ class G2OBundleAdjustment:
         self,
         observations: List[Observation]
     ) -> None:
-        # Batch the per-frame projection. The original loop
-        # re-projected every observed point individually (~1.5M single-
-        # point GEMVs on TUM per run); Frame.project_points does the
-        # same math as one GEMM per frame group.
-        #
-        # UPDATE ORDER IS LOAD-BEARING and is preserved exactly by the
-        # two-pass structure: Point.update_reprojection_error keeps a
-        # running average, so each point's own errors must be applied in
-        # the OBSERVATIONS-LIST order. A naive by-frame grouping changes
-        # that order (a later-listed point's earlier frame can be pulled
-        # forward by another point's grouping) and measurably diverges
-        # orbit/tum. Pass 1 only READS geometry (project + norm); pass 2
-        # applies the errors in the original order.
-        #
-        # Both bit-identical: (a) pass 1 computes the
-        # norms vectorized per frame group (the same per-row reduction
-        # as the per-observation np.linalg.norm call it replaces), and
-        # (b) pass 2 hoists the quality-flag storm - update_reprojection
-        # _error used to flag ALL of a point's observers on EVERY fold
-        # step (quadratic in observation count; ~780k idempotent
-        # attribute-sets per BA call on translation). The flag is
-        # idempotent and lazily consumed (Frame.tracking_quality
-        # recomputes on next read), so folding with update_quality=False
-        # and flagging each point's observers once - only points whose
-        # fold actually updated, exactly as the interleaved flags would
-        # have - leaves the observable state identical. The local-BA
-        # observations list is point-consecutive (one flag pass per
-        # point); the global-BA list is frame-grouped, where the
-        # change-detection flags each point once per contiguous segment
-        # - idempotent, so still correct.
-        by_frame = defaultdict(list)
-        for obs in observations:
-            by_frame[obs.frame].append(obs)
+        """Recompute every observation's reprojection error and fold it
+        into each point's running average (the NATIVE error-fold
+        kernel, migration C2a).
 
-        error_by_obs = {}
-        for frame, group in by_frame.items():
-            pts_3d = np.array([obs.pt_3d for obs in group],
-                              dtype=np.float64)
+        The kernel is a pure function over the flat SOA this method
+        assembles; the Python oracle lives in the stage tests only
+        (`_reference_fold`). The kernel's op order mirrors the oracle:
+        per-frame first-appearance grouping, a per-row 4-term
+        index-order projection dot, the behind-camera/isfinite skips,
+        the elementwise norm, and pass 2 applying errors in the
+        ORIGINAL observations order with the running average (n = the
+        point's GLOBAL observation count).
 
-            projected = frame.project_points(pts_3d, normalized=True)
+        UPDATE ORDER IS LOAD-BEARING and preserved by that pass-2
+        order. The flag flush flags only points whose fold actually
+        updated - the same idempotent set the interleaved flags
+        produced (the flag is lazily consumed: Frame.tracking_quality
+        recomputes on next read).
+        """
+        O = len(observations)
+        if O == 0:
+            return
 
-            # project_points writes NaN for behind-camera points;
-            # the old path skipped them (project_point -> None).
-            # The finite mask is vectorized, but the norm stays a
-            # per-observation 1-D call: np.linalg.norm(x, axis=1)
-            # reduces via add.reduce while the 1-D norm reduces via
-            # dot - measurably different at the last ULP (stage-pinned),
-            # and the fold's bits are load-bearing (stage-pinned).
-            finite = np.all(np.isfinite(projected), axis=1)
-            if finite.any():
-                # The vectorized equivalent of the per-observation
-                # np.linalg.norm call: elementwise products + a
-                # 2-element sum in index order - the same arithmetic
-                # per row as sqrt(dot(x, x)), no cross-element
-                # reduction to reorder (the fold's bits are pinned to
-                # the reference fold by the stage tests).
-                obs2d = np.array([obs.pt_2d_norm for obs in group],
-                                 dtype=np.float64)
-                d = projected - obs2d
-                norms = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])
-                for obs, ok, err in zip(group, finite, norms):
-                    if ok:
-                        error_by_obs[obs] = err
+        # Flat extraction: unique frames/points in FIRST-APPEARANCE
+        # order (dict preserves insertion), obs -> row mappings.
+        frames = list(dict.fromkeys(ob.frame for ob in observations))
+        points = list(dict.fromkeys(ob.point for ob in observations))
+        frame_row = {f: i for i, f in enumerate(frames)}
+        point_row = {p: i for i, p in enumerate(points)}
 
-        # Pass 2: apply the errors in the ORIGINAL observations order,
-        # flagging each point's observers once after its fold segment.
-        flushed = None
-        flushed_updated = False
+        obs_frame = np.fromiter(
+            (frame_row[ob.frame] for ob in observations),
+            dtype=np.int64, count=O)
+        obs_point = np.fromiter(
+            (point_row[ob.point] for ob in observations),
+            dtype=np.int64, count=O)
+        obs_norm = np.array([ob.pt_2d_norm for ob in observations],
+                            dtype=np.float64)
+        point_pos = np.array([p.pt_3d for p in points], dtype=np.float64)
+        poses_inv = np.stack([f.pose_inv for f in frames])
+        point_avg = np.array([p.average_reprojection_error for p in points],
+                             dtype=np.float64)
+        point_nobs = np.fromiter((len(p.observations) for p in points),
+                                 dtype=np.int64, count=len(points))
 
-        def _flush_flags():
-            if flushed is not None and flushed_updated:
-                flushed._update_observing_keyframe_quality()
+        fold_in = FoldInputs(poses_inv=poses_inv, obs_frame=obs_frame,
+                             point_pos=point_pos, obs_norm=obs_norm,
+                             obs_point=obs_point, point_avg=point_avg,
+                             point_nobs=point_nobs)
+        err, new_avg, updated = error_fold(fold_in)
 
-        for obs in observations:
-            if obs.point is not flushed:
-                _flush_flags()
-                flushed = obs.point
-                flushed_updated = False
-            error = error_by_obs.get(obs)
-            if error is not None:
-                obs.point.update_reprojection_error(
-                    error, update_quality=False)
-                flushed_updated = True
-        _flush_flags()
+        for i, pt in enumerate(points):
+            if updated[i]:
+                pt.average_reprojection_error = new_avg[i]
+                pt._update_observing_keyframe_quality()

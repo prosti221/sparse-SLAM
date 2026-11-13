@@ -295,6 +295,13 @@ class Frame:
     def pose(self):
         return self._pose.copy()
 
+    @property
+    def pose_inv(self):
+        """The cached world-to-camera transform - exactly what
+        project_points multiplies with (the native error-fold consumes
+        it; a copy guards against aliasing)."""
+        return self._pose_inv.copy()
+
     @pose.setter
     def pose(self, value):
         # Copy to guard against aliasing, and cache the inverse: it is

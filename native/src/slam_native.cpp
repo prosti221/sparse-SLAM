@@ -5,6 +5,7 @@
 #include <pybind11/numpy.h>
 
 #include "map_core.h"
+#include "error_fold.h"
 
 namespace py = pybind11;
 
@@ -66,4 +67,32 @@ PYBIND11_MODULE(slam_native, m) {
       .def("window_kp_idx", &slarnative::MapCore::window_kp_idx)
       .def("window_pt2d_norm", &slarnative::MapCore::window_pt2d_norm)
       .def("update_point_errors", &slarnative::MapCore::update_point_errors);
+
+  // Unpacks the C++ FoldOutputs struct into a Python tuple at the
+  // boundary: (per-obs errors, per-point new averages, updated flags).
+  m.def("error_fold",
+        [](const slarnative::FoldInputs& in) {
+          slarnative::FoldOutputs out = slarnative::error_fold(in);
+          return py::make_tuple(out.err, out.new_avg, out.updated);
+        },
+        py::arg("in"),
+        "The error-fold kernel: per-obs errors, per-point new averages, "
+        "updated flags.");
+
+  py::class_<slarnative::FoldInputs>(m, "FoldInputs")
+      .def(py::init([](slarnative::c_arr<double> poses_inv,
+                       slarnative::c_arr<int64_t> obs_frame,
+                       slarnative::c_arr<double> obs_pt3d,
+                       slarnative::c_arr<double> obs_norm,
+                       slarnative::c_arr<int64_t> obs_point,
+                       slarnative::c_arr<double> point_avg,
+                       slarnative::c_arr<int64_t> point_nobs) {
+             return slarnative::FoldInputs{
+                 std::move(poses_inv), std::move(obs_frame), std::move(obs_pt3d),
+                 std::move(obs_norm),  std::move(obs_point), std::move(point_avg),
+                 std::move(point_nobs)};
+           }),
+           py::arg("poses_inv"), py::arg("obs_frame"), py::arg("point_pos"),
+           py::arg("obs_norm"), py::arg("obs_point"), py::arg("point_avg"),
+           py::arg("point_nobs"));
 }

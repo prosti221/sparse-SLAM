@@ -19,7 +19,8 @@ find_package(pybind11 CONFIG REQUIRED)
 
 pybind11_add_module(slam_native
                     src/slam_native.cpp
-                    src/map_core.cpp)
+                    src/map_core.cpp
+                    src/error_fold.cpp)
 
 # The module installs at the site-packages root (importable as
 # `slam_native`): the extension IS the Python/C++ boundary.
