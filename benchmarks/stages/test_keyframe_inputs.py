@@ -1,4 +1,4 @@
-"""Phase 6b: absent evidence and match-pair ownership, not a new policy."""
+"""Absent evidence and match-pair ownership, not a new policy."""
 import cv2 as cv
 import numpy as np
 import pytest

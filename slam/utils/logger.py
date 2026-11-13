@@ -7,7 +7,6 @@ import colorama
 colorama.init(autoreset=True)
 
 # === Config ===
-# TODO: Make this configurable via environment variables or a config file
 DEBUG = True
 # DEBUG_TAG_FILTER = ["Map", "LoopClosure", "Tracker", "g2oBA"]
 DEBUG_TAG_FILTER = []
@@ -42,14 +41,6 @@ def get_calling_function_name(skip=2):
     if len(stack) > skip:
         return stack[skip].function
     return None
-
-
-def set_debug_scope(func_name: str):
-    _log_context.active_debug_scope = func_name
-
-
-def clear_debug_scope():
-    _log_context.active_debug_scope = None
 
 
 def debug_log(log_tag, message):

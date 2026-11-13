@@ -40,18 +40,18 @@ def _create_image_pyramid(img: np.ndarray, n_levels: int, scale_factor: float) -
     return pyramid
 
 
-# ===== Phase 23: the extractor registry =====
+# ===== the extractor registry =====
 # One builder per extractor name. A builder owns its DEFAULT config,
 # merges the caller's overrides, and returns the merged config, the
 # detector, and the (multiscale, single-scale) extraction handlers as
 # closures. FeatureExtractor dispatches through this dict only, so a
-# new extractor (the planned ALIKED + LightGlue) is ONE builder plus
-# ONE constants.EXTRACTOR_DESCRIPTOR_KINDS entry (the matcher's norm
+# new extractor is ONE builder plus ONE
+# constants.EXTRACTOR_DESCRIPTOR_KINDS entry (the matcher's norm
 # seam) - no class or call-site edits.
 #
-# AKAZE and SuperPoint ("DNN") were REMOVED in phase 23: neither ever
-# won a measured adoption gate, and every tier constructs ORB. The
-# phase-23 record in benchmarks/IMPROVEMENT.md holds the history.
+# AKAZE and SuperPoint ("DNN") were removed: neither ever won a
+# measured adoption gate, and every tier constructs ORB. The
+# IMPROVEMENT.md record holds the history.
 
 def _build_orb(config: Dict):
     merged = {**DEFAULT_ORB_CONFIG, **(config or {})}
@@ -176,8 +176,31 @@ def _build_orb(config: Dict):
     return merged, detector, multiscale, single
 
 
+def _build_aliked(config: Dict):
+    """The learned frontend. The models live in
+    aliked_backend (lazy torch/lightglue imports - the geocalib
+    pattern); the builder only wires the handlers. ALIKED handles
+    scale internally (the deformable detector is natively
+    multi-scale), so the multiscale/single handlers are the SAME
+    closure and enable_multiscale_features is a documented no-op -
+    the config still records it for the multiscale_info log line.
+    Detector = None: the backend owns the model singletons."""
+    merged = {**(config or {}),
+              'multiscale_enabled': True,  # internal to ALIKED
+              'pyramid_levels': 'internal'}
+
+    def extract_handler(img: np.ndarray) -> Tuple[List, np.ndarray]:
+        from slam.features import aliked_backend
+        kps, desc = aliked_backend.extract_aliked(img)
+        debug_log(LOG_TAG, f"Extracted {len(kps)} ALIKED features")
+        return kps, desc
+
+    return merged, None, extract_handler, extract_handler
+
+
 _EXTRACTOR_BUILDERS = {
     'ORB': _build_orb,
+    'ALIKED': _build_aliked,
 }
 
 

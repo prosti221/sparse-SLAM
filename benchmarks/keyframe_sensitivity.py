@@ -8,21 +8,18 @@ unknown; real RGB timestamps come from source filenames/explicit manifests.
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
-import shutil
 import tarfile
-import urllib.request
 
 import cv2 as cv
 import numpy as np
 
-from benchmarks.harness import load_calibration, load_trajectory
+from benchmarks.harness import load_calibration
 from benchmarks import metrics
 from benchmarks import tum
 
 MODES = ("native", "half_resolution", "stride2")
 HELDOUT_NAME = "tum_rpy"
 HELDOUT_DATASET = "rgbd_dataset_freiburg1_rpy"
-HELDOUT_URL = f"https://cvg.cit.tum.de/rgbd/dataset/freiburg1/{HELDOUT_DATASET}.tgz"
 
 
 def file_sha256(path):
@@ -165,44 +162,6 @@ def extract_heldout(archive, root):
                     raise FileExistsError(target)
             else:
                 target.write_bytes(content)
-
-
-def prepare_heldout(root):
-    """One predeclared held-out sequence, no subset/config selection by score."""
-    root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-    archive = root / (HELDOUT_DATASET + ".tgz")
-    if not archive.exists():
-        partial = archive.with_suffix(".tgz.part")
-        with urllib.request.urlopen(HELDOUT_URL, timeout=120) as response, partial.open("xb") as out:
-            shutil.copyfileobj(response, out)
-        partial.rename(archive)
-    extract_heldout(archive, root)
-    raw = root / HELDOUT_DATASET
-    destination = root / HELDOUT_NAME
-    if destination.exists():
-        raise FileExistsError("Preserve the prior held-out normalization")
-    pairs = associate_rgb_gt(raw)
-    if not pairs:
-        raise ValueError("No usable held-out RGB/GT associations")
-    destination.mkdir()
-    (destination / "frames").mkdir()
-    rows = []
-    for index, (timestamp, gt_time, image, pose) in enumerate(pairs):
-        (destination / "frames" / f"frame_{index:06d}.png").symlink_to(image.resolve())
-        rows.append(f"{index} " + " ".join(format(float(v), ".9f") for v in pose))
-    (destination / "trajectory.txt").write_text("\n".join(rows) + "\n")
-    (destination / "calibration.txt").write_text(f"{tum.FX} {tum.FY} {tum.CX} {tum.CY}\n")
-    record = {"dataset": HELDOUT_DATASET, "download_url": HELDOUT_URL,
-              "archive_sha256": file_sha256(archive),
-              "archive_bytes": archive.stat().st_size, "frames": len(pairs),
-              "timestamps_seconds": [p[0] for p in pairs],
-              "gt_timestamps_seconds": [p[1] for p in pairs],
-              "max_association_difference_seconds": tum.MAX_TIMESTAMP_DIFF,
-              "calibration_note": "Same Freiburg1 factory pinhole/k1=0 convention as retained XYZ; no calibration tuning or depth input.",
-              "heldout_note": "Predeclared fr1/rpy, all associated RGB frames. No candidate selection, new baseline or robustness claim."}
-    (destination / "source_manifest.json").write_text(json.dumps(record, indent=2) + "\n")
-    return destination
 
 
 def matched_sample_comparison(result, native, source_indices, source_gt, timestamps=None):

@@ -1,4 +1,4 @@
-"""Phase 6a: diagnostic definitions and strict observer transparency."""
+"""Diagnostic definitions and strict observer transparency."""
 from types import SimpleNamespace
 
 import cv2 as cv

@@ -16,12 +16,9 @@ The system itself is monocular - the RGB-D depth data is ignored (a future
 milestone could use it for map evaluation).
 """
 import os
-import shutil
 import tarfile
 import urllib.request
 from pathlib import Path
-
-import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TUM_ROOT = REPO_ROOT / "data" / "tum"

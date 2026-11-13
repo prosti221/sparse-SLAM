@@ -35,7 +35,7 @@ def test_end_to_end_determinism(translation_sequence_dir):
 
 def test_sequence_generation_is_deterministic(tmp_path):
     """Regenerating a sequence must reproduce byte-identical frames."""
-    from benchmarks.synthetic.generator import DATA_ROOT, generate_sequence
+    from benchmarks.synthetic.generator import generate_sequence
     import cv2 as cv
 
     name = "translation"

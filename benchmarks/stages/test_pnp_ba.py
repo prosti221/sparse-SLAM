@@ -5,18 +5,15 @@ Regressions for pose-refinement, anchoring and graph-cache bugs:
   (the inverse of the stored Twc) and must write back camera-to-world.
 - refine_pose_pnp must refine the frame it is GIVEN (the tracker passes
   the current frame) - it used to read/write the map's previous keyframe,
-  so per-frame refinement never applied to the tracked trajectory
-  (finding 9, phase 1b).
+  so per-frame refinement never applied to the tracked trajectory.
 - local BA must be anchored: keyframes outside the window are fixed
   vertices, so the window cannot drift rigidly at zero reprojection cost.
 - Divergent PnP solutions (unexplainable observations, teleporting
-  refinements) must be rejected by the guards, keeping the seed pose
-  (phase 1b).
+  refinements) must be rejected by the guards, keeping the seed pose.
 - External pose-graph/global-BA write-back must invalidate the local
-  graph, without disabling ordinary local graph reuse (phase 5e-0).
+  graph, without disabling ordinary local graph reuse.
 """
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 
 from benchmarks.stages.helpers import make_K, make_frame, se3, yaw_pose, project_gt, set_keypoints, make_world_points
@@ -71,7 +68,7 @@ def test_refine_pose_pnp_recovers_perturbed_pose():
 
 
 def test_refine_pose_pnp_targets_requested_frame():
-    """Finding 9 regression (phase 1b): refine_pose_pnp must refine the
+    """Regression: refine_pose_pnp must refine the
     frame it is GIVEN - the tracker's current frame - and must not touch
     the map's previous keyframe. Pre-1b this call read the previous
     keyframe's observations and wrote the previous keyframe's pose, so
@@ -106,7 +103,7 @@ def test_refine_pose_pnp_targets_requested_frame():
 
 
 def test_pnp_guards_reject_divergent_solution():
-    """Phase 1b: observations no pose can explain (all corrupted by
+    """Observations no pose can explain (all corrupted by
     large random offsets) must yield a rejection, and the frame must
     keep its seed pose - a diverged PnP must never poison the map."""
     K = make_K()
@@ -134,10 +131,10 @@ def test_pnp_guards_reject_divergent_solution():
 
 
 def test_pnp_guards_reject_teleporting_solution():
-    """Phase 1b: a 'refinement' that teleports the camera (center step
+    """A 'refinement' that teleports the camera (center step
     far beyond the observed scene depth) is rejected even if the target
     is geometrically consistent - refinement must correct, not relocate
-    (the pre-1b divergence mode reached |t| ~ 2e4)."""
+    (the pre-guard divergence mode reached |t| ~ 2e4)."""
     K = make_K()
     T_true = yaw_pose(0.2, (1.0, 2.0, 5.0))
     world_points = make_world_points(40, z_range=(8.0, 12.0))
@@ -235,13 +232,13 @@ def test_local_ba_keeps_window_keyframes_consistent():
 
 
 def test_timer_global_ba_disabled_by_default():
-    """Phase 2a (finding 13): the timer-triggered global BA is disabled by
+    """The timer-triggered global BA is disabled by
     default (interval 0). Measured A/B: it HURT three of four sequences
     (translation ATE 0.0845 -> 0.0181 without it) while dominating tum's
     BA cost; local BA keeps corrections local via fixed boundary
     keyframes, and the global re-solve traded well-constrained accuracy
     for global smoothing on a cadence with no evidence of need. Global
-    BA stays available for loop closure (phase 3), triggered by loop
+    BA stays available for loop closure, triggered by loop
     events, not a timer."""
     from slam.utils import constants as const
 
@@ -376,7 +373,7 @@ def test_partial_external_write_failure_cannot_reuse_stale_graph(monkeypatch):
 
 
 def test_point_remove_observation_updates_count():
-    """Finding 16: Point.remove_observation used to assign to the
+    """Regression: Point.remove_observation used to assign to the
     setter-less num_observations property (AttributeError on every
     call that found the observation). Reachable via Map._remove_keyframe
     (the keyframe-culling path, unused by benchmarks so far) - the map
@@ -400,13 +397,13 @@ def test_point_remove_observation_updates_count():
 
 
 def test_filter_duplicate_registers_consistent_observations():
-    """Finding 17 (phase 2g): _filter_duplicate_keypoints must register
+    """Regression: _filter_duplicate_keypoints must register
     duplicate-keypoint matches CONSISTENTLY and must NOT overwrite an
     existing projection-matched observation for the same (point,
     frame) - the projection match is the better-anchored measurement.
     Dedup-only matches stay FRAME-SIDE ONLY: promotion to full
-    point-side observations was measured and rejected twice (2g: five
-    configs; 2i Q1: rotation-gated - see the rejection record)."""
+    point-side observations was measured and rejected twice, across
+    six gate configurations (see the rejection record)."""
     from types import SimpleNamespace
 
     import cv2 as cv
@@ -466,7 +463,7 @@ def test_filter_duplicate_registers_consistent_observations():
     assert cur.kp_unique_mask == [False, False]
 
 
-# --- Phase 2i (P1): BA-overhead cuts. All three must be BIT-IDENTICAL
+# --- BA-overhead cuts. All three must be BIT-IDENTICAL
 # to the code they replaced: the vectorized per-group norms, the
 # hoisted quality-flag pass in the error fold, and the incremental
 # edge bookkeeping that replaced the per-call opt.edges() rebuild.
@@ -598,9 +595,9 @@ def test_update_reprojection_error_flag_parameter():
 
 
 def test_persistent_graph_edge_bookkeeping_consistency():
-    """Phase 2i (P1): the incremental pair bookkeeping must exactly
+    """The incremental pair bookkeeping must exactly
     mirror the graph across reconciles - including the stale-vertex
-    cascade path exercised by a 2h keyframe cull."""
+    cascade path exercised by a keyframe cull."""
     K = make_K()
     world_points = make_world_points(40, z_range=(7.0, 10.0))
     m, kfs = _build_trajectory_map(12, world_points, K)

@@ -1,6 +1,6 @@
-"""Phase 8-5: displacement-gated frame intake (the VIDEO path).
+"""Displacement-gated frame intake (the VIDEO path).
 
-Finding 33 (see benchmarks/IMPROVEMENT.md): when consecutive fed
+When consecutive fed
 frames carry sub-pixel matched-feature displacement, the two-view
 geometry between them is pure noise - the pose chain noise-fits, the
 keyframe baseline criterion is fed by a noise random walk, and map
@@ -25,27 +25,27 @@ not a pose estimate).
 The benchmark harness feeds frame FILES and never constructs a
 gate: the frozen battery is untouched by construction. The fed
 stream's EFFECTIVE fps (container_fps * fed / decoded) is exposed
-as a DIAGNOSTIC ONLY: the phase 8-4 cadence constants keep the
+as a DIAGNOSTIC ONLY: the cadence constants keep the
 CONTAINER's time base. That is a measured decision, not a taste -
 A/B on walking_salem's hard 34 s segment (same gate, same skips,
 only the declaration differs): container-declared = 2 resets /
 26 relocations, fed-cadence-declared = 7 / 42. Declaring the fed
 cadence collapses the recovery window back to the anchor count
 (10 -> 5 consecutive quality-failing fed frames) and re-arms the
-phase 8-3 reset spiral; the container declaration preserves the
-8-4 health and can only ever LENGTHEN windows under gating (the
+reset spiral; the container declaration preserves the
+health and can only ever LENGTHEN windows under gating (the
 safe direction).
 """
 import cv2 as cv
 import numpy as np
 
 from slam.features.feature_extractor import FeatureExtractor
-from slam.features.matcher import _get_or_create_matcher
+from slam.features.matcher import _get_or_create_matcher, lowe_ratio_filter
 from slam.utils import telemetry
 from slam.utils.constants import (FRAME_INTAKE_MAX_GAP_S,
                                   FRAME_INTAKE_MIN_DISPLACEMENT_PX,
                                   FRAME_INTAKE_MIN_MATCHES,
-                                  KNN_K_VALUE, LOWE_RATIO,
+                                  KNN_K_VALUE,
                                   ORB_EXTRACTOR_NAME)
 from slam.utils.logger import debug_log
 
@@ -66,7 +66,7 @@ def _frame_gray(img: np.ndarray) -> np.ndarray:
 
 
 class FrameIntakeGate:
-    """Displacement-gated video frame intake (phase 8-5)."""
+    """Displacement-gated video frame intake."""
 
     def __init__(self, feature_extraction_method: str = ORB_EXTRACTOR_NAME,
                  enable_multiscale: bool = False,
@@ -130,24 +130,13 @@ class FrameIntakeGate:
             return self._feed('intake_few_features')
 
         # Median matched-feature displacement vs the last fed frame:
-        # knn + Lowe + mutual-best, mirroring match_features exactly
-        # (the RANSAC/E step is deliberately absent - displacement is
-        # a 2D measurement, and geometric filtering here would gate
-        # on the very signal we are trying to measure).
-        matches = self.matcher.knnMatch(desc, self._reference_desc,
-                                        k=KNN_K_VALUE)
-        good = []
-        seen_query, seen_train = set(), set()
-        for pair in matches:
-            if len(pair) < 2:
-                continue
-            m, n = pair[0], pair[1]
-            if (m.distance < LOWE_RATIO * n.distance
-                    and m.queryIdx not in seen_query
-                    and m.trainIdx not in seen_train):
-                seen_query.add(m.queryIdx)
-                seen_train.add(m.trainIdx)
-                good.append(m)
+        # knn + Lowe + mutual-best via the matcher module's shared
+        # filter, mirroring match_features exactly (the RANSAC/E step
+        # is deliberately absent - displacement is a 2D measurement,
+        # and geometric filtering here would gate on the very signal
+        # we are trying to measure).
+        good = lowe_ratio_filter(self.matcher.knnMatch(
+            desc, self._reference_desc, k=KNN_K_VALUE))
 
         if len(good) < FRAME_INTAKE_MIN_MATCHES:
             # Features exist but do not correspond to the reference
@@ -181,7 +170,7 @@ class FrameIntakeGate:
 
     @property
     def effective_fps(self) -> float:
-        """The FED stream's fps estimate (the phase 8-4 wiring): the
+        """The FED stream's fps estimate: the
         container's fps scaled by the fed/decoded ratio. Identical to
         the container fps while every frame is fed; converges to the
         gate's actual intake cadence as frames are skipped (the start

@@ -26,11 +26,14 @@ calib = [
     "torchvision>=0.29.2",
 ]
 # Phase 23: learned extractors/matchers live behind this extra
-# (SuperPoint - the only torch consumer - was removed; the planned
-# ALIKED + LightGlue addition promotes what it needs from here).
+# (SuperPoint - the only torch consumer - was removed). Phase 24:
+# ALIKED + LightGlue joined it from cvg/LightGlue at a pinned rev
+# (the geocalib git-source precedent); weights download on demand,
+# never committed.
 learned = [
     "torch>=2.15.0",
     "torchvision>=0.29.2",
+    "lightglue @ git+https://github.com/cvg/LightGlue@5a650c444718caffc2669dc0094cde908f42dd73",
 ]
 
 [dependency-groups]

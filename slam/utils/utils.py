@@ -21,18 +21,18 @@ def load_video(config):
     Fy = config.get_video_property(video_tag, 'fy', default=Fx)
     Cx = config.get_video_property(video_tag, 'cx', default=W // 2)
     Cy = config.get_video_property(video_tag, 'cy', default=H // 2)
-    # Phase 8-1: the lens's simple-radial k1 in the 2j-3 normalized
-    # coordinate. Absent -> 0.0, the LITERAL identity path everywhere
+    # The lens's simple-radial k1 in the normalized coordinate.
+    # Absent -> 0.0, the LITERAL identity path everywhere
     # k1 is read, so existing configs are bit-identical by construction.
     # The explicit-intrinsics path returns it alongside K (slam.py flows
     # it through IntrinsicsEstimate.from_K into every Frame, engaging
-    # the 2j-3 undistort-at-normalization + forward-model projection
+    # the undistort-at-normalization + forward-model projection
     # boundaries). The 'fx: auto' path returns 0.0 and IGNORES any
     # explicit k1 by design: GeoCalib supplies both the focal and its
     # own k1 estimate, consumed through the prior.
     K1 = config.get_video_property(video_tag, 'k1', default=0.0)
 
-    # Phase 2j-2: 'fx: auto' (or an absent/zero fx) switches the video
+    # 'fx: auto' (or an absent/zero fx) switches the video
     # path to GeoCalib auto-calibration - slam.py buffers the first
     # ~CALIB_INIT_SECONDS from this capture and estimates shared
     # intrinsics; the returned K is None until then.
@@ -79,7 +79,7 @@ def normalize(pts, Kinv):
 
 def undistort_points_norm(pts, K, k1):
     """Pixel (N,2) -> UNDISTORTED normalized (N,2) under the
-    simple-radial model (phase 2j-3). cv.undistortPoints implements the
+    simple-radial model. cv.undistortPoints implements the
     exact inverse of the generator's forward model
     (x_d = x_u * (1 + k1 * r_u^2)) - locked by the round-trip pin in
     benchmarks/stages/test_calibration.py. The k1 == 0 case never
@@ -120,8 +120,8 @@ def extractRtFromE(pts1, pts2, E, K, motion_prior=None):
     cv.recoverPose resolves the four-fold ambiguity (R1, R2, +/-t) with a
     cheirality vote alone. Under lateral motion over a dominant plane,
     noisy features let a wrong branch win that vote - the pose chain then
-    steps backward and diverges (finding 8 / phase 1a,
-    benchmarks/IMPROVEMENT.md).
+    steps backward and diverges (the IMPROVEMENT.md record holds the
+    measurement).
 
     Instead, all four decompositions are scored explicitly:
     1. geometric viability: a candidate must triangulate a meaningful
@@ -132,8 +132,8 @@ def extractRtFromE(pts1, pts2, E, K, motion_prior=None):
        MATCHER_PRIOR_DECISIVE_FLIP_RATIO. Only then may the
        constant-velocity motion prior (the previous frame-to-frame
        relative pose) veto it: a decisive verdict opposing the recent
-       motion direction is the backward-chain collapse signature
-       (finding 8). Coin-flip verdicts are left alone - their errors are
+       motion direction is the backward-chain collapse signature.
+       Coin-flip verdicts are left alone - their errors are
        uncorrelated and partially cancel, while prior arbitration would
        correlate them into drift (measured: translation ATE 1.81 -> 3.31,
        orbit RPE rot 33 -> 43 deg),
@@ -241,7 +241,7 @@ def normalize_vec(v):
     return v / np.linalg.norm(v)
 
 
-# Phase 21 [21c]: the degenerate-direction guard, beside its
+# The degenerate-direction guard, beside its
 # machinery (the parallax gate in is_valid_triangulated_point).
 # A candidate whose direction vectors are non-normalizable
 # (||v|| = 0 or non-finite) has NO parallax: the guarded path
@@ -252,12 +252,11 @@ def normalize_vec(v):
 # comparisons - and NaN < threshold is False, so a degenerate
 # candidate PASSED every gate (a latent NaN-acceptance hazard;
 # only the exactly-at-camera case was caught, by cheirality) and
-# normalize_vec's 0/0 fired the utils.py:241 RuntimeWarning
-# (measured: both phase-20 kyoto legs at the 8.0 intake; absent
-# on the fresh production path [21a]). Normalizable candidates
+# normalize_vec's 0/0 fired a RuntimeWarning on real legs.
+# Normalizable candidates
 # compute IDENTICALLY either way (v / ||v||, the same float
 # arithmetic) - the guard is bit-transparent everywhere else, and
-# the battery never reaches the degenerate path (5a), so the
+# the battery never reaches the degenerate path, so the
 # battery is bit-identical by construction. Kill-switch
 # transparency: pin 0 in memory reproduces the legacy semantics
 # exactly, warning included.
@@ -269,27 +268,27 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     consistency. ACCEPTANCE is unchanged from the original: VALID iff
     every gate passes.
 
-    Phase 5c: ALL failures are reported. The original cascaded (last
+    All failures are reported. The original cascaded (last
     failing check won), so a behind-camera point reported as a
     reprojection failure, MIN_DEPTH_VIOLATION was unreachable in
-    telemetry, and per-gate rejection attribution was impossible (the
-    5a probe had to re-derive it). `validation_code` is the FIRST
+    telemetry, and per-gate rejection attribution was impossible.
+    `validation_code` is the FIRST
     failing check in the fixed priority order (cheirality, depth,
     parallax, reprojection) - the root-cause reading; `failed_codes`
     carries all of them for telemetry.
 
-    The phase-1 well-conditioned check (|point_4d[3]| < 1e-6) is
+    The well-conditioned check (|point_4d[3]| < 1e-6) is
     REMOVED: dead at the only production call site - the tracker
     de-homogenizes candidates (w normalized to exactly 1.0) before
     this gate, and w == 0 candidates are dropped by the tracker's
     pre-filter (the real guard, in _triangulate). No NaN candidates
-    exist on the battery (5a measured: the "non-finite" rows were
+    exist on the battery (the "non-finite" rows were
     behind-camera points with inf reprojection errors).
 
     `reprojection_error` is the mean of the two PIXEL reprojection
     errors, consumed at creation (arithmetic unchanged).
     """
-    # Constants are read through the module alias (phase 2i, Q2): the
+    # Constants are read through the module alias: the
     # star-imported copies defeat --override, and this gate is the
     # sweep target.
     point_3d = point_4d[:3]
@@ -518,9 +517,9 @@ def compute_new_points_ratio(cur_frame):
 
 
 def scaled_frame_count(count, video_fps):
-    """Phase 8-4: convert a FRAME-count constant to the frame count
+    """Convert a FRAME-count constant to the frame count
     that preserves its TIME meaning at the video's fps. The constants
-    were calibrated (all curated phases) on ~30fps-equivalent content;
+    were calibrated on ~30fps-equivalent content;
     at 60fps a camera moves half as far per frame, so frame-count
     thresholds must double to keep the same time/geometric window.
     30 fps is the identity anchor: scaled == count exactly (and any
@@ -545,7 +544,7 @@ def should_insert_keyframe(cur_frame, prev_keyframe,
     #
     # 1. Viewpoint change: translation baseline OR accumulated rotation
     #    since the last keyframe. Rotation-dominant motion starved the map
-    #    under the translation-only criterion (phase 1c: forward_rotation
+    #    under the translation-only criterion (forward_rotation
     #    inserted keyframes on the forced-frame backstop while its
     #    triangulation rejected ~100% of points). The rotation trigger
     #    REGULARIZES the cadence of rotating sequences (gap-capped): it
@@ -559,7 +558,7 @@ def should_insert_keyframe(cur_frame, prev_keyframe,
     rotation_deg = float(np.degrees(np.arccos(np.clip(cos_rot, -1.0, 1.0))))
 
     baseline_ok = const.MINIMUM_BASELINE_THRESHOLD <= baseline_distance
-    # Phase 8-4: the rotation-cadence floor is a FRAME count whose
+    # The rotation-cadence floor is a FRAME count whose
     # rationale ("never frame-to-frame, where degenerate pairs poison
     # the map") is about TIME/displacement, not frames - it scales
     # with the video fps (identity at the 30 fps calibration anchor).
@@ -612,25 +611,3 @@ def should_insert_keyframe(cur_frame, prev_keyframe,
         return True, "Quality criteria met"
     else:
         return False, "; ".join(reasons)
-
-
-def visualize_matches(frame1, frame2, matches=None, save_path=None):
-    if matches is None:
-        matches = frame1.matches
-    if matches is None or len(matches) == 0:
-        return
-
-    img1 = frame1.image
-    img2 = frame2.image
-    kp1 = frame1.keypoints
-    kp2 = frame2.keypoints
-
-    img_matches = cv.drawMatches(
-        img1, kp1, img2, kp2, matches, None, flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-
-    if save_path:
-        cv.imwrite(save_path, img_matches)
-    else:
-        cv.imshow('Matches', img_matches)
-        cv.waitKey(0)
-        cv.destroyAllWindows()

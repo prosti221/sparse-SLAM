@@ -1,6 +1,6 @@
-"""Stage test: phase 17 (T1) — the loop-correction point re-anchor.
+"""Stage test: the loop-correction point re-anchor.
 
-Pins the C3 fix (the 17c verdict: the global BA after a correction
+Pins the C3 fix (the verdict: the global BA after a correction
 started from moved cameras + STALE structure and teleported
 keyframes 21-160 map units per solve, both hosts; the re-anchor
 gives it a consistent initialization):
@@ -13,12 +13,11 @@ gives it a consistent initialization):
   success (the tracker's correction path inherits it)
 - the kill-switch: LOOP_POINT_REANCHOR_ENABLED=0 is the pre-17
   passthrough (graph success, points untouched)
-- the flag default (a measured adoption fact: 1, the phase-17 A/B
+- the flag default (a measured adoption fact: 1, the A/B
   may flip it only with a recorded decision)
 """
 import cv2 as cv
 import numpy as np
-import pytest
 
 import slam.loop_closure as lc
 from benchmarks.stages.helpers import make_frame, yaw_pose
@@ -111,7 +110,7 @@ def test_reanchor_wrapper_applies_on_graph_success(monkeypatch):
     """The tracker's correction path inherits the re-anchor:
     optimize_with_loop_constraints re-anchors the points after the
     g2o pose graph succeeds. (The flag is pinned ON for this pin —
-    the shipped default is 0 after the 17d-1 A/B rejection; the
+    the shipped default is 0 after the A/B rejection; the
     machinery is probed here exactly as the A/B probes pin it.)"""
     m, kfs, points, deltas, _ = _reanchor_fixture()
 
@@ -166,11 +165,11 @@ def test_reanchor_flag_off_is_passthrough(monkeypatch):
 
 
 def test_reanchor_flag_default_pinned():
-    """The measured adoption fact (17d-1 A/B, 2026-11-11): REJECTED
+    """The measured adoption fact: REJECTED
     standalone — all 8 contract legs failed; the stale-gauge
     decoupling between the moved keyframes and the unmoved points
     is LOAD-BEARING (it shields the live stream from harmful
     corrections). The machinery stays OFF pending the combination
-    (17d-2's corrected graph + the BA acceptance gate, then the
+    (a corrected graph + the BA acceptance gate, then the
     re-anchor re-tried as one unit)."""
     assert lc.LOOP_POINT_REANCHOR_ENABLED == 0

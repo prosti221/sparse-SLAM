@@ -21,11 +21,10 @@ class Frame:
         self.H, self.W = image.shape[:2]
 
         self.K = K
-        # Phase 2j-3: one simple-radial distortion parameter, kept
-        # PER FRAME next to K (the 2j-4 refit updates both and
-        # propagates). 0.0 is the default and the LITERAL identity
-        # path everywhere it is read: the default pipeline is
-        # bit-identical to the pre-2j pipeline.
+        # One simple-radial distortion parameter, kept PER FRAME next
+        # to K (the refit updates both and propagates). 0.0 is the
+        # default and the LITERAL identity path everywhere it is
+        # read.
         self.k1 = float(k1)
 
         self.keypoints = None
@@ -73,9 +72,6 @@ class Frame:
                 LOG_TAG, f"Error getting color for keypoint {keypoint_idx}: {str(e)}")
             return DEFAULT_COLOR
 
-    def get_point_observation(self, point_id: UUID) -> Observation:
-        return self.observed_points.get(point_id, None)
-
     def get_point_by_keypoint(self, keypoint_idx):
         return self.keypoint_to_point_map.get(keypoint_idx, None)
 
@@ -87,8 +83,7 @@ class Frame:
         self.descriptors = descriptors
         if len(keypoints) > 0:
             self.kp_pts = cv.KeyPoint.convert(keypoints)
-            # Phase 2j-3: k1 == 0 keeps the literal identity path
-            # (bit-identical to the pre-2j pipeline). k1 != 0
+            # k1 == 0 keeps the literal identity path. k1 != 0
             # undistorts at the normalization boundary - the ONLY
             # change the downstream needs: matching, triangulation,
             # PnP and the g2o BA all work in undistorted normalized
@@ -106,17 +101,6 @@ class Frame:
     def add_point_observation(self, observation: Observation) -> None:
         self.observed_points[observation.point_id] = observation
         self.keypoint_to_point_map[observation.keypoint] = observation.point
-
-    def remove_point_observation(self, point_id: UUID) -> None:
-        if point_id in self.observed_points:
-            # Finding 17's latent bug: this probed keypoint_to_point_map
-            # with the int kp_idx, but the map keys are KeyPoint OBJECTS
-            # (see add_point_observation) - the cleanup never removed
-            # anything. Key by the observation's keypoint object.
-            keypoint = self.observed_points[point_id].keypoint
-            del self.observed_points[point_id]
-            if keypoint in self.keypoint_to_point_map:
-                del self.keypoint_to_point_map[keypoint]
 
     def world_to_camera(self, point_3d: np.ndarray) -> np.ndarray:
         # Convert to homogeneous coordinates
@@ -145,7 +129,7 @@ class Frame:
         if normalized:
             return np.array([x, y])
 
-        # Pixel coordinates (u, v). Phase 2j-3: with k1 != 0 the pixel
+        # Pixel coordinates (u, v). With k1 != 0 the pixel
         # prediction applies the simple-radial forward model - the 1px
         # triangulation gate compares in PIXEL space (the Q2 record),
         # and every other pixel-domain consumer must see the same
@@ -192,7 +176,7 @@ class Frame:
             if normalized:
                 result[valid_mask] = np.column_stack([x_norm, y_norm])
             else:
-                # Phase 2j-3: pixel mode applies the simple-radial
+                # Pixel mode applies the simple-radial
                 # forward model (same as project_point; see the note
                 # there). k1 == 0 is the literal pinhole path.
                 if self.k1 != 0.0:
@@ -261,7 +245,7 @@ class Frame:
         if self.Kinv is None:
             raise ValueError("Camera intrinsic matrix Kinv is not set.")
 
-        # Phase 2j-3: k1 != 0 undistorts at this boundary too (the
+        # k1 != 0 undistorts at this boundary too (the
         # same convention as set_features); k1 == 0 is the literal
         # legacy path.
         if self.k1 != 0.0:
@@ -298,12 +282,6 @@ class Frame:
         # world coordinates IS the translation component: Twc @ origin = t.
         # (-R^T t would be the camera center of a world-to-camera pose.)
         return self._pose[:3, 3]
-
-    @property
-    def projection_matrix(self):
-        world_to_cam = self._pose_inv
-
-        return self.K @ world_to_cam[:3, :]
 
     @property
     def observed_points_list(self):

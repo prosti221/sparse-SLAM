@@ -1,4 +1,4 @@
-"""Phase 6b: tracker call-site outcomes and input ownership contracts."""
+"""Tracker call-site outcomes and input ownership contracts."""
 import numpy as np
 import pytest
 
@@ -140,7 +140,7 @@ def test_pnp_count_and_log_describe_inputs_not_a_robust_inlier_set(monkeypatch):
     assert not any("inliers" in message for message in logs)
 
 
-# --- Phase 8-2: focal-normalized projection-matching radius -------------
+# --- focal-normalized projection-matching radius -------------
 
 def _projection_tracker(fx):
     """A tracker whose cur_frame carries the given focal (K at the
@@ -164,7 +164,7 @@ def _binary_descriptor(fill):
     (1449.6, 12.0, True),      # well inside the resolved radius
 ])
 def test_projection_match_radius_resolves_from_the_live_focal(fx, offset_px, matched):
-    """Phase 8-2: the search radius is angular (0.55 deg), resolved per
+    """The search radius is angular (0.55 deg), resolved per
     call from the live focal. The measured-provenance contract (finding
     32): every benchmark focal (450 / 517.3) resolves BELOW the
     historical 5 px floor and stays at exactly 5 px - the frozen battery
@@ -184,7 +184,7 @@ def test_projection_match_radius_resolves_from_the_live_focal(fx, offset_px, mat
 
 
 def test_projection_match_still_requires_descriptor_agreement_at_wide_radius():
-    """Phase 8-2: the radius only widens the SEARCH. Acceptance still
+    """The radius only widens the SEARCH. Acceptance still
     requires the <20 Hamming gate (random-pair distance ~128 for ORB),
     so the wide radius cannot admit accidental keypoint collisions."""
     tracker, frame = _projection_tracker(1449.6)
@@ -195,7 +195,7 @@ def test_projection_match_still_requires_descriptor_agreement_at_wide_radius():
 
 
 def test_projection_match_explicit_radius_override_still_honored():
-    """Phase 8-2: an explicit dist_thresh (the probe/diagnostic path)
+    """An explicit dist_thresh (the probe/diagnostic path)
     overrides the focal resolution unchanged."""
     tracker, frame = _projection_tracker(1449.6)
     set_keypoints(frame, [(36.0, 30.0)], np.zeros((1, 32), dtype=np.uint8))

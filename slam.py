@@ -1,4 +1,5 @@
 import cv2 as cv
+import numpy as np
 
 from slam.calibration import IntrinsicsEstimate
 from slam.config.config_parser import ConfigParser
@@ -23,7 +24,7 @@ if __name__ == "__main__":
     ENABLE_MULTISCALE = config.get_global_config_property("enable_multiscale_features")
     ENABLE_BA = config.get_global_config_property("enable_ba")
 
-    # Phase 8-1: load_video also returns the config's k1 (0.0 when
+    # load_video also returns the config's k1 (0.0 when
     # absent - the literal identity path). The auto branch returns 0.0;
     # the prior carries GeoCalib's own k1 there.
     cap, K, k1 = load_video(config)
@@ -32,7 +33,7 @@ if __name__ == "__main__":
         int(cap.get(cv.CAP_PROP_FRAME_HEIGHT)),
     )
 
-    # Phase 2j-2: 'fx: auto' - GeoCalib shared-intrinsics estimation
+    # 'fx: auto' - GeoCalib shared-intrinsics estimation
     # from the first ~CALIB_INIT_SECONDS of video (ViPE-style). The
     # buffered frames were consumed from the capture and are replayed
     # into the loop below; the prior (with its uncertainties) feeds the
@@ -47,7 +48,7 @@ if __name__ == "__main__":
                  f"Auto-calibrated intrinsics: {intrinsics_prior}")
 
     global_map = Map()
-    # Phase 2j-2/2j-4: the live intrinsics estimate. From the GeoCalib
+    # The live intrinsics estimate. From the GeoCalib
     # prior when 'fx: auto' ran; otherwise from the provided K (a
     # static estimate unless the refit is enabled). The frame loop
     # reads it every frame.
@@ -57,13 +58,13 @@ if __name__ == "__main__":
     else:
         global_map.intrinsics = IntrinsicsEstimate.from_K(
             K, k1=k1, source="config")
-    # Phase 8-4: the capture's fps, for the TIME normalization of the
+    # The capture's fps, for the TIME normalization of the
     # frame-count cadence constants (recovery window, rotation-gap
     # floor, forced-insert backstop). 30.0 is the identity anchor;
     # cap.get returns 0.0 when the container reports none.
     container_fps = cap.get(cv.CAP_PROP_FPS) or 30.0
     global_map.video_fps = container_fps
-    # Phase 8-5: displacement-gated frame intake (finding 33): feed
+    # Displacement-gated frame intake: feed
     # only frames that carry measurable motion signal, so the pose
     # chain never noise-fits on sub-pixel displacement. Default ON;
     # 'enable_adaptive_frame_intake: false' in the config disables it
@@ -77,7 +78,7 @@ if __name__ == "__main__":
 
     tracker = Tracker(global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
 
-    # Phase 13 (finding 37): the rotation-dominant pair-pose gate is
+    # The rotation-dominant pair-pose gate is
     # VIDEO-PATH scoped and - the measured part - tied to the INTAKE
     # GATE's cadence: the t-coherence signal only exists when fed
     # pairs carry >= FRAME_INTAKE_MIN_DISPLACEMENT_PX of matched-
@@ -118,7 +119,7 @@ if __name__ == "__main__":
             continue  # Skip SLAM updates
 
         if init_frames:
-            # Phase 2j-2: replay the auto-calibration init batch
+            # Replay the auto-calibration init batch
             # (consumed from the capture by estimate_video_intrinsics).
             img = init_frames.pop(0)
         else:
@@ -132,10 +133,10 @@ if __name__ == "__main__":
                 continue
 
         if intake_gate is not None:
-            # Phase 8-5: the gate decides which decoded frames carry
+            # The gate decides which decoded frames carry
             # motion signal. Skipped frames never reach the tracker;
             # the renderer/pause loop above keeps running (the
-            # `continue` re-enters it). The phase 8-4 cadence
+            # `continue` re-enters it). The cadence
             # constants deliberately KEEP the container's time base:
             # video_fps describes physical time, and the recovery
             # window's health is a COUNT of consecutive quality-

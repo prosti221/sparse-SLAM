@@ -1,6 +1,6 @@
 import uuid
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import List, Dict
 from uuid import UUID
 from slam.utils.constants import MAX_POINT_AVG_REPROJECTION_ERROR
 from slam.core.observation import Observation
@@ -27,18 +27,13 @@ class Point:
     def remove_observation(self, frame_id: UUID):
         if frame_id in self.observations:
             del self.observations[frame_id]
-            # NOTE (finding 16): this used to re-assign
-            # self.num_observations here - an AttributeError, since
             # num_observations is a setter-less property that computes
-            # len(self.observations) live. The assignment is simply
-            # gone; the property reads through.
+            # len(self.observations) live - nothing to re-assign here;
+            # the property reads through.
         self._update_observing_keyframe_quality()
 
     def is_observed_by(self, frame_id: UUID) -> bool:
         return frame_id in self.observations
-
-    def get_observation_in_keyframe(self, frame_id: UUID) -> Observation:
-        return self.observations.get(frame_id, None)
 
     def update_reprojection_error(self, error: float,
                                   update_quality: bool = True) -> None:
@@ -47,7 +42,7 @@ class Point:
                 self.average_reprojection_error *
                 (self.num_observations - 1) + error
             ) / self.num_observations
-        # Phase 2i (P1): the BA error-fold recomputes every point's
+        # The BA error-fold recomputes every point's
         # errors back-to-back, and flagging ALL observers on EVERY fold
         # step was quadratic in a point's observation count (~780k
         # idempotent attribute-sets per BA call on translation, whose
@@ -70,9 +65,8 @@ class Point:
 
     @property
     def is_good(self) -> bool:
-        # The point-health path's OWN threshold (phase 5c split; the
-        # unit-mixture caveat is recorded in the 2i Q2 record until 5e
-        # re-designs this path).
+        # The point-health path's OWN threshold (deliberately
+        # separate from the creation gate's; see the constants note).
         return self.average_reprojection_error < MAX_POINT_AVG_REPROJECTION_ERROR
 
     @property

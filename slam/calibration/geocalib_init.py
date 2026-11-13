@@ -1,4 +1,4 @@
-"""GeoCalib intrinsics initializer (phase 2j-2).
+"""GeoCalib intrinsics initializer.
 
 Estimates shared camera intrinsics from a batch of frames of ONE
 camera, using GeoCalib's multi-image mode (cvg/GeoCalib, ECCV 2024):
@@ -17,9 +17,10 @@ of frames and calibrate them together (estimate_video_intrinsics) -
 the caller must then replay the buffered frames into the SLAM loop
 (they have been consumed from the capture).
 
-The geocalib dependency is the OPTIONAL 'calib' extra (torch is
-already a core dependency of this repo); the import is lazy and
-failure gives a clear install instruction. The 2j-5 recovery tests on
+The geocalib dependency is the OPTIONAL 'calib' extra (it declares
+torch itself since torch left the core deps); the
+import is lazy and failure gives a clear install instruction. The
+recovery tests on
 synthetic data deliberately do NOT use this initializer (GeoCalib's
 learned priors are natural-image statistics; on the generator's
 speckle textures it is +113% off on f while reporting sigma ~5% -

@@ -1,10 +1,10 @@
-"""Stage test: phase 2j calibration arc.
+"""Stage test: the calibration arc.
 
 Homes the pins for the calibration items as they land:
-- 2j-0: the FOCAL_SCALE diagnostic (harness-side focal perturbation for
+- the FOCAL_SCALE diagnostic (harness-side focal perturbation for
   pain measurement and recovery validation)
-- 2j-1: the calib_motion sequences + the generator's k1 render path
-- 2j-2/3/4 (later): the GeoCalib initializer wrapper, the distortion
+- the calib_motion sequences + the generator's k1 render path
+- the GeoCalib initializer wrapper, the distortion
   boundaries (k1 == 0 keeps the literal identity path), and the
   intrinsics refit.
 
@@ -155,7 +155,7 @@ def test_calib_k1_sequence_shares_trajectory_differs_frames(calib_seq,
         assert (seq / "calibration.txt").read_text().strip().split()[:4] == \
             [str(FX), str(FY), str(CX), str(CY)]
 
-    # Phase 2j-3: the k1 variant's file additionally carries the true
+    # The k1 variant's file additionally carries the true
     # k1 as the 5th token (the generator writes it only when nonzero).
     assert (calib_k1_seq / "calibration.txt").read_text().strip().split()[4] \
         == "-0.06"
@@ -351,9 +351,9 @@ class _FakeConfig:
 
 
 def test_load_video_auto_signaling(tmp_path):
-    """2j-2: 'fx: auto' (or an absent fx) signals auto-calibration by
+    """'fx: auto' (or an absent fx) signals auto-calibration by
     returning K=None - slam.py then runs estimate_video_intrinsics.
-    A numeric fx keeps today's behavior exactly. Phase 8-1: load_video
+    A numeric fx keeps today's behavior exactly. load_video
     returns a THIRD value, the config's k1 (0.0 when absent); the auto
     branch returns 0.0 because GeoCalib supplies its own k1 through
     the prior."""
@@ -382,7 +382,7 @@ def test_load_video_auto_signaling(tmp_path):
 
 
 def test_load_video_returns_configured_k1(tmp_path):
-    """Phase 8-1: an explicit k1 flows out of load_video unchanged (the
+    """An explicit k1 flows out of load_video unchanged (the
     float cast accepts yaml ints/strings); an explicit k1 is IGNORED on
     the auto branch by design (GeoCalib supplies its own)."""
     video = _write_tiny_video(tmp_path / "tiny.avi")
@@ -523,7 +523,7 @@ def _refit_fixture(f_true=450.0, k1_true=-0.05, n_kf=12, n_pts=150):
     (f, k1) beat the truth, and far-field keypoints past the
     simple-radial inversion horizon blew up the solve - both caught by
     the recovery pin). Observations live in BOTH registries as the
-    same object (finding-17 semantics)."""
+    same object (the registry-consistency semantics)."""
     K = np.array([[f_true, 0.0, 320.0],
                   [0.0, f_true, 240.0],
                   [0.0, 0.0, 1.0]])
@@ -773,7 +773,7 @@ def test_kept_incumbent_preserves_unequal_focals():
 
 
 def test_refit_locked_is_noop():
-    """2j-4: with the gate locked (fewer keyframes than the floor), the
+    """With the gate locked (fewer keyframes than the floor), the
     hook changes NOTHING - the estimate, its values, and the phase are
     untouched. This is the property that makes the negative controls
     (orbit/translation/fr with the module ON) bit-identical to module

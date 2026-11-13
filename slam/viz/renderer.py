@@ -8,8 +8,7 @@ import numpy as np
 import open3d as o3d
 
 from slam.core.map import Map
-from slam.utils.constants import TRACKING_QUALITY_GRADIENT
-from slam.utils.logger import debug_log, error_log, info_log, warning_log
+from slam.utils.logger import debug_log, error_log, info_log
 from slam.utils.utils import pt_obj_to_array
 
 LOG_TAG = 'Renderer'
@@ -474,15 +473,6 @@ class Renderer:
             debug_log(
                 LOG_TAG, f"Removed {len(poses_to_remove)} pose geometries")
 
-    def remove_pose_by_id(self, keyframe_id):
-        if keyframe_id in self.poses:
-            debug_log(
-                LOG_TAG, f"Manually removing pose geometry for frame {keyframe_id}")
-            pose_geometry = self.poses[keyframe_id][0]
-
-            # Remove from visualizer
-            self.vis.remove_geometry(pose_geometry, False)
-
     # ======= Utility methods used for output data management =======
     def start_recording_session(self, filename=None):
         if filename:
@@ -519,24 +509,6 @@ class Renderer:
 
         info_log(
             LOG_TAG, f"Session saved: {json_filename}, {ply_filename}")
-
-    def get_recording_status(self):
-        return {
-            'recording': self.recording,
-            'filename': self.video_filename,
-            'frame_count': self.frame_count
-        }
-
-    def _toggle_recording(self):
-        if not self.recording:
-            self._start_recording()
-        else:
-            self._stop_recording()
-        return False
-
-    def _save_session(self):
-        self.save_session_data()
-        return False
 
     def _start_recording(self):
         self.recording = True

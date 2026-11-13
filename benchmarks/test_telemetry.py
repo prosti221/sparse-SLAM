@@ -5,9 +5,6 @@ instrumentation must be a pure observer - it cannot perturb pipeline
 numerics, it must actually cover the run, and its event counts (pipeline
 decisions) must be as deterministic as the poses themselves.
 """
-import numpy as np
-import pytest
-
 from slam.utils import telemetry
 from benchmarks.synthetic.generator import ensure_sequence
 from benchmarks.harness import run_slam

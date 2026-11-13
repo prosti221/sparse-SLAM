@@ -268,7 +268,7 @@ def test_partner_geometry_is_scale_invariant_inside_unchanged_depth_guards(scale
 
 
 def test_float_descriptor_matching_is_bf_rng_transparent_too(monkeypatch):
-    """Phase 23: the float branch is reached THROUGH the declared
+    """The float branch is reached THROUGH the declared
     seam now - descriptor_norm raises on unknown names, so the pin
     registers a float-descriptor extractor kind for the call (the
     seam's dict is read at call time; the pre-23 name-string list

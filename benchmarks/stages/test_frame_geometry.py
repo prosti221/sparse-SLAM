@@ -5,9 +5,8 @@ Frame's math. Codifies the Twc (camera-to-world) convention everywhere.
 """
 import numpy as np
 import pytest
-from scipy.spatial.transform import Rotation
 
-from benchmarks.stages.helpers import make_K, make_frame, se3, yaw_pose, project_gt
+from benchmarks.stages.helpers import make_K, make_frame, yaw_pose, project_gt
 from slam.utils.utils import compute_baseline_distance
 
 K = make_K()

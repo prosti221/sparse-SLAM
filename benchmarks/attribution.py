@@ -1,5 +1,5 @@
-"""Phase 15: health x accuracy ATTRIBUTION (pre-registered before any
-ladder data was seen, like the phase-14 classifiers).
+"""Health x accuracy ATTRIBUTION (pre-registered before any
+ladder data was seen).
 
 The unique insight the GT ladder adds: per-window, the GT error joins
 the health stream, so "the system fell apart" becomes "MECHANISM X

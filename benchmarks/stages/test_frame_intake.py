@@ -1,4 +1,4 @@
-"""Stage tests: phase 8-5 displacement-gated frame intake.
+"""Stage tests: displacement-gated frame intake.
 
 Pure gate tests - no SLAM run. The gate (slam/core/intake.py) decides
 which decoded VIDEO frames reach the tracker: feed when the median
@@ -43,11 +43,11 @@ def test_constants_pin_the_measured_band():
     time; the match floor is the minimum sample for a displacement
     MEDIAN (below it the gate cannot measure and must not skip).
     The displacement threshold is USER-DECIDED by measurement, and
-    the pin tracks the configured value (the 8-5 record's contract):
-    2.0 = the adopted healthy edge (finding 33: kyoto_original 0.0 px
+    the pin tracks the configured value:
+    2.0 = the adopted healthy edge (kyoto_original 0.0 px
     median at 60 fps -> 6 resets in 30 s; 2.4 px -> 0 resets), 8.0 =
     the user's 2-fps-cadence adjustment, 4.0 = the user's conclusion
-    of the 8->2->4 sweep (2026-11-12; finding 37's kyoto_2_5 pan
+    of the 8->2->4 sweep (the kyoto_2_5 pan
     sweep is the mid-point evidence)."""
     assert const.FRAME_INTAKE_MIN_DISPLACEMENT_PX == 4.0
     assert const.FRAME_INTAKE_MAX_GAP_S == 1.0
@@ -161,8 +161,8 @@ def test_low_fps_container_keeps_a_three_frame_heartbeat(recorder):
 
 
 def test_effective_fps_tracks_the_fed_ratio():
-    """DIAGNOSTIC ONLY (the 8-5 A/B): the fed/decoded ratio is
-    recorded for measurement, but the phase 8-4 cadence constants
+    """DIAGNOSTIC ONLY (the A/B): the fed/decoded ratio is
+    recorded for measurement, but the cadence constants
     deliberately keep the CONTAINER fps - declaring the fed cadence
     collapses the recovery window (10 -> 5 consecutive quality-
     failing fed frames) and re-arms salem's reset spiral (measured:
