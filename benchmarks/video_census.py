@@ -262,8 +262,12 @@ def main():
                     metavar="FILE.mp4",
                     help="subset of videos/ filenames (default: all)")
     ap.add_argument("--overwrite", action="store_true",
-                    help="re-run videos whose output exists (explicit, "
-                         "never silent)")
+                    help="redo legs whose outputs exist")
+    ap.add_argument("--tag", default=None,
+                    help="suffix for the output filenames "
+                         "(<stem>_<tag>.json) - keeps verification/A-B "
+                         "legs from colliding with existing evidence "
+                         "(the skip-if-exists guard stays intact)")
     args = ap.parse_args()
 
     config = ConfigParser(str(CONFIG_PATH))
@@ -277,7 +281,8 @@ def main():
         videos = args.videos
 
     for name in videos:
-        out = OUT_DIR / (Path(name).stem + ".json")
+        out = OUT_DIR / (Path(name).stem + (f"_{args.tag}" if args.tag
+                                            else "") + ".json")
         if out.exists() and not args.overwrite:
             print(f"[census] {name}: output exists, skipping "
                   f"(resume; --overwrite to redo)", flush=True)
