@@ -10,7 +10,7 @@ from slam.utils.constants import *
 from slam.utils import constants as const
 from slam.utils import telemetry
 from uuid import UUID
-from typing import List, Optional, Tuple, List, Dict
+from typing import List, Tuple
 import cv2 as cv
 
 LOG_TAG = 'g2oBA'
@@ -995,22 +995,3 @@ class G2OBundleAdjustment:
                     error, update_quality=False)
                 flushed_updated = True
         _flush_flags()
-
-    def _extract_camera_params(self):
-        if self.map.cur_keyframe is None or not hasattr(self.map.cur_keyframe, 'K'):
-            raise ValueError(
-                "Current keyframe or camera matrix K not available")
-
-        K = self.map.cur_keyframe.K
-        fx = K[0, 0]
-        fy = K[1, 1]
-        cx = K[0, 2]
-        cy = K[1, 2]
-
-        return {
-            'fx': fx,
-            'fy': fy,
-            'cx': cx,
-            'cy': cy,
-            'K': K
-        }

@@ -1,5 +1,4 @@
 from collections import defaultdict
-from itertools import dropwhile, islice
 from typing import List, Tuple, Set
 from uuid import UUID
 import numpy as np
@@ -307,24 +306,6 @@ class Map:
 
         return True
 
-    def _compute_covisibility_score(self, kf1: Frame, kf2: Frame) -> int:
-        cache_key = (kf1.frame_id, kf2.frame_id)
-
-        if cache_key in self._covisibility_score_cache:
-            debug_log(LOG_TAG, f"Cache hit for covisibility score!")
-            return self._covisibility_score_cache[cache_key]
-
-        # Use the precomputed count from the covisibility graph
-        shared_count = self.covisibility_graph[kf1.frame_id].get(
-            kf2.frame_id, 0)
-
-        # Cache the result
-        self._covisibility_score_cache[cache_key] = shared_count
-        self._covisibility_score_cache[(
-            kf2.frame_id, kf1.frame_id)] = shared_count
-
-        return shared_count
-
     def should_perform_global_bundle_adjustment(self, interval: int) -> bool:
         # Phase 2a (finding 13): interval-triggered global BA is DISABLED
         # (interval <= 0). Measured A/B across all four sequences (seed 42,
@@ -342,9 +323,6 @@ class Map:
 
     def get_keyframe_by_id(self, frame_id: UUID) -> Frame:
         return self.keyframes_by_id.get(frame_id, None)
-
-    def get_point_by_id(self, point_id: UUID) -> Point:
-        return self.points_by_id.get(point_id, None)
 
     def update_tracking_quality(self):
         self.tracking_quality_history = {
@@ -451,32 +429,6 @@ class Map:
 
     def detect_loop_closures(self, current_frame: Frame) -> List['LoopClosureCandidate']:
         return self.loop_detector.detect_potential_loops(current_frame)
-
-    def get_covisibility_keyframes(self, keyframe_id: UUID, min_shared_points: int = 15) -> List[Frame]:
-        if keyframe_id not in self.covisibility_graph:
-            return []
-
-        covisible_kfs = []
-        for kf_id, shared_count in self.covisibility_graph[keyframe_id].items():
-            if shared_count >= min_shared_points and kf_id in self.keyframes_by_id:
-                covisible_kfs.append(
-                    (self.keyframes_by_id[kf_id], shared_count))
-
-        # Sort by shared points count (descending)
-        covisible_kfs.sort(key=lambda x: x[1], reverse=True)
-        return [kf for kf, _ in covisible_kfs]
-
-    def cleanup_covisibility_cache(self):
-        self._covisibility_score_cache.clear()
-        debug_log(LOG_TAG, "Cleaned up covisibility score cache")
-
-    def remove_keyframe_by_index(self, idx: int) -> bool:
-        if idx < 0 or idx >= len(self.keyframes):
-            error_log(LOG_TAG, f"Index {idx} out of range for keyframes list")
-            return False
-
-        keyframe = self.keyframes[idx]
-        return self._remove_keyframe(keyframe, idx)
 
     def remove_keyframe_by_id(self, keyframe_id: UUID) -> bool:
         if keyframe_id not in self.keyframes_by_id:

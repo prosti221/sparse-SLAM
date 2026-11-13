@@ -7,7 +7,6 @@ Phase 8-4 pins: the rotation-cadence floor is TIME-normalized by the
 video fps (identity at the 30 fps calibration anchor).
 """
 import numpy as np
-import pytest
 
 from benchmarks.stages.helpers import make_K, make_frame, yaw_pose, set_keypoints
 from slam.utils.utils import scaled_frame_count, should_insert_keyframe

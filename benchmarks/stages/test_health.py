@@ -15,7 +15,6 @@ These hold:
   ATE 0.03 — Umeyama's center-alignment R cannot gauge rotation).
 """
 import numpy as np
-import pytest
 
 import benchmarks.health as health
 from benchmarks.attribution import _rotation_alignment, _rot_angle_deg

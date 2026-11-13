@@ -25,7 +25,6 @@ hold:
 """
 import cv2 as cv
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 
 import slam.core.tracker as tracker_mod

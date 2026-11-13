@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from slam.core.map import Map
 from slam.utils import constants as const
 from slam.utils import telemetry
-from slam.utils.logger import debug_log, warning_log, error_log
+from slam.utils.logger import debug_log, warning_log
 from slam.utils.utils import extractRtFromE
 
 LOG_TAG = 'LoopClosure'
@@ -239,26 +239,6 @@ class KeyframeFeatureDatabase:
         except Exception as e:
             warning_log(LOG_TAG, f"Error computing similarity: {e}")
             return 0.0
-
-    def cleanup_old_features(self, keep_recent: int = 100):
-        """Remove features from old keyframes to save memory.
-
-        DEAD CODE, deliberately never called (the phase-3 survey): it
-        would erase exactly the early-keyframe features loop closure
-        needs for revisit recall on long sequences (tum's 255 KFs).
-        Memory is bounded by the 2h culling path instead (culled
-        keyframes remove their DB entries). Kept only as the API
-        marker; do not wire it into the pipeline without re-deriving
-        what "too old to close a loop" means.
-        """
-        if len(self.keyframe_order) <= keep_recent:
-            return
-
-        # Remove oldest keyframes beyond the keep limit
-        to_remove = self.keyframe_order[:-keep_recent]
-        for kf_id in to_remove:
-            if kf_id in self.feature_storage:
-                del self.feature_storage[kf_id]
 
         self.keyframe_order = self.keyframe_order[-keep_recent:]
         debug_log(

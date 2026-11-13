@@ -18,7 +18,6 @@ gives it a consistent initialization):
 """
 import cv2 as cv
 import numpy as np
-import pytest
 
 import slam.loop_closure as lc
 from benchmarks.stages.helpers import make_frame, yaw_pose

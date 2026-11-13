@@ -612,25 +612,3 @@ def should_insert_keyframe(cur_frame, prev_keyframe,
         return True, "Quality criteria met"
     else:
         return False, "; ".join(reasons)
-
-
-def visualize_matches(frame1, frame2, matches=None, save_path=None):
-    if matches is None:
-        matches = frame1.matches
-    if matches is None or len(matches) == 0:
-        return
-
-    img1 = frame1.image
-    img2 = frame2.image
-    kp1 = frame1.keypoints
-    kp2 = frame2.keypoints
-
-    img_matches = cv.drawMatches(
-        img1, kp1, img2, kp2, matches, None, flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-
-    if save_path:
-        cv.imwrite(save_path, img_matches)
-    else:
-        cv.imshow('Matches', img_matches)
-        cv.waitKey(0)
-        cv.destroyAllWindows()

@@ -16,7 +16,6 @@ Regressions for pose-refinement, anchoring and graph-cache bugs:
   graph, without disabling ordinary local graph reuse (phase 5e-0).
 """
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 
 from benchmarks.stages.helpers import make_K, make_frame, se3, yaw_pose, project_gt, set_keypoints, make_world_points

@@ -29,7 +29,6 @@ import inspect
 from contextlib import contextmanager
 
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 
 from benchmarks.stages.helpers import (make_K, make_frame,

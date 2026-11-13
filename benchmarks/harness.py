@@ -8,7 +8,7 @@ against ground truth.
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import cv2 as cv
 import numpy as np

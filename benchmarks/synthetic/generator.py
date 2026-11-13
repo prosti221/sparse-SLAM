@@ -15,7 +15,7 @@ Output layout (per sequence, under <repo>/data/synthetic/<name>/):
 """
 import json
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import List, Tuple
 
 import cv2 as cv
 import numpy as np

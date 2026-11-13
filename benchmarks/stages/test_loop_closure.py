@@ -16,8 +16,6 @@ pipeline is untouched by this item (the tracker hook stays disabled).
 """
 import cv2 as cv
 import numpy as np
-import pytest
-from types import SimpleNamespace
 
 import slam.utils.constants as const
 from benchmarks.stages.helpers import make_frame, project_gt, yaw_pose

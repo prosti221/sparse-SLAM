@@ -1,6 +1,6 @@
 import uuid
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import List, Dict
 from uuid import UUID
 from slam.utils.constants import MAX_POINT_AVG_REPROJECTION_ERROR
 from slam.core.observation import Observation
@@ -36,9 +36,6 @@ class Point:
 
     def is_observed_by(self, frame_id: UUID) -> bool:
         return frame_id in self.observations
-
-    def get_observation_in_keyframe(self, frame_id: UUID) -> Observation:
-        return self.observations.get(frame_id, None)
 
     def update_reprojection_error(self, error: float,
                                   update_quality: bool = True) -> None:

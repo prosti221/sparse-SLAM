@@ -3,7 +3,7 @@ import numpy as np
 from typing import List, Tuple, Optional, Dict
 from slam.utils.utils import *
 from slam.utils.constants import *
-from slam.utils.logger import debug_log, error_log, warning_log
+from slam.utils.logger import debug_log, warning_log
 from slam.utils import telemetry
 from slam.core.frame import Frame
 
@@ -77,23 +77,6 @@ def descriptor_norm(feature_extraction_method: str) -> int:
     return cv.NORM_HAMMING if kind == 'binary' else cv.NORM_L2
 
 
-def _get_or_create_matcher(feature_extraction_method: str) -> cv.DescriptorMatcher:
-    cache_key = feature_extraction_method
-    if cache_key in _matcher_cache:
-        return _matcher_cache[cache_key]
-
-    # Phase 23: the FLANN branch died with SuperPoint. Every
-    # extractor now matches with brute-force knn - deterministic, and
-    # the triangulation-partner tool depends on that property.
-    matcher = cv.BFMatcher(
-        descriptor_norm(feature_extraction_method), crossCheck=False)
-
-    _matcher_cache[cache_key] = matcher
-    debug_log(
-        LOG_TAG, f"Created and cached matcher for {feature_extraction_method}")
-    return matcher
-
-
 def estimate_essential_matrix(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
     E, mask = cv.findEssentialMat(
         pts_f1_norm, pts_f2_norm,
@@ -106,40 +89,20 @@ def estimate_essential_matrix(pts_f1_norm: np.ndarray, pts_f2_norm: np.ndarray) 
     return E, mask, inliers
 
 
-def evaluate_model_quality(mask: np.ndarray) -> float:
-    """Evaluate the quality of a geometric model"""
-    if mask is None or len(mask) == 0:
-        return 0.0
+def _get_or_create_matcher(feature_extraction_method: str) -> cv.DescriptorMatcher:
+    if feature_extraction_method in _matcher_cache:
+        return _matcher_cache[feature_extraction_method]
 
-    inlier_ratio = np.sum(mask) / len(mask)
-    inlier_count = np.sum(mask)
+    # Phase 23: the FLANN branch died with SuperPoint. Every
+    # extractor now matches with brute-force knn - deterministic, and
+    # the triangulation-partner tool depends on that property.
+    matcher = cv.BFMatcher(
+        descriptor_norm(feature_extraction_method), crossCheck=False)
 
-    # Weight by both inlier ratio and absolute count
-    quality_score = 0.7 * inlier_ratio + 0.3 * min(1.0, inlier_count / 100.0)
-
-    return quality_score
-
-
-def select_best_model(
-    pts_f1_norm: np.ndarray,
-    pts_f2_norm: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray, str]:
-    """Essential-matrix estimation with RANSAC + the quality score.
-
-    Phase 23: the homography alternative is REMOVED. It was disabled
-    in practice since its introduction (the early return made the
-    entire selection branch dead code - the "disabling model
-    selection until I figure out why the Homography is so shit for
-    planar scenes" question was never answered), and no measured
-    tier ever exercised it. The E-only policy is now the stated
-    contract instead of an accident of statement ordering.
-    """
-    E, E_mask, E_inliers = estimate_essential_matrix(pts_f1_norm, pts_f2_norm)
-    E_quality = evaluate_model_quality(E_mask)
-
+    _matcher_cache[feature_extraction_method] = matcher
     debug_log(
-        LOG_TAG, f"Essential Matrix - Inliers: {E_inliers}, Quality: {E_quality:.3f}")
-    return E, E_mask, "essential"
+        LOG_TAG, f"Created and cached matcher for {feature_extraction_method}")
+    return matcher
 
 
 def lowe_ratio_filter(matches) -> List[cv.DMatch]:
@@ -222,7 +185,10 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
     debug_log(
         LOG_TAG, f"Found {len(good_matches)} good matches from ratio test")
 
-    # Geometric filter: RANSAC on the essential matrix
+    # Geometric filter: RANSAC on the essential matrix. The E-only
+    # policy is the stated contract (phase 23: the homography
+    # alternative was disabled-in-practice dead code since its
+    # introduction - the selection machinery died with it).
     if len(good_matches) > MATCHER_RANSAC_MINIMUM_INLIERS:
         indices_f1 = [m.queryIdx for m in good_matches]
         indices_f2 = [m.trainIdx for m in good_matches]
@@ -230,8 +196,7 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         pts_f1_norm = frame1.kp_pts_norm[indices_f1]
         pts_f2_norm = frame2.kp_pts_norm[indices_f2]
 
-        E, mask, selected_model = select_best_model(
-            pts_f1_norm, pts_f2_norm)
+        E, mask, _ = estimate_essential_matrix(pts_f1_norm, pts_f2_norm)
 
         if E is None or mask is None or int(np.sum(mask)) < 5:
             # RANSAC could not estimate a usable model; no geometric pose.
@@ -260,7 +225,7 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
 
         debug_log(
             LOG_TAG,
-            f"Found {len(filtered_matches)} filtered matches using {selected_model} model, "
+            f"Found {len(filtered_matches)} filtered matches, "
             f"{len(filtered_matches) / len(good_matches) * 100:.2f}% inliers"
         )
         return filtered_matches, Rt

@@ -2,7 +2,7 @@ import numpy as np
 import cv2 as cv
 from scipy.spatial import cKDTree
 from collections import defaultdict
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from uuid import UUID
 
 from slam.core.point import Point
@@ -137,8 +137,7 @@ class Tracker:
         self.cur_frame = new_frame
 
         # Predict the initial pose estimate using constant velocity model (more stable)
-        self.cur_frame.pose = self._get_next_pose_estimate(
-            use_kinematic_model=True)
+        self.cur_frame.pose = self._get_next_pose_estimate()
 
         # Try to refine with feature matching if possible. The motion prior
         # for the essential-matrix disambiguation is the previous
@@ -314,14 +313,6 @@ class Tracker:
             return Rt
         return Rt_rot
 
-    def _initialize(self):
-        self.cur_frame.pose = self._get_next_pose_estimate()
-
-        self.map.add_keyframe(self.prev_frame)
-        self.map.add_keyframe(self.cur_frame)
-
-        self._on_keyframe_inserted()
-
     def _on_keyframe_inserted(self):
         with telemetry.stage("map_optimize"):
             self.map.optimize(self.enable_ba)
@@ -491,8 +482,8 @@ class Tracker:
         # (bit-identical battery), while long-focal videos get the
         # tolerance the pipeline was measured healthy at (0.55 deg -
         # see PROJECTION_MATCH_RADIUS_DEG's provenance). The descriptor
-        # gate below (<20 Hamming) remains the correspondence
-        # validator; the radius only widens the search.
+        # gate below (the per-kind reloc threshold) remains the
+        # correspondence validator; the radius only widens the search.
         if dist_thresh is None:
             fx = float(self.cur_frame.K[0, 0])
             dist_thresh = max(
@@ -686,17 +677,11 @@ class Tracker:
 
         return point
 
-    def _get_next_pose_estimate(self, use_kinematic_model=False):
-        if use_kinematic_model:
-            return self.prev_frame.pose @ self.velocity
-
-        Rt = match_features_between_frames(
-            self.cur_frame, self.prev_frame, self.feature_extraction_method)
-
-        if Rt is None:
-            return self.prev_frame.pose @ self.velocity
-
-        return self.prev_frame.pose @ Rt
+    def _get_next_pose_estimate(self):
+        # Constant-velocity prediction: Twc_prev @ (T_prev<-cur_prev).
+        # Kept as its own method - the recovery audit wraps it by name
+        # to record the predicted pose.
+        return self.prev_frame.pose @ self.velocity
 
     def _handle_loop_closure_detection(self):
         """Phase 3b/3c: the loop-closure hook at KEYFRAME cadence -
@@ -1135,7 +1120,6 @@ class Tracker:
         original_min_inliers = MATCHER_RANSAC_MINIMUM_INLIERS
 
         # Make matching more permissive
-        import slam.utils.constants as const
         const.MATCHER_RANSAC_THRESHOLD = 0.01
         const.MATCHER_RANSAC_MINIMUM_INLIERS = 5
 

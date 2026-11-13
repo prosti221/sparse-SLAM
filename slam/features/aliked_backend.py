@@ -41,9 +41,6 @@ import cv2 as cv
 import numpy as np
 
 from slam.utils import constants as const
-from slam.utils.logger import debug_log, warning_log
-
-LOG_TAG = 'ALIKED'
 
 _install_hint = ("the learned feature stack is the OPTIONAL 'learned' extra: "
                  "uv sync --extra learned (torch, torchvision, lightglue)")

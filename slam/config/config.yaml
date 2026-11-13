@@ -1,113 +1,69 @@
-const_tag: &DNN "DNN"
 const_tag: &ORB "ORB"
-const_tag: &AKAZE "AKAZE"
 
 # Global config properties
 global:
-  load_video: "greece"
+  load_video: "kyoto"
   feature_extractor: *ORB
   enable_multiscale_features: false
   enable_ba: true
   record_session: false 
   display_capture: true 
   enable_debug: true
-  enable_profiling: false # TODO: not yet implemented
+  enable_profiling: false
 
 # Camera intrinsics for individual videos
 videos:
+  salem:
+    path: ./videos/walking_salem.mp4
+  kyoto:
+    path: ./videos/kyoto_original.mp4
+    fx: 940.3
+    fy: 940.3
+    cx: 960.0
+    cy: 540.0
+    k1: -0.01590
+  kyoto_rotation:
+    path: ./videos/kyoto_2_5.mp4
+    fx: 940.3
+    fy: 940.3
+    cx: 960.0
+    cy: 540.0
+    k1: -0.01590
+  walking_woods_2:
+    path: ./videos/walking_woods_2_15.mp4
+    fx: 1269.8
+    fy: 1269.8
+    cx: 960.0
+    cy: 540.0
+    k1: -0.14552
+  walking_woods:
+    path: ./videos/walking_woods_1.mp4
+    fx: 1019.4
+    fy: 1019.4
+    cx: 960.0
+    cy: 540.0
+    k1: 0.00264
+  norway_driving:
+    path: ./videos/norway_driving.mp4
+    fx: 966.7
+    fy: 966.7
+    cx: 960.0
+    cy: 540.0
+    k1: -0.03546
   greece:
     path: ./videos/greece.mp4
-    fx: 324 #435
-  nyc_linear:
-    path: ./videos/nyc.mp4
-    fx: 663
-  nyc_turn:
-    path: ./videos/nyc2.mp4
-    fx: 663
+    fx: 1228.7
+    fy: 1228.7
+    cx: 960.0
+    cy: 540.0
+    k1: -0.12222
   road:
     path: ./videos/road.mp4
-    fx: 525
-  road_reverse:
-    path: ./videos/road_reverse.mp4
-    fx: 525
   drone:
     path: ./videos/drone.mp4
-    fx: 660
-  drone_reverse:
-    path: ./videos/drone_reverse.mp4
-    fx: 520
-  swiz:
-    path: ./videos/swiz.mp4
-    fx: 210
   desk:
     path: ./videos/vid3.mp4
     fx: 525
     fy: 525
     cx: 319.5
     cy: 239.5
-  desk_xyz:
-    path: ./videos/desk_xyz.mp4
-    fx: 525
-    fy: 525
-    cx: 319.5
-    cy: 239.5
-  desk_rotation:
-    path: ./videos/desk_rotation.mp4
-    fx: 525
-    fy: 525
-    cx: 319.5
-    cy: 239.5
-  kitti:
-    path: ./videos/calibrated/kitti.mp4
-    fx: 718.856
-    fy: 718.856
-    cx: 607.1928
-    cy: 185.2157
-  calibrated1:
-    path: ./videos/calibrated/calibrated1.mp4
-    fx: 457.587
-    fy: 456.134
-    cx: 379.999
-    cy: 255.238
-  calibrated3:
-    path: ./videos/calibrated/calibrated3.mp4
-    fx: 896.8715
-    fy: 896.8715
-  calibrated4:
-    path: ./videos/calibrated/calibrated4.mp4
-    fx: 896.8715
-    fy: 896.8715
-  calibrated5:
-    path: ./videos/calibrated/calibrated5.mp4
-    fx: 897.8715
-    fy: 897.8715
-  calibrated6:
-    path: ./videos/calibrated/calibrated6.mp4
-    fx: 896.8715
-    fy: 896.8715
-  calibrated7:
-    path: ./videos/calibrated/calibrated7.mp4
-    fx: 896.8715
-    fy: 896.8715
-  calibrated8:
-    path: ./videos/calibrated/calibrated8.mp4
-    fx: 896.8715
-    fy: 896.8715
-  calibrated9:
-    path: ./videos/calibrated/calibrated9.mp4
-    fx: 685.7207143511155
-    fy: 685.636463462675
-    cx: 631.3581379653094
-    cy: 512.418472292776
-  calibrated11:
-    path: ./videos/calibrated/calibrated11.mp4
-    fx: 685.7207143511155
-    fy: 685.636463462675
-    cx: 631.3581379653094
-    cy: 512.418472292776
-  synthetic:
-    path: ./videos/calibrated/synthetic.mp4
-    fx: 224.06641222710715
-    fy: 224.06641222710715
-    cx: 320.0
-    cy: 240.0
