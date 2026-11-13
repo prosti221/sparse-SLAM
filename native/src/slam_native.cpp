@@ -6,6 +6,7 @@
 
 #include "map_core.h"
 #include "error_fold.h"
+#include "ba_solver.h"
 
 namespace py = pybind11;
 
@@ -95,4 +96,29 @@ PYBIND11_MODULE(slam_native, m) {
            py::arg("poses_inv"), py::arg("obs_frame"), py::arg("point_pos"),
            py::arg("obs_norm"), py::arg("obs_point"), py::arg("point_avg"),
            py::arg("point_nobs"));
+
+  py::class_<slarnative::BASolveInputs>(m, "BASolveInputs")
+      .def(py::init([](slarnative::c_arr<double> T_wc,
+                       slarnative::c_arr<uint8_t> fixed,
+                       slarnative::c_arr<double> positions,
+                       uint8_t points_fixed,
+                       slarnative::c_arr<int64_t> obs_frame,
+                       slarnative::c_arr<int64_t> obs_point,
+                       slarnative::c_arr<double> obs_uv,
+                       int max_iterations) {
+             return slarnative::BASolveInputs{
+                 std::move(T_wc),      std::move(fixed),
+                 std::move(positions), points_fixed,
+                 std::move(obs_frame), std::move(obs_point),
+                 std::move(obs_uv),    max_iterations};
+           }),
+           py::arg("T_wc"), py::arg("fixed"), py::arg("positions"),
+           py::arg("points_fixed"), py::arg("obs_frame"),
+           py::arg("obs_point"), py::arg("obs_uv"),
+           py::arg("max_iterations"));
+
+  m.def("solve_se3_ba", &slarnative::solve_se3_ba, py::arg("in"),
+        "The C2b1 smoke solve: a fresh-build SE3 BA graph with the "
+        "vendored g2o, configured like the Python path. Returns "
+        "(T_cw, positions, iterations, chi2).");
 }
