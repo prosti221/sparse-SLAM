@@ -247,7 +247,7 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
         debug_log(
             LOG_TAG,
             f"Found {len(filtered_matches)} filtered matches using {selected_model} model, "
-            f"{len(filtered_matches) / len(matches) * 100:.2f}% inliers"
+            f"{len(filtered_matches) / len(good_matches) * 100:.2f}% inliers"
         )
         return filtered_matches, Rt
     else:
