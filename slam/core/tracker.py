@@ -559,6 +559,14 @@ class Tracker:
         # update order in _recompute_point_errors, fixed separately).
         nearby_lists = tree.query_ball_point(centers, r=dist_thresh)
 
+        # Phase 24: the accept threshold is per descriptor KIND - the
+        # old literal 20 was an ORB-Hamming pin (on unit-normalized
+        # float vectors the L2 max is 2.0, so it accepted everything).
+        # EXTRACTOR_RELOC_DESC_THRESHOLDS carries the kind->threshold
+        # map ('float' pinned by the [24a] reloc-threshold probe).
+        reloc_kind = EXTRACTOR_DESCRIPTOR_KINDS[self.feature_extraction_method]
+        reloc_thresh = const.EXTRACTOR_RELOC_DESC_THRESHOLDS[reloc_kind]
+
         for (mp, u_proj, v_proj), nearby_indices in zip(candidates, nearby_lists):
             best_idx = -1
             best_dist = float('inf')
@@ -574,7 +582,7 @@ class Tracker:
                     best_dist = desc_dist
                     best_idx = i
 
-            if best_idx != -1 and best_dist < 20:  # Stricter threshold for better matches
+            if best_idx != -1 and best_dist < reloc_thresh:
                 repro_error = np.linalg.norm(
                     kp_coords[best_idx] - np.array([u_proj, v_proj]))
 

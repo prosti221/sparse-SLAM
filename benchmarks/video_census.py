@@ -127,7 +127,8 @@ def intake_policy(config, override):
         "enable_adaptive_frame_intake", True))
 
 
-def run_one(config, video_path, frames_cap, seed):
+def run_one(config, video_path, frames_cap, seed,
+            feature_extractor_override=None):
     """One video through the production path; returns the result dict
     (the caller owns writing it)."""
     cap = cv.VideoCapture(str(video_path))
@@ -141,8 +142,9 @@ def run_one(config, video_path, frames_cap, seed):
         config, video_path.name, W, H)
     gate_on = intake_policy(config, intake_override)
 
-    feature_extractor = config.get_global_config_property(
-        "feature_extractor", "ORB")
+    feature_extractor = (feature_extractor_override
+                         or config.get_global_config_property(
+                             "feature_extractor", "ORB"))
     multiscale = bool(config.get_global_config_property(
         "enable_multiscale_features", False))
     enable_ba = bool(config.get_global_config_property("enable_ba", True))
@@ -261,6 +263,10 @@ def main():
     ap.add_argument("--videos", nargs="*", default=None,
                     metavar="FILE.mp4",
                     help="subset of videos/ filenames (default: all)")
+    ap.add_argument("--feature-extractor", default=None,
+                    help="override the config's feature_extractor for "
+                         "these legs (phase 24 A/B: 'ALIKED' runs the "
+                         "learned stack via the 'learned' extra)")
     ap.add_argument("--overwrite", action="store_true",
                     help="redo legs whose outputs exist")
     ap.add_argument("--tag", default=None,
@@ -289,7 +295,8 @@ def main():
             continue
         print(f"[census] running {name} (cap {args.frames}) ...",
               flush=True)
-        result = run_one(config, VIDEO_DIR / name, args.frames, args.seed)
+        result = run_one(config, VIDEO_DIR / name, args.frames, args.seed,
+                         args.feature_extractor)
         if args.overwrite and out.exists():
             out.unlink()
         out.write_text(json.dumps(result) + "\n")

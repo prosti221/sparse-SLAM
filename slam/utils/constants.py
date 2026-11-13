@@ -233,13 +233,49 @@ TRIANGULATION_VALIDATION_CODE.update(
 # Phase 23: AKAZE and SuperPoint ("DNN") are REMOVED - neither ever
 # won a measured adoption gate, and the only extractor every
 # benchmark tier constructs is ORB. The extension seam for the
-# planned learned extractors (ALIKED + LightGlue) is the
-# descriptor-kind map below: one entry per extractor name;
-# matcher.descriptor_norm() reads it to pick the cv norm. 'binary' =
-# Hamming (ORB's uint8 descriptors); 'float' = L2 (what a learned
-# dense-descriptor extractor will need).
+# learned extractors is the descriptor-kind map below: one entry per
+# extractor name; matcher.descriptor_norm() reads it to pick the cv
+# norm. 'binary' = Hamming (ORB's uint8 descriptors); 'float' = L2
+# (learned dense descriptors).
 ORB_EXTRACTOR_NAME = 'ORB'
-EXTRACTOR_DESCRIPTOR_KINDS = {ORB_EXTRACTOR_NAME: 'binary'}
+ALIKED_EXTRACTOR_NAME = 'ALIKED'
+EXTRACTOR_DESCRIPTOR_KINDS = {
+    ORB_EXTRACTOR_NAME: 'binary',
+    # Phase 24: the learned extractor (lightglue pkg's ALIKED) with
+    # 128-dim L2-normalized float descriptors, matched by LightGlue
+    # (not knn+Lowe) through matcher.match_pair_descriptors.
+    ALIKED_EXTRACTOR_NAME: 'float',
+}
+
+# Phase 24: the relocalization descriptor-matching threshold, per
+# descriptor KIND (tracker.py's old `best_dist < 20` was an
+# ORB-Hamming pin - on unit-normalized float vectors the L2 max is
+# 2.0, so "20" accepts everything). 'binary' 20 = the measured
+# ORB-era value, unchanged. 'float' is PROVISIONAL until the [24a]
+# reloc-threshold probe pins it (plan: the L2 value under which
+# >=99% of geometrically-verified same-point pairs fall, on 3 corpus
+# stems) - 0.75 is the literature placeholder (cos > ~0.7 on unit
+# vectors). Read at call time via the module alias (probe-pinnable).
+EXTRACTOR_RELOC_DESC_THRESHOLDS = {'binary': 20.0, 'float': 0.75}
+
+# Phase 24: ALIKED + LightGlue configuration (read at call time via
+# the module alias - probe-pinnable for the [24a] sweep). The model
+# variant and keypoint budget are PROBE-PENDING: the [24a] timing
+# budget adjudicates t16 vs n16 x 2048 vs 4096 on the desktop GPU
+# and the winning values land here (defaults below are the LightGlue
+# upstream defaults - n16/2048). detection_threshold/nms_radius/
+# resize are LightGlue's ALIKED defaults; the LightGlue matcher
+# confidences are its adaptive-depth/pruning defaults (CPU disables
+# pruning automatically; we pin fp32 - the fp16 pruning path has a
+# known upstream bug, cvg/LightGlue issue #186).
+ALIKED_MODEL_NAME = 'aliked-n16'
+ALIKED_MAX_NUM_KEYPOINTS = 2048
+ALIKED_DETECTION_THRESHOLD = 0.2
+ALIKED_NMS_RADIUS = 2
+ALIKED_RESIZE = 1024
+LIGHTGLUE_DEPTH_CONFIDENCE = 0.95
+LIGHTGLUE_WIDTH_CONFIDENCE = 0.99
+LIGHTGLUE_FILTER_THRESHOLD = 0.1
 
 ORB_NUMBER_OF_POINTS = 8000
 ORB_QUALITY_LEVEL = 0.01  # Quality level for feature detection

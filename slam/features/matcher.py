@@ -171,10 +171,28 @@ def lowe_ratio_filter(matches) -> List[cv.DMatch]:
     return good_matches
 
 
+def match_pair_descriptors(frame1: Frame, frame2: Frame,
+                           feature_extraction_method: str) -> List[cv.DMatch]:
+    """The per-extractor MATCH strategy seam (the [23d] insertion
+    point, landed in phase 24 with its second implementation).
+
+    Learned methods (float descriptors) -> LightGlue via
+    aliked_backend.match_aliked (index pairs + confidences -> the
+    DMatch contract). Everything else -> BF knnMatch + Lowe's ratio
+    filter, unchanged. Callers: match_features and
+    rotation_model_pose_between_frames - the rotation-dominant regime
+    matches pairs consistently with the E-chain.
+    """
+    if EXTRACTOR_DESCRIPTOR_KINDS[feature_extraction_method] == 'float':
+        from slam.features import aliked_backend
+        return aliked_backend.match_aliked(frame1, frame2)
+    matcher = _get_or_create_matcher(feature_extraction_method)
+    return lowe_ratio_filter(
+        matcher.knnMatch(frame1.descriptors, frame2.descriptors, k=2))
+
+
 def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
                    motion_prior: Optional[np.ndarray] = None) -> Tuple[List[cv.DMatch], Optional[np.ndarray]]:
-    matcher = _get_or_create_matcher(feature_extraction_method)
-
     f1_kp, f1_desc = frame1.get_keypoints_descriptors()
     f2_kp, f2_desc = frame2.get_keypoints_descriptors()
 
@@ -198,12 +216,8 @@ def match_features(frame1: Frame, frame2: Frame, feature_extraction_method: str,
                   "no matches possible")
         return [], None
 
-    matches = matcher.knnMatch(f1_desc, f2_desc, k=2)
-    # The planned ALIKED+LightGlue seam: a learned matcher would
-    # replace matcher.knnMatch + lowe_ratio_filter with per-pair
-    # confidences; everything downstream (the RANSAC E, extractRtFromE,
-    # set_match_data contract) is unchanged.
-    good_matches = lowe_ratio_filter(matches)
+    good_matches = match_pair_descriptors(frame1, frame2,
+                                          feature_extraction_method)
 
     debug_log(
         LOG_TAG, f"Found {len(good_matches)} good matches from ratio test")
@@ -323,9 +337,8 @@ def rotation_model_pose_between_frames(frame1: Frame, frame2: Frame,
         # rotation model has no basis either.
         return None
 
-    matcher = _get_or_create_matcher(feature_extraction_method)
-    matches = matcher.knnMatch(f1_desc, f2_desc, k=2)
-    good_matches = lowe_ratio_filter(matches)
+    good_matches = match_pair_descriptors(frame1, frame2,
+                                          feature_extraction_method)
     if len(good_matches) < ROTATION_MODEL_MIN_INLIERS:
         return None
 

@@ -176,8 +176,31 @@ def _build_orb(config: Dict):
     return merged, detector, multiscale, single
 
 
+def _build_aliked(config: Dict):
+    """Phase 24: the learned frontend. The models live in
+    aliked_backend (lazy torch/lightglue imports - the geocalib
+    pattern); the builder only wires the handlers. ALIKED handles
+    scale internally (the deformable detector is natively
+    multi-scale), so the multiscale/single handlers are the SAME
+    closure and enable_multiscale_features is a documented no-op -
+    the config still records it for the multiscale_info log line.
+    Detector = None: the backend owns the model singletons."""
+    merged = {**(config or {}),
+              'multiscale_enabled': True,  # internal to ALIKED
+              'pyramid_levels': 'internal'}
+
+    def extract_handler(img: np.ndarray) -> Tuple[List, np.ndarray]:
+        from slam.features import aliked_backend
+        kps, desc = aliked_backend.extract_aliked(img)
+        debug_log(LOG_TAG, f"Extracted {len(kps)} ALIKED features")
+        return kps, desc
+
+    return merged, None, extract_handler, extract_handler
+
+
 _EXTRACTOR_BUILDERS = {
     'ORB': _build_orb,
+    'ALIKED': _build_aliked,
 }
 
 

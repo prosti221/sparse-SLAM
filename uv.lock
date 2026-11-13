@@ -974,6 +974,19 @@ wheels = [
 ]
 
 [[package]]
+name = "lightglue"
+version = "0.0"
+source = { git = "https://github.com/cvg/LightGlue?rev=5a650c444718caffc2669dc0094cde908f42dd73#5a650c444718caffc2669dc0094cde908f42dd73" }
+dependencies = [
+    { name = "kornia" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "torch" },
+    { name = "torchvision" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2300,6 +2313,7 @@ calib = [
     { name = "torchvision" },
 ]
 learned = [
+    { name = "lightglue" },
     { name = "torch" },
     { name = "torchvision" },
 ]
@@ -2314,6 +2328,7 @@ requires-dist = [
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "g2o-python", specifier = ">=0.0.12" },
     { name = "geocalib", marker = "extra == 'calib'", git = "https://github.com/cvg/GeoCalib" },
+    { name = "lightglue", marker = "extra == 'learned'", git = "https://github.com/cvg/LightGlue?rev=5a650c444718caffc2669dc0094cde908f42dd73" },
     { name = "numpy", specifier = "<2" },
     { name = "open3d", specifier = ">=0.20.0" },
     { name = "opencv-python", specifier = ">=4,<5" },
