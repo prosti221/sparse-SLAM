@@ -62,7 +62,7 @@ def test_registry_declares_aliked_and_the_kind_map_routes_l2():
 
 def test_kind_map_rejects_unknown_names():
     """The seam declares, never silently defaults: an unregistered
-    name raises at the lookup (the phase-23 contract)."""
+    name raises at the lookup (the declared contract)."""
     with pytest.raises(KeyError):
         matcher_mod.descriptor_norm("SIFT")
 

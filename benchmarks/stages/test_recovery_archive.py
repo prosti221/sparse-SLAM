@@ -1,6 +1,6 @@
-"""Stage tests: phase 10 archive-and-re-anchor (reset without amnesia).
+"""Stage tests: archive-and-re-anchor (reset without amnesia).
 
-The 10a forced-reset probe measured what a reset destroys on this
+The forced-reset probe measured what a reset destroys on this
 codebase (a real mapped world - 4 KFs / 508 points in the controlled
 case, 52-236 KFs on natural video) and measured the re-anchor
 opportunity (600-1200 good descriptor matches per replay frame
@@ -16,8 +16,9 @@ keeps that world:
   pose IS the estimate; no unit-scale E-chain proposal exists);
 - the RE-ANCHOR: a verified pose rigidly moves the ENTIRE live map
   into the archive's world frame (invalidating the persistent BA
-  graph BEFORE the write - the 5e-0 discipline), preserving every
-  relative pose and the live map's internal scale;
+  graph BEFORE the write - external pose/point mutations must never
+  mix with the persistent graph's retained estimates), preserving
+  every relative pose and the live map's internal scale;
 - the SILENCE contract: no archive exists on any run that never
   reset (the whole curated battery), and the recovery returns before
   any event or work there.
@@ -282,7 +283,7 @@ def test_archive_recovery_rejects_foreign_content(monkeypatch, recorder):
 
 
 def test_rotation_cross_check_gates_the_archive_candidate(monkeypatch):
-    """The archive path has no E-proposal for the phase-9 disagreement
+    """The archive path has no E-proposal for the disagreement
     check, so the PnP gets the loop detector's degeneracy guard
     instead: a mirrored/degenerate PnP fails the E-vs-PnP rotation
     cross-check and the candidate is skipped."""
@@ -337,7 +338,7 @@ def test_no_archives_is_silent(recorder):
 
 
 def test_persistent_graph_invalidated_before_the_reanchor_write(monkeypatch):
-    """The 5e-0 discipline: the persistent local-BA graph's retained
+    """External-pose mutation discipline: the persistent local-BA graph's retained
     estimates must be invalidated BEFORE the external pose/point
     write - never mixed with a re-gauged map."""
     tracker, m, kf, points, origin = _tracker_with_reset_world(monkeypatch)

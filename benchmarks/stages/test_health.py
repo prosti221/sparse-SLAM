@@ -1,5 +1,5 @@
-"""Stage pins: the shared health-signature module (phase 14) + the
-attribution rotation gauge (phase 15).
+"""Stage pins: the shared health-signature module + the
+attribution rotation gauge.
 
 These hold:
 - the PRE-REGISTERED classifier thresholds exactly as recorded in
@@ -97,7 +97,7 @@ def test_reloc_churn_needs_low_quality():
     s = _summary(_rows(100, q=0.1), ev=churn_ev)
     assert "RELOC_CHURN" in s["labels"]
     # 8 relocs WITH recovered quality is successful relocalization,
-    # not churn (finding-36's recovery accounting)
+    # not churn (the recovery accounting)
     s2 = _summary(_rows(100, q=0.6), ev=churn_ev)
     assert "RELOC_CHURN" not in s2["labels"]
 

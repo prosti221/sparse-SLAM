@@ -1,4 +1,4 @@
-"""Stage tests: phase 20 (T3a) — the reset re-gauge continuation.
+"""Stage tests: the reset re-gauge continuation.
 
 The shipped reset TELEPORTS the live trajectory to the world origin
 (``cur_frame.pose = identity`` in ``Tracker._reset_system``) — the
@@ -9,7 +9,7 @@ is comparable to anything before it. These pins hold the flag and
 both branches:
 
 - the flag default 1 = the ADOPTED re-gauge continuation (a measured
-  adoption fact: the phase-20 A/B flipped it 0 -> 1 with a recorded
+  adoption fact: the A/B flipped it 0 -> 1 with a recorded
   decision; the pre-adoption shipped default was the teleport)
 - flag OFF = the EXACT shipped reset (identity pose; the archive,
   the clear, the streak resets — all unchanged)
@@ -17,12 +17,11 @@ both branches:
   the new map's anchor (the live trajectory stays in the pre-reset
   world frame; the pose-graph gauge anchors at KF0's CURRENT pose
   wherever it is; the E-chain/PnP compose relative motions; the
-  harness's Umeyama is global — all verified gauge-agnostic in the
-  phase-20 plan)
+  harness's Umeyama is global — all verified gauge-agnostic)
 - the by-product: with the pose kept, the new map's frame IS the
   archive's frame, so the archive-reloc re-anchor
   (``_reanchor_map_to``) degenerates to a no-op instead of a
-  second teleport (T5's mixed-gauge corruption resolved)
+  second teleport (the mixed-gauge corruption resolved)
 """
 import cv2 as cv
 import numpy as np
@@ -89,11 +88,10 @@ def _preworld(rng_seed=7, n_pts=40):
 
 def test_flag_default_pinned():
     """The ADOPTED default is the RE-GAUGE CONTINUATION (1) — the
-    phase-20 A/B verdict (ADOPTED, 4/5 strict majority: woods_1,
+    A/B verdict (ADOPTED, 4/5 strict majority: woods_1,
     woods_2_15, kyoto_2_5, euroc_v1_01_easy; road the lone AGAINST on
     the new-label leg; greece bit-identical no-op guard; battery 0
-    non-timing diffs; output/benchmarks/ladder/
-    phase20_gauge_contract.json, 2026-11-12). The pre-adoption
+    non-timing diffs). The pre-adoption
     shipped default was the teleport (0)."""
     assert tracker_mod.RESET_GAUGE_CONTINUITY_ENABLED == 1
 

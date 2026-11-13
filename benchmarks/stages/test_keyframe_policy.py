@@ -3,7 +3,7 @@
 Pure logic tests for should_insert_keyframe - no SLAM run required.
 Documents the actual policy semantics: baseline is a critical condition;
 new-points-ratio and tracking quality are OR-ed quality conditions.
-Phase 8-4 pins: the rotation-cadence floor is TIME-normalized by the
+Pins: the rotation-cadence floor is TIME-normalized by the
 video fps (identity at the 30 fps calibration anchor).
 """
 import numpy as np
@@ -76,10 +76,10 @@ def test_reason_string_reports_failed_conditions():
     assert "Tracking quality" in reason
 
 
-# --- Phase 1c: rotation-aware viewpoint criterion ---
+# --- rotation-aware viewpoint criterion ---
 
 def test_rotation_triggers_insertion_without_baseline():
-    """Phase 1c: accumulated rotation is viewpoint change - it may satisfy
+    """Accumulated rotation is viewpoint change - it may satisfy
     the critical condition where translation cannot. Rotation-dominant
     motion starved the map under the translation-only criterion
     (forward_rotation triangulation rejected ~100% of points)."""
@@ -105,7 +105,7 @@ def test_small_rotation_and_baseline_rejects():
 
 
 def test_rotation_trigger_is_gap_capped():
-    """Phase 1c self-limiting gate: the rotation trigger never fires
+    """Self-limiting gate: the rotation trigger never fires
     frame-to-frame (gap below KEYFRAME_ROTATION_MIN_FRAME_GAP) - a
     degenerate 1-2 frame pair poisons the map with junk triangulations
     (measured on orbit with an ungated threshold: 44 -> 140 keyframes,
@@ -144,7 +144,7 @@ def test_policy_reads_live_constants():
          const.KEYFRAME_MINIMUM_ROTATION_DEG) = saved
 
 
-# --- Phase 2h: keyframe-removal machinery (Map._remove_keyframe) ---
+# --- keyframe-removal machinery (Map._remove_keyframe) ---
 # The culling hook lands with step 3; these pins hold the repaired
 # semantics of the removal itself, whose only live caller today is the
 # aggressive-relocalization reset path.
@@ -204,7 +204,7 @@ def _cull_map(K):
 
 
 def test_remove_keyframe_cleans_all_registries():
-    """Phase 2h machinery repair: removing a keyframe must clean every
+    """Removing a keyframe must clean every
     map registry (keyframes list/by-id, tracking-quality history,
     covisibility graph, loop-closure feature DB, orphaned points) and
     the persistent local-BA graph must self-heal on the next call."""
@@ -254,7 +254,7 @@ def test_remove_keyframe_cleans_all_registries():
 
 
 def test_remove_keyframes_after_is_positional():
-    """Phase 2h repair: remove_keyframes_after must use keyframe LIST
+    """remove_keyframes_after must use keyframe LIST
     POSITION (insertion order), not frame_id ordering - frame ids are
     random uuid4 values, so the old `kf.frame_id <= reference` walk
     removed a RANDOM suffix of the keyframe list. The crafted ids below
@@ -323,7 +323,7 @@ def _criterion_map(n_kfs, observer_lists, K):
 
 
 def test_cull_redundant_keyframe_criteria():
-    """Phase 2h step 3: a keyframe is redundant when >=
+    """A keyframe is redundant when >=
     CULL_REDUNDANCY_RATIO of its point-side points are observed by >=
     CULL_MIN_OTHER_OBSERVERS other keyframes. At most ONE (the oldest
     redundant candidate) is culled per call; keyframes[0] and the
@@ -405,10 +405,10 @@ def test_cull_redundant_keyframe_requires_min_other_observers():
     assert len(m.points) == 30
 
 
-# --- Phase 8-4: fps-normalized rotation-cadence floor ----------------------
+# --- fps-normalized rotation-cadence floor ----------------------
 
 def test_scaled_frame_count_identity_and_scaling():
-    """8-4: 30 fps is the identity anchor (the constants' calibration
+    """30 fps is the identity anchor (the constants' calibration
     regime - the benchmark harness never sets a video fps); 60 fps
     doubles frame counts (ceil, so a threshold never gets tighter);
     59.94 lands on the exact 2x values; LOWER fps keeps the anchor

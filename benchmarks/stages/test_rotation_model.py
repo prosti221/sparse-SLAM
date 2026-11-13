@@ -1,6 +1,6 @@
-"""Stage tests: phase 13 — the rotation-dominant pair pose (finding 37).
+"""Stage tests: the rotation-dominant pair pose.
 
-The 13a-13c baseline arc (five measured gate candidates, four dead)
+The measured baseline arc (five measured gate candidates, four dead)
 pinned the design: per-pair two-view rotation-vs-translation is
 UNMEASURABLE in the pan's regime (planar / sub-noise-parallax pairs —
 every per-pair statistic that fires on the pan also fires on slow real
@@ -48,7 +48,7 @@ def rot_angle_deg(R):
 def _rotation_pair(yaw_deg=3.0, n=120, seed=11):
     """Two frames viewing a random cloud from the SAME camera center,
     the second rotated by yaw_deg: a PURE-ROTATION pair (the exact
-    model class of finding 37's pan). Each point carries its own
+    model class of the measured pan). Each point carries its own
     random descriptor in both frames, so Lowe matching recovers the
     correspondence exactly."""
     rng = np.random.default_rng(seed)
@@ -101,7 +101,7 @@ def test_helper_is_deterministic():
 
 
 def test_helper_no_basis_paths():
-    """Featureless frames (the finding-35 class) and too-few matches
+    """Featureless frames and too-few matches
     return None — the caller keeps the legacy estimate."""
     f_cur, f_prev = _rotation_pair(3.0)
     blank = make_frame(np.eye(4), K)

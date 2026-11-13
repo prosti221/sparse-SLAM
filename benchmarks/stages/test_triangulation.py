@@ -101,7 +101,7 @@ def test_validation_rejects_point_behind_camera():
     cur_f.set_match_data([cv.DMatch(0, 0, 0.0)])
 
     result = is_valid_triangulated_point(0, cur_f, prev_f, np.append(X, 1.0))
-    # Phase 5c: the cascade is gone. A behind-camera point fails BOTH
+    # the cascade is gone. A behind-camera point fails BOTH
     # cheirality (z <= 0) and reprojection (behind-camera projection is
     # None -> inf error); parallax passes (~48 deg here). The FIRST
     # failure is the root-cause code, and failed_codes carries all of

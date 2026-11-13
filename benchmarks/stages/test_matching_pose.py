@@ -64,7 +64,7 @@ def test_relative_pose_convention(translation_seq, extractor):
     # PLATFORM-KEYPOINT-DETERMINISTIC, not RANSAC noise — cos 1.0000
     # on arm64 vs 0.8214 on x86_64 with ZERO variance across a
     # 40-seed cv-RNG sweep on both (rotation stays 0.00/0.45 deg).
-    # The low-parallax pair-t instability, the finding-37 class: t is
+    # The low-parallax pair-t instability: t is
     # the weakly-observable component; the old >0.95 bound was a
     # single-platform artifact. 0.5 keeps the convention check (the
     # direction is right, not flipped) with margin under the worst
@@ -105,14 +105,14 @@ def test_matching_is_deterministic(translation_seq, extractor):
 
 
 def test_featureless_match_pair_returns_no_matches_both_sides():
-    """Finding 35 (phase 10a forced-reset probe): a featureless frame
+    """A featureless frame
     yields descriptors=None, and BFMatcher.knnMatch is ASYMMETRIC -
     knnMatch(None, X) silently returns [] but knnMatch(X, None) raises
     the batchDistance assertion. Matching against a featureless
-    PREVIOUS or REFERENCE frame crashed the pipeline (the probe's
+    PREVIOUS or REFERENCE frame crashed the pipeline (a
     post-reset bootstrap: textured replay frames against the
     featureless reset origin). Zero features on either side must take
-    the finding-10 path: no matches, no pose, callers fall back."""
+    the no-matches path: no matches, no pose, callers fall back."""
     K = np.array([[450.0, 0.0, 320.0], [0.0, 450.0, 240.0], [0.0, 0.0, 1.0]])
     rng = np.random.default_rng(3)
     kps = [cv.KeyPoint(float(u), float(v), size=20)
@@ -129,19 +129,19 @@ def test_featureless_match_pair_returns_no_matches_both_sides():
         assert matches == [] and Rt is None
 
     # and through the caller contract: None pose, empty match data
-    # attached to the pair (finding 22's replacement rule holds)
+    # attached to the pair (the replacement rule holds)
     assert match_features_between_frames(textured, featureless, "ORB") is None
     assert textured.matches == []
 
 
 def match_features_between_frames_full(frame1, frame2):
     """Direct access to the underlying (matches, Rt) pair for the
-    finding-35 pin."""
+    featureless pin."""
     from slam.features.matcher import match_features
     return match_features(frame1, frame2, "ORB")
 
 
-# --- Phase 1a: essential-matrix disambiguation (IMPROVEMENT.md) ---
+# --- essential-matrix disambiguation ---
 
 def _skew(t):
     return np.array([[0.0, -t[2], t[1]],
@@ -192,7 +192,7 @@ def test_prior_cannot_override_clear_geometry():
 
 
 def test_prior_leaves_coinflips_alone():
-    """Phase 1a gate semantics: the motion prior arbitrates only DECISIVE
+    """Gate semantics: the motion prior arbitrates only DECISIVE
     cheirality verdicts (winner out-supports its opposite-translation twin
     by MATCHER_PRIOR_DECISIVE_FLIP_RATIO). Points between the cameras
     (behind cam2 for the true forward motion, since cam2 sits at -t) make

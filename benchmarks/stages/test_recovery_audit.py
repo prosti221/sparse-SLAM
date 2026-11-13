@@ -2,9 +2,10 @@
 recovery-streak hygiene, plus characterization of other retained
 recovery risks.
 
-The exclusion tests pin the REVIEWED REPAIR (finding 29): a frame is never
-its own relocalization reference. The 8-3 tests pin the REVIEWED REPAIR
-for the streak counters' lifetime (finding 30): genuinely healthy tracking
+The exclusion tests pin the REVIEWED REPAIR: a frame is never
+its own relocalization reference. The streak-hygiene tests pin the
+REVIEWED REPAIR
+for the streak counters' lifetime: genuinely healthy tracking
 clears both streak counters, so the success cap counts consecutive
 quality-failing recoveries only. The remaining tests characterize
 retained behavior; any further recovery change needs separately
@@ -104,7 +105,7 @@ def test_observer_restores_actual_aliases_on_exception_and_rejects_overlap():
 
 @pytest.mark.parametrize('healthy_frames', [1, 100])
 def test_healthy_tracking_clears_recovery_streak_counters(monkeypatch, healthy_frames):
-    """Phase 8-3 (finding 30's lifetime fix): 'consecutive' means
+    """'Consecutive' means
     consecutive. Genuinely healthy tracking (map quality at or above
     the recovery threshold) clears BOTH streak counters - a later
     recovery need starts counting from zero, and no recovery attempt
@@ -123,7 +124,7 @@ def test_healthy_tracking_clears_recovery_streak_counters(monkeypatch, healthy_f
 
 
 def test_low_quality_gaps_do_not_clear_the_success_streak(monkeypatch):
-    """Phase 8-3: the clear is gated on HEALTH, not on
+    """The clear is gated on HEALTH, not on
     needs_recovery() == False. on_relocalization_successful resets
     consecutive_low_quality_frames, so the frames between two recovery
     cycles are always 'no recovery needed'; clearing there would make
@@ -151,7 +152,7 @@ def test_low_quality_gaps_do_not_clear_the_success_streak(monkeypatch):
 
 
 def test_recovered_quality_stops_the_ineffective_streak_reset(monkeypatch):
-    """Phase 8-3: five cumulative recoveries no longer reset when
+    """Five cumulative recoveries no longer reset when
     tracking recovered in between - the decisive behavioral change.
     Quality restoration clears the streak, so the next recovery need
     starts counting from zero and the cap cannot fire immediately."""
@@ -177,7 +178,7 @@ def test_recovered_quality_stops_the_ineffective_streak_reset(monkeypatch):
 
 
 def _inserted_query_tracker():
-    """A just-inserted query keyframe plus one older keyframe (finding 29)."""
+    """A just-inserted query keyframe plus one older keyframe."""
     world = Map()
     older = set_keypoints(make_frame(yaw_pose(0.1, (0.2, 0., 0.))), [(30 + i, 30) for i in range(20)])
     world.add_keyframe(older)
@@ -206,7 +207,7 @@ def _accepting_match(monkeypatch, tracker, relative):
 
 
 def test_relocalization_never_matches_the_query_frame_against_itself(monkeypatch):
-    """Finding 29 repair: zero-baseline self-pairs are excluded entirely.
+    """Repair: zero-baseline self-pairs are excluded entirely.
 
     With the query as the ONLY keyframe, both recovery paths fail rather
     than accept a meaningless identical-image match; the matcher is never
@@ -241,7 +242,7 @@ def test_recovery_skips_the_query_and_uses_the_next_newest_keyframe(monkeypatch)
 
 
 def test_aggressive_relocalization_also_excludes_the_query_frame(monkeypatch):
-    """The permissive path gets the same exclusion (finding 29).
+    """The permissive path gets the same exclusion.
 
     Existing branch-drop semantics are unchanged: accepting the older
     reference still removes keyframes inserted after it - including the

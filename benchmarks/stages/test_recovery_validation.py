@@ -1,4 +1,4 @@
-"""Stage tests: phase 9 recovery validation (the map-anchored PnP gate).
+"""Stage tests: recovery validation (the map-anchored PnP gate).
 
 Two layers of pins, following the established patterns:
 
@@ -17,10 +17,10 @@ Two layers of pins, following the established patterns:
   factored out: the pose was never written, the streaks were never
   cleared, the aggressive path's remove_keyframes_after never ran).
 
-The defect class is finding 29's: recovery accepted high-inlier E
+The defect class: recovery accepted high-inlier E
 proposals (including ~180-deg half-turns) with no geometric check and
 no rollback; the per-frame PnP guard rejected the pose only AFTER
-commit. The gate reuses the phase-3b reloc-grade deterministic PnP
+commit. The gate reuses the reloc-grade deterministic PnP
 machinery (seeded per call - cv-RNG-transparent).
 """
 from types import SimpleNamespace
@@ -131,7 +131,7 @@ def test_disagreement_within_tolerance_passes():
 
 
 def test_implanted_half_turn_is_rejected():
-    """THE core negative pin (finding 29's defect class): a high-quality
+    """THE core negative pin (the defect class): a high-quality
     map-anchored PnP positively contradicting the proposal rejects it -
     the accepted 686/565-inlier half-turns die BEFORE commit."""
     m, kf, frame, true_pose = _validation_fixture()
@@ -348,7 +348,7 @@ def test_aggressive_path_drops_the_branch_only_on_validated_acceptance(
 
 def test_flag_off_reproduces_legacy_acceptance_at_the_tracker(monkeypatch,
                                                                recorder):
-    """Flag OFF: the half-turn proposal that finding 29 measured being
+    """Flag OFF: the half-turn proposal that was measured being
     accepted (and only later PnP-rejected) is accepted again - the
     pinned demonstration of what the gate closes, and the A/B arm.
     The REAL validation method runs (not monkeypatched) with the

@@ -1,7 +1,7 @@
-"""Stage test: phase 3 loop closure (3a: the machinery repair).
+"""Stage test: loop closure (the machinery repair).
 
 Homes the pins for the repaired constraint machinery:
-- the reloc-grade PnP constraint (the metric fix for the milestone-3
+- the reloc-grade PnP constraint (the metric fix for the earlier
   scale bug): recovers the TRUE relative pose from a ground-truth
   revisit fixture, INDEPENDENT of the query KF's (deliberately
   drifted) pose attribute

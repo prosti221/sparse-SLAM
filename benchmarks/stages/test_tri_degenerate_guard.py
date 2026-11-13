@@ -1,15 +1,14 @@
-"""Stage test: the phase-21 degenerate-direction guard on the
+"""Stage test: the degenerate-direction guard on the
 triangulation creation gate (TRIANGULATION_DEGENERATE_GUARD_ENABLED).
 
-Phase 21 [21c]/[21d] (the record in benchmarks/IMPROVEMENT.md): a
-candidate whose direction vectors are non-normalizable has NO
+A candidate whose direction vectors are non-normalizable has NO
 parallax. The guarded path rejects it deterministically under the
 parallax gate's attribution (code table unchanged); the unguarded
 legacy path normalized zero/NaN vectors into NaN comparisons that
 PASS every gate (NaN < thr is False) - the latent NaN-acceptance
-hazard - and normalize_vec's 0/0 fired the utils.py:241
-RuntimeWarning (measured: both phase-20 kyoto legs at the 8.0
-intake; no firing instance on the fresh production path [21a]).
+hazard - and normalize_vec's 0/0 fired a RuntimeWarning (measured
+on real legs at an aggressive intake; no firing instance on the
+fresh production path).
 
 Pins here: the shipped default; the hazard closed (a NaN point is
 REJECTED, deterministically); the measured zero-at-camera event
@@ -19,7 +18,7 @@ every normalizable candidate; and kill-switch transparency (flag
 pinned 0 in memory reproduces the legacy semantics EXACTLY,
 acceptance-hazard and warning included).
 
-Known scope limit (recorded, out of phase 21): a NaN point still
+Known scope limit (recorded, deferred): a NaN point still
 fires frame.py project_point's own NaN/NaN divide on the way to
 its reprojection error - the guard closes the gate SEMANTICS
 (rejection instead of accidental acceptance); frame.py's divide
@@ -65,7 +64,7 @@ def _arbitrary_pair(T1, T2):
 
 
 def test_guard_default_is_shipped():
-    """The shipped state: the guard is ON (the phase-21 decision;
+    """The shipped state: the guard is ON;
     the flag is read at call time via the module global, so probes
     can pin it in memory for A/B)."""
     assert utils_mod.TRIANGULATION_DEGENERATE_GUARD_ENABLED == 1
@@ -90,7 +89,7 @@ def test_guard_rejects_nan_point_deterministically():
 
 
 def test_guard_silences_the_zero_vector_warning_at_camera():
-    """The MEASURED phase-20 event (both kyoto legs at 8.0): a
+    """The MEASURED event (real legs at an aggressive intake): a
     candidate exactly at a camera center - normalize_vec's 0/0.
     Guarded: no RuntimeWarning anywhere (project_point returns
     None at z=0 before dividing), cheirality still rejects first
@@ -145,13 +144,13 @@ def test_guard_is_bit_transparent_on_normalizable_candidates():
 def test_flag_0_reproduces_legacy_semantics_exactly(monkeypatch):
     """Kill-switch transparency: flag pinned 0 = the legacy path,
     bit-for-bit - INCLUDING the two measured defects (they are the
-    legacy contract this phase replaced, pinned so a future edit
+    legacy contract the guard replaced, pinned so a future edit
     cannot silently change the switch's meaning):
     1. the NaN candidate is ACCEPTED (validation_code VALID - the
        latent NaN-acceptance hazard);
     2. the zero-at-camera candidate fires normalize_vec's 0/0
-       RuntimeWarning (utils.py:241 - the measured phase-20 kyoto
-       event) and its failed_codes carry NO parallax attribution
+       RuntimeWarning (the measured event on real legs) and its
+       failed_codes carry NO parallax attribution
        (the NaN comparison passed the gate)."""
     monkeypatch.setattr(utils_mod,
                         "TRIANGULATION_DEGENERATE_GUARD_ENABLED", 0)

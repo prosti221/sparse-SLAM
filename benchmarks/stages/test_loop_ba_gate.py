@@ -1,9 +1,9 @@
-"""Stage test: phase 18 — the loop-correction combination's BA
-acceptance gate and the normalized odometry information.
+"""Stage test: the loop-correction combination's BA acceptance gate
+and the normalized odometry information.
 
-Pins the two mechanisms the [18b-2] A/B judges:
+Pins the two mechanisms the A/B judges:
 
-- the gate [18a-2]: a global BA on the correction path (gated=True)
+- the gate: a global BA on the correction path (gated=True)
   writes back ONLY when the objective it minimizes (total squared
   NORMALIZED reprojection error — the g2o EdgeProjectXYZ2UV residual,
   mirrored by _total_reprojection_sq_error) strictly improves; a
@@ -11,19 +11,18 @@ Pins the two mechanisms the [18b-2] A/B judges:
   EXACTLY (the re-anchored, consistent state in the combination —
   what makes the write-back rejectable at all); telemetry
   loop_global_ba_rejected. The max/median move ratio was measured
-  NOT to discriminate (phase-18 plan) — the objective test replaced
-  it, so no move-based pin here.
+  NOT to discriminate — the objective test replaced it, so no
+  move-based pin here.
 - the legacy path: global_bundle_adjustment() (gated defaults
   False) never reads the gate — the Map's PERIODIC global BA and
   every other existing caller stay exactly as they were (the
   battery-silence contract for the gate).
-- the normalization [18a-1]: per-edge odometry information =
+- the normalization: per-edge odometry information =
   LOOP_INFO_ODOMETRY_AGGREGATE / n_odometry_edges — the AGGREGATE
   is constant vs map size (legacy per-edge 10.0 made the aggregate
-  grow ~100-200 -> ~2500 from young to big maps; phase 17c's two
-  faces of one ratio defect). Flag OFF = the legacy per-edge
-  constant.
-- the flag defaults (measured adoption facts, phase-18 plan).
+  grow ~100-200 -> ~2500 from young to big maps; two faces of one
+  ratio defect). Flag OFF = the legacy per-edge constant.
+- the flag defaults (measured adoption facts).
 """
 import inspect
 from contextlib import contextmanager
@@ -84,7 +83,7 @@ def _corrupt(kfs, points, seed=3):
 
 def _diverging_solver(keyframes, pts, observations, *a, **kw):
     """A fake solve that DIVERGES — teleports every keyframe and
-    inflates the structure: the phase-17 measured failure mode
+    inflates the structure: the measured failure mode
     (21-160-unit KF teleports from a stale/inconsistent init),
     deterministic, no g2o."""
     for kf in keyframes:
@@ -112,7 +111,7 @@ def test_gate_accepts_improving_solve(monkeypatch):
     exactly on truth (err ~ 0) from a corrupted pre-solve state — the
     accepted case's contract is poses WRITTEN, accepted telemetry,
     return True. The gate flag is pinned ON: the shipped default is
-    OFF after the phase-18 rejection, and this pin tests the
+    OFF after the rejection, and this pin tests the
     machinery."""
     m, kfs, points = _traj_map()
     ba = m.g2o_optimizer
@@ -150,8 +149,8 @@ def test_gate_rejects_diverging_solve_and_restores(monkeypatch):
     a refinement) -> the solve is REJECTED, the pre-solve state is
     restored EXACTLY (poses AND points — the re-anchored consistent
     state), and the solve counts as failed. The gate flag is pinned
-    ON: the shipped default is OFF after the phase-18 rejection, and
-    this pin tests the machinery."""
+    ON: the shipped default is OFF after the rejection, and this pin
+    tests the machinery."""
     m, kfs, points = _traj_map()
     ba = m.g2o_optimizer
     monkeypatch.setattr(ba_mod, "LOOP_BA_GATE_ENABLED", 1)
@@ -207,10 +206,10 @@ def test_legacy_path_is_bit_transparent_by_default(monkeypatch):
 def test_real_solver_refinement_passes_the_gate(monkeypatch):
     """With the REAL g2o solver: a small non-rigid corruption refined
     back toward truth must be ACCEPTED — the gate must never block a
-    genuine refinement (phase 17 measured healthy repairs at move
+    genuine refinement (healthy repairs measured at move
     ratios 2.3-6.7; the objective test is what separates them). The
     gate flag is pinned ON: the shipped default is OFF after the
-    phase-18 rejection, and this pin tests the machinery."""
+    rejection, and this pin tests the machinery."""
     m, kfs, points = _traj_map()
     ba = m.g2o_optimizer
     monkeypatch.setattr(ba_mod, "LOOP_BA_GATE_ENABLED", 1)
@@ -230,13 +229,13 @@ def test_real_solver_refinement_passes_the_gate(monkeypatch):
 
 
 def test_odometry_information_is_normalized_by_edge_count(monkeypatch):
-    """[18a-1] THE math pin: per-edge odometry information =
+    """THE math pin: per-edge odometry information =
     AGGREGATE / n_odometry_edges, so the AGGREGATE over the chain is
     the constant 500.0 at ANY map size (the legacy defect: per-edge
     10.0 constant -> the aggregate grew with n — the young-map snap
     and the big-map no-op were the same ratio defect at opposite
     ends). The normalization flag is pinned ON: the shipped default
-    is OFF after the phase-18 rejection, and this pin tests the
+    is OFF after the rejection, and this pin tests the
     normalization math."""
     m4, kfs4, _ = _traj_map(4)
     m8, kfs8, _ = _traj_map(8)
@@ -273,7 +272,7 @@ def test_odometry_information_flag_off_is_legacy_constant(monkeypatch):
 
 def test_normalized_graph_keeps_an_exact_prior_exact(monkeypatch):
     """Real pose-graph machinery, normalization pinned ON (the
-    shipped default is OFF after the phase-18 rejection): with EXACT
+    shipped default is OFF after the rejection): with EXACT
     odometry edges (the tautological chain prior,
     measured from the current poses) and an agreeing zero-drift loop
     edge (the production measurement convention), the solve is a
@@ -291,16 +290,15 @@ def test_normalized_graph_keeps_an_exact_prior_exact(monkeypatch):
         np.testing.assert_allclose(kf.pose, P, atol=1e-6)
 
 
-def test_phase18_flag_and_signature_defaults_pinned():
-    """The measured adoption facts (the phase-18 record): the
-    combination AND every pre-registered ablation (norm+gate,
-    C2-only, gate-only) FAILED the amended contract on the desktop
-    (phase18_t1_contract*.json), so both flags ship OFF; the
-    re-anchor stays OFF (17d-1). The machinery + pins remain as
-    flag-gated no-ops — bit-identity proven on the ladder bridge
-    (_c18off ≡ phase-17 OFF evidence) and the battery. The gate is
-    opt-in per call site — gated defaults False, the legacy
-    bit-transparent contract for every existing caller."""
+def test_flag_and_signature_defaults_pinned():
+    """The measured adoption facts: the combination AND every
+    pre-registered ablation (norm+gate, C2-only, gate-only) FAILED
+    the amended contract on the desktop, so both flags ship OFF; the
+    re-anchor stays OFF too. The machinery + pins remain as
+    flag-gated no-ops — bit-identity proven on the ladder bridge and
+    the battery. The gate is opt-in per call site — gated defaults
+    False, the legacy bit-transparent contract for every existing
+    caller."""
     assert ba_mod.LOOP_ODOMETRY_NORMALIZED_ENABLED == 0
     assert ba_mod.LOOP_INFO_ODOMETRY_AGGREGATE == 500.0
     assert ba_mod.LOOP_BA_GATE_ENABLED == 0
