@@ -24,6 +24,9 @@ find_package(pybind11 CONFIG REQUIRED)
 # FP exception in the locked decision 2 contract.
 set(EIGEN3_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/eigen")
 set(BUILD_SHARED_LIBS OFF)
+# The static g2o libs are linked INTO our shared extension; Linux
+# x86-64 requires PIC for that (macOS tolerates non-PIC here).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(G2O_USE_CHOLMOD OFF)
 set(G2O_USE_CSPARSE OFF)
 set(G2O_USE_OPENGL OFF)

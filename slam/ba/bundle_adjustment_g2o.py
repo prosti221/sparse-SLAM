@@ -4,7 +4,7 @@ import time as _time
 from slam.core.frame import Frame
 from slam.core.point import Point
 from slam.core.observation import Observation
-from slam_native import FoldInputs, error_fold
+from slam_native import FoldInputs, error_fold, BASolveInputs, solve_se3_ba
 from typing import List, Tuple
 from slam.utils.logger import *
 from slam.utils.constants import *
@@ -58,6 +58,21 @@ LOOP_BA_GATE_ENABLED = 0
 # emission anywhere (byte-identical); read at CALL time.
 BA_TIMING_ATTRIB_ENABLED = 0
 
+# The C2b2 native local-BA solve: a FRESH-BUILD graph per call in the
+# vendored g2o (one native call: build + solve + extract), replacing
+# the persistent-graph reconcile. The fresh build's initial values are
+# IDENTICAL to the persistent graph's warm state (the write-back makes
+# inv(kf.pose) reproduce the stored estimates exactly), so the paths
+# differ only by g2o's vertex-id-order sensitivity (~1e-15, the
+# phase-2f regime). Flag 0 = the persistent-graph path (the A/B
+# control leg); the A/B decides the survivor. INT flag, read at CALL
+# time. DEFAULT 0 pending the adoption decision: the A/B measured the
+# native path faster (build p50 -63%, map_optimize -16%, ladder
+# +5.3% fps) but its sliding-window solve-order divergence moved
+# map_points (-4.7%) and left tum_xyz's rpe_rot at 97% of its
+# baseline band - the pre-registered ladder-count acceptance failed.
+BA_LOCAL_NATIVE = 0
+
 
 class G2OBundleAdjustment:
     def __init__(self, map, verbose=False):
@@ -95,6 +110,9 @@ class G2OBundleAdjustment:
         self._local_edge_info = None
         self._local_robust_kernel = None
         self._local_vertex_id = 0
+        # The native path's last-solve graph shape (the cost audit's
+        # sampler reads it when the persistent optimizer is absent).
+        self._last_native_graph = None
 
     def _next_vertex_id(self) -> int:
         vid = self._local_vertex_id
@@ -306,6 +324,10 @@ class G2OBundleAdjustment:
             debug_log(
                 LOG_TAG, f"Using : {len(observations)} observations for BA optimization")
 
+        if BA_LOCAL_NATIVE:
+            return self._local_ba_native(
+                local_keyframes, local_points, observations,
+                fix_points=fix_points)
         return self._local_ba_persistent(
             local_keyframes, local_points, observations,
             fix_points=fix_points)
@@ -357,6 +379,111 @@ class G2OBundleAdjustment:
             self._graph_edges_by_pt.setdefault(pid, set()).add(fid)
             self._graph_edges_by_kf.setdefault(fid, set()).add(pid)
         return edge
+
+    def _local_ba_native(self, local_keyframes, local_points,
+                         observations, fix_points) -> bool:
+        """The C2b2 native local BA: ONE native call per solve (fresh
+        build + Levenberg + extraction, the vendored g2o), replacing
+        the persistent-graph reconcile.
+
+        The fresh build reproduces the persistent path's exact
+        semantics: vertices for the INVOLVED keyframes in map order +
+        all local points in map order (marginalized, fixed per
+        fix_points); one edge per observation whose frame is an
+        involved keyframe, in the observations list's order, with the
+        same measurement/information/Huber config; the gauge anchor =
+        the oldest involved keyframe, plus every keyframe outside the
+        window; 30 iterations with the terminate action. The solve's
+        initial values are identical to the persistent graph's warm
+        state (the write-back invariant), so the paths differ only at
+        the vertex-id-order sensitivity (~1e-15).
+
+        Non-keyframe tracker observations (frames never promoted) get
+        no vertex and no edge - the same skip both existing paths make
+        at edge construction; their frames are never written back.
+        """
+        t_attrib = _time.perf_counter() if BA_TIMING_ATTRIB_ENABLED else 0.0
+
+        target_kf_ids = {ob.frame.frame_id for ob in observations}
+        frames = [kf for kf in self.map.keyframes
+                  if kf.frame_id in target_kf_ids]
+        if not frames:
+            # No keyframe participates: nothing to optimize (the
+            # persistent path would build an empty pose graph).
+            telemetry.event("ba_native_no_keyframes")
+            return False
+        local_kf_ids = {kf.frame_id for kf in local_keyframes}
+        anchor_id = frames[0].frame_id
+
+        frame_row = {kf.frame_id: i for i, kf in enumerate(frames)}
+        point_row = {p.point_id: i for i, p in enumerate(local_points)}
+        edge_obs = [ob for ob in observations
+                    if ob.frame.frame_id in frame_row]
+        O = len(edge_obs)
+
+        if O == 0:
+            # Vertices without constraints: nothing to solve (and the
+            # persistent path would also run an edgeless graph). No
+            # movement, no write-back.
+            telemetry.event("ba_native_no_edges")
+            return False
+
+        T_wc = np.stack([np.linalg.inv(kf.pose) for kf in frames])
+        fixed = np.zeros(len(frames), dtype=np.uint8)
+        for i, kf in enumerate(frames):
+            if kf.frame_id == anchor_id or kf.frame_id not in local_kf_ids:
+                fixed[i] = 1
+        positions = np.array([p.pt_3d for p in local_points],
+                             dtype=np.float64)
+        obs_frame = np.fromiter(
+            (frame_row[ob.frame.frame_id] for ob in edge_obs),
+            dtype=np.int64, count=O)
+        obs_point = np.fromiter(
+            (point_row[ob.point.point_id] for ob in edge_obs),
+            dtype=np.int64, count=O)
+        obs_uv = np.array([ob.pt_2d_norm for ob in edge_obs],
+                          dtype=np.float64)
+
+        if BA_TIMING_ATTRIB_ENABLED:
+            t_solve0 = _time.perf_counter()
+
+        solve_in = BASolveInputs(
+            T_wc=T_wc, fixed=fixed, positions=positions,
+            points_fixed=1 if fix_points else 0,
+            obs_frame=obs_frame, obs_point=obs_point,
+            obs_uv=obs_uv, max_iterations=30)
+        T_wc_new, pos_new, iterations, _chi2 = solve_se3_ba(solve_in)
+        telemetry.event("ba_iterations", int(iterations))
+        # The cost audit's graph sampler reads the persistent
+        # optimizer object; the native path has none - the same row
+        # shape, from the solve that just ran.
+        self._last_native_graph = {
+            "vertices": len(frames) + len(local_points),
+            "pose_vertices": len(frames),
+            "point_vertices": len(local_points),
+            "fixed_pose_vertices": int(fixed.sum()),
+            "edges": O,
+        }
+
+        if BA_TIMING_ATTRIB_ENABLED:
+            t_write0 = _time.perf_counter()
+
+        # Write back (the persistent path's exact semantics): the
+        # estimates arrive world-to-camera; kf.pose = inv(est).
+        for i, kf in enumerate(frames):
+            kf.pose = np.linalg.inv(T_wc_new[i])
+        if not fix_points:
+            for j, p in enumerate(local_points):
+                p.pt_3d = np.array(pos_new[j])
+
+        self._recompute_point_errors(observations)
+
+        if BA_TIMING_ATTRIB_ENABLED:
+            t_end = _time.perf_counter()
+            telemetry.value("ba_build_s", t_solve0 - t_attrib)
+            telemetry.value("ba_solve_s", t_write0 - t_solve0)
+            telemetry.value("ba_writeback_s", t_end - t_write0)
+        return True
 
     def _local_ba_persistent(self, local_keyframes, local_points,
                              observations, fix_points) -> bool:

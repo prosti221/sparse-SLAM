@@ -18,6 +18,7 @@ from scipy.spatial.transform import Rotation
 
 from benchmarks.stages.helpers import make_K, make_frame, se3, yaw_pose, project_gt, set_keypoints, make_world_points
 from slam.core.map import Map
+from slam.ba import bundle_adjustment_g2o as _ba_mod
 from slam.core.point import Point
 from slam.core.observation import Observation
 
@@ -293,7 +294,10 @@ def _assert_persistent_estimates_match_map(ba):
             assert np.allclose(vertex.estimate(), point.pt_3d, atol=1e-9, rtol=0)
 
 
-def test_global_ba_invalidates_local_cache_and_preserves_corrected_gauge():
+def test_global_ba_invalidates_local_cache_and_preserves_corrected_gauge(monkeypatch):
+    # These pins are the PERSISTENT-graph machinery's own contracts -
+    # the A/B control leg while the C2b2 native path is the default.
+    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)
     """5e prerequisite: global write-back must invalidate local estimates.
 
     Apply a rigid world-gauge change to poses AND points, leaving every
@@ -322,7 +326,8 @@ def test_global_ba_invalidates_local_cache_and_preserves_corrected_gauge():
     _assert_persistent_estimates_match_map(ba)
 
 
-def test_pose_graph_invalidates_local_cache_without_requiring_global_ba():
+def test_pose_graph_invalidates_local_cache_without_requiring_global_ba(monkeypatch):
+    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)  # persistent-machinery pin
     """The cache must already be invalid if later global BA fails/skips."""
     m, kfs, ba = _seed_persistent_graph()
     relative = kfs[-1].pose @ np.linalg.inv(kfs[0].pose)
@@ -336,6 +341,8 @@ def test_no_write_paths_keep_persistent_graph(monkeypatch):
     """No loops / rejected global BA must not cause a needless rebuild."""
     from slam.utils import constants as const
 
+    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)  # persistent-machinery pin
+
     m, _, ba = _seed_persistent_graph()
     graph = ba._local_opt
     assert ba.pose_graph_optimization([])
@@ -345,8 +352,9 @@ def test_no_write_paths_keep_persistent_graph(monkeypatch):
     assert ba._local_opt is graph
 
 
-def test_local_ba_still_reuses_its_graph():
+def test_local_ba_still_reuses_its_graph(monkeypatch):
     """Invalidation is for external write-back, not every local solve."""
+    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)  # persistent-machinery pin
     _, kfs, ba = _seed_persistent_graph()
     graph = ba._local_opt
     assert ba.local_bundle_adjustment(kfs[-1].frame_id, window_size=3,
@@ -356,6 +364,7 @@ def test_local_ba_still_reuses_its_graph():
 
 def test_partial_external_write_failure_cannot_reuse_stale_graph(monkeypatch):
     """Invalidate BEFORE write-back, so partial failures cannot retain it."""
+    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)  # persistent-machinery pin
     _, kfs, ba = _seed_persistent_graph()
     relative = kfs[-1].pose @ np.linalg.inv(kfs[0].pose)
 
@@ -605,10 +614,11 @@ def test_update_reprojection_error_flag_parameter():
     assert kf.tracking_quality_needs_update
 
 
-def test_persistent_graph_edge_bookkeeping_consistency():
+def test_persistent_graph_edge_bookkeeping_consistency(monkeypatch):
     """The incremental pair bookkeeping must exactly
     mirror the graph across reconciles - including the stale-vertex
     cascade path exercised by a keyframe cull."""
+    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)  # persistent-machinery pin
     K = make_K()
     world_points = make_world_points(40, z_range=(7.0, 10.0))
     m, kfs = _build_trajectory_map(12, world_points, K)

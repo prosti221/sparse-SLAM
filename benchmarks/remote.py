@@ -60,9 +60,14 @@ DATA_TREES = {
 # from --delete by rsync's exclude semantics, so remote output/data
 # survive re-syncs.
 SYNC_EXCLUDES = [
-    ".venv", ".git", "output", "data", "videos", "weights",
-    ".pytest_cache", "__pycache__", ".DS_Store", "debug.txt",
-    "*.pyc", ".vscode", "*.egg-info", "build",
+    # Repo-root trees: the leading / anchors the pattern, else rsync
+    # excludes the basename at ANY depth (measured: an unanchored
+    # "data" dropped g2o's vendored types/data/ on the desktop).
+    "/.venv", "/.git", "/output", "/data", "/videos", "/weights",
+    "/build", "/debug.txt",
+    # Regenerable at any depth.
+    ".pytest_cache", "__pycache__", ".DS_Store",
+    "*.pyc", ".vscode", "*.egg-info",
 ]
 
 

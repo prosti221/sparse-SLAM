@@ -17,6 +17,13 @@ from slam_native import BASolveInputs, solve_se3_ba  # noqa: E402
 
 g2o = pytest.importorskip("g2o")
 
+from benchmarks.stages.helpers import (  # noqa: E402
+    make_K, make_frame, make_world_points, project_gt, set_keypoints,
+    yaw_pose)
+from slam.core.map import Map  # noqa: E402
+from slam.core.observation import Observation  # noqa: E402
+from slam.core.point import Point  # noqa: E402
+
 
 def _scene(n_frames=6, n_points=20):
     """Keyframes on a circle looking at a point cloud ahead; ground
@@ -195,3 +202,104 @@ def test_native_solve_is_deterministic():
     np.testing.assert_array_equal(a[0], b[0])
     np.testing.assert_array_equal(a[1], b[1])
     assert a[2] == b[2]  # iterations
+
+
+def _ba_fixture():
+    """A deterministic map with 5 keyframes (10 shared points, 2-3 obs
+    each), ready for local BA calls. Returns (map, points)."""
+    K = make_K()
+    m = Map()
+    kfs = [make_frame(yaw_pose(0.0, (0.4 * i, 0, 0)), K) for i in range(5)]
+    X = make_world_points(10, z_range=(7.0, 9.0), rng_seed=3)
+    points = [Point(x.copy(), None, np.zeros(32, dtype=np.uint8))
+              for x in X]
+    for kf in kfs:
+        uvs = [project_gt(kf.pose, x, K)[0] for x in X]
+        set_keypoints(kf, uvs)
+        m.add_keyframe(kf)
+    m.add_points(points)
+    for pi, pt in enumerate(points):
+        for kf in kfs:
+            pt.add_observation(Observation(kf, pt, pi))
+    return m, points
+
+
+def _map_state(m, points):
+    return (
+        np.stack([kf.pose.copy() for kf in m.keyframes]),
+        np.array([p.pt_3d.copy() for p in points]),
+        np.array([p.average_reprojection_error for p in points]),
+    )
+
+
+def test_native_local_ba_matches_persistent_path():
+    """[C2b2] The native fresh-build path and the persistent-graph
+    path produce the SAME solved map state on identical call sequences.
+    The initial values are identical by the write-back invariant; the
+    residual difference is g2o's vertex-id-order sensitivity (the
+    recorded ~1e-15 regime), amplified slightly across two solves -
+    the pin tolerates the measured magnitude."""
+    from slam.ba import bundle_adjustment_g2o as ba_mod
+
+    m_a, pts_a = _ba_fixture()
+    m_b, pts_b = _ba_fixture()
+    assert m_a.keyframes[0].frame_id != m_b.keyframes[0].frame_id
+
+    saved = ba_mod.BA_LOCAL_NATIVE
+    try:
+        ba_mod.BA_LOCAL_NATIVE = 0
+        ref = m_a.keyframes[-1].frame_id
+        assert m_a.g2o_optimizer.local_bundle_adjustment(ref, window_size=3,
+                                                         fix_points=False)
+        state_a_1 = _map_state(m_a, pts_a)
+        assert m_a.g2o_optimizer.local_bundle_adjustment(ref, window_size=3,
+                                                         fix_points=False)
+        state_a = _map_state(m_a, pts_a)
+
+        ba_mod.BA_LOCAL_NATIVE = 1
+        ref = m_b.keyframes[-1].frame_id
+        assert m_b.g2o_optimizer.local_bundle_adjustment(ref, window_size=3,
+                                                         fix_points=False)
+        state_b_1 = _map_state(m_b, pts_b)
+        assert m_b.g2o_optimizer.local_bundle_adjustment(ref, window_size=3,
+                                                         fix_points=False)
+        state_b = _map_state(m_b, pts_b)
+    finally:
+        ba_mod.BA_LOCAL_NATIVE = saved
+
+    for (sa1, sb1), (sa, sb), label in zip(
+            zip(state_a_1, state_b_1), zip(state_a, state_b),
+            ("poses", "points", "errors")):
+        scale = max(1.0, float(np.abs(sa1).max()))
+        d = np.abs(sa1 - sb1).max() / scale
+        assert d < 1e-9, f"{label}: first-solve divergence {d:.3e}"
+        d = np.abs(sa - sb).max() / scale
+        assert d < 1e-9, f"{label}: second-solve divergence {d:.3e}"
+
+
+def test_native_local_ba_skips_non_keyframe_observations():
+    """A tracker observation from a frame never promoted to keyframe
+    gets no vertex, no edge, and no write-back - its pose is
+    untouched after the solve (the same skip both paths make)."""
+    from slam.ba import bundle_adjustment_g2o as ba_mod
+    m, points = _ba_fixture()
+    K = make_K()
+    tracker_frame = make_frame(yaw_pose(0.0, (0.1, 0.0, 0.0)), K)
+    set_keypoints(tracker_frame, [(10.0, 10.0)])
+    tracker_frame.frame_id = 999999  # not in map.keyframes
+    points[0].add_observation(Observation(tracker_frame, points[0], 0))
+
+    saved = ba_mod.BA_LOCAL_NATIVE
+    try:
+        ba_mod.BA_LOCAL_NATIVE = 1
+        ref = m.keyframes[-1].frame_id
+        assert m.g2o_optimizer.local_bundle_adjustment(
+            ref, window_size=3, fix_points=False)
+    finally:
+        ba_mod.BA_LOCAL_NATIVE = saved
+    np.testing.assert_array_equal(tracker_frame.pose, yaw_pose(0.0, (0.1, 0.0, 0.0)))
+
+
+def test_local_native_flag_ships_off_pending_adoption():
+    from slam.ba import bundle_adjustment_g2o as ba_mod
+    assert ba_mod.BA_LOCAL_NATIVE == 0

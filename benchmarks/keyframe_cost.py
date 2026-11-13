@@ -81,6 +81,7 @@ class KeyframeCostAudit:
         original_update = Tracker.update
         original_loop = Tracker._handle_loop_closure_detection
         original_local = G2OBundleAdjustment._reconcile_and_optimize
+        original_native_local = G2OBundleAdjustment._local_ba_native
         original_vertices = G2OBundleAdjustment._create_keyframe_vertices
 
         def update(tracker, frame):
@@ -102,7 +103,31 @@ class KeyframeCostAudit:
             try:
                 return original_local(optimizer, local_keyframes, *args, **kwargs)
             finally:
-                self._graph(optimizer._local_opt, optimizer._kf_vertex, "local_ba", window)
+                if optimizer._local_opt is not None:
+                    self._graph(optimizer._local_opt, optimizer._kf_vertex, "local_ba", window)
+                elif getattr(optimizer, "_last_native_graph", None):
+                    # The native solve has no persistent optimizer
+                    # object; the same row shape, from the solve that
+                    # just ran.
+                    row = {"input_index": self._index, "kind": "local_ba",
+                           **optimizer._last_native_graph}
+                    if window is not None:
+                        row["window"] = window
+                    self.graphs.append(row)
+
+        def local_native(optimizer, local_keyframes, *args, **kwargs):
+            start = perf_counter()
+            window = self.window(local_keyframes)
+            self.collection_seconds += perf_counter() - start
+            try:
+                return original_native_local(optimizer, local_keyframes, *args, **kwargs)
+            finally:
+                row = getattr(optimizer, "_last_native_graph", None)
+                if row:
+                    out = {"input_index": self._index, "kind": "local_ba", **row}
+                    if window is not None:
+                        out["window"] = window
+                    self.graphs.append(out)
 
         def vertices(optimizer, opt, *args, **kwargs):
             result = original_vertices(optimizer, opt, *args, **kwargs)
@@ -153,6 +178,7 @@ class KeyframeCostAudit:
 
         bindings = [(Tracker, "update", update), (Tracker, "_handle_loop_closure_detection", loop),
                     (G2OBundleAdjustment, "_reconcile_and_optimize", local),
+                    (G2OBundleAdjustment, "_local_ba_native", local_native),
                     (G2OBundleAdjustment, "_create_keyframe_vertices", vertices)]
         for name, kind in (("_optimize_with_g2o", "fresh_ba"), ("pose_graph_optimization", "pose_graph")):
             bindings.append((G2OBundleAdjustment, name,

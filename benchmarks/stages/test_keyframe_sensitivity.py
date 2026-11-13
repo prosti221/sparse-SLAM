@@ -211,7 +211,9 @@ def test_cost_sampler_reads_sizes_without_rng_quality_or_registry_writes():
     assert [dict(p.observations) for p in points] == observations
 
 
-def test_graph_peaks_are_not_lost_when_the_local_cache_is_invalidated():
+def test_graph_peaks_are_not_lost_when_the_local_cache_is_invalidated(monkeypatch):
+    from slam.ba import bundle_adjustment_g2o as _ba_mod
+    monkeypatch.setattr(_ba_mod, "BA_LOCAL_NATIVE", 0)  # persistent-machinery pin
     world, _, _ = _criterion_map(5, [list(range(5)) for _ in range(32)], make_frame().K)
     assert world.g2o_optimizer.local_bundle_adjustment(world.cur_keyframe.frame_id)
     audit = KeyframeCostAudit(np.arange(10))
