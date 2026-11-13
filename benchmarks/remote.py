@@ -147,7 +147,9 @@ def cmd_sync(args):
     # env provision (idempotent; installs the pinned python per
     # .python-version + uv.lock on first run)
     print("[remote] uv sync (env provision) ...", flush=True)
-    r = _ssh(args.host, [f"cd {REMOTE_DIR} && uv sync --frozen"])
+    # --all-extras: the gate machine holds the superset (calib +
+        # learned) - phases measure every optional stack here.
+        r = _ssh(args.host, [f"cd {REMOTE_DIR} && uv sync --frozen --all-extras"])
     print(r.stdout[-2000:] if r.stdout else "", end="")
     if r.returncode != 0:
         print(r.stderr[-2000:])
