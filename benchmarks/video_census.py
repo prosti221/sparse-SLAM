@@ -169,30 +169,17 @@ def run_one(config, video_path, frames_cap, seed,
     gate_rows = []
     resets = []
     idx = -1
-    pipeline = (intake_mod.ExtractionPipeline(cap, gate.feature_extractor)
-                if gate is not None and intake_mod.INTAKE_EXTRACT_AHEAD
-                else None)
     t0 = time.perf_counter()
     try:
         while True:
-            if pipeline is not None:
-                state, item = pipeline.pop()
-                if state == "pending":
-                    continue
-                if state == "eos":
-                    break
-                img, pre_kps, pre_desc = item
-                pre = (pre_kps, pre_desc)
-            else:
-                ret, img = cap.read()
-                if not ret:
-                    break
-                pre = None
+            ret, img = cap.read()
+            if not ret:
+                break
             idx += 1
             if idx >= frames_cap:
                 break
 
-            fed = gate.should_feed(img, pre) if gate is not None else True
+            fed = gate.should_feed(img) if gate is not None else True
             gate_rows.append({"i": idx, "fed": bool(fed)})
             if not fed:
                 continue
@@ -242,9 +229,6 @@ def run_one(config, video_path, frames_cap, seed,
     finally:
         elapsed = time.perf_counter() - t0
         telemetry.set_recorder(None)
-        if pipeline is not None:
-            pipeline.stop()
-            pipeline.join(timeout_s=5.0)
         cap.release()
 
     summary = summarize_run(frames, resets, dict(recorder.events),

@@ -36,7 +36,6 @@ reset spiral; the container declaration preserves the
 health and can only ever LENGTHEN windows under gating (the
 safe direction).
 """
-import queue
 import threading
 
 import cv2 as cv
@@ -62,80 +61,6 @@ LOG_TAG = 'Intake'
 # the gate extracts from the same gray image). INT flag (the
 # --override trap); read at call time via the module alias.
 INTAKE_CARRY_EXTRACTION = 1
-
-# The decode+extract-ahead pipeline ([26c] step 2): ONE worker thread
-# owns the capture and the extractor - it reads frames in order and
-# extracts each into a bounded queue; the consumer pops on the main
-# thread. Frame order is unchanged and every audited call is
-# cv-RNG-clean ([26a]), so the pipeline is numerically silent; it
-# only overlaps the GPU inference behind the consumer's CPU stages.
-# Flag 0 = the sequential read path (the pre-pipeline behavior); the
-# consumer must also hold the carry (a gate without the carry would
-# re-extract what the worker already extracted). INT flag (the
-# --override trap); read at call time via the module alias.
-INTAKE_EXTRACT_AHEAD = 1
-
-_EOS = object()  # the producer's end-of-stream sentinel
-
-
-class ExtractionPipeline:
-    """Decode+extract ahead of the consumer thread.
-
-    ONE worker thread owns the capture and the extractor exclusively:
-    it reads frames in order, extracts each from the same gray
-    conversion the tracker's frame would use, and pushes into a
-    bounded queue (blocking puts = natural backpressure). The main
-    thread pops and never extracts while the pipeline runs - the
-    model access stays single-threaded by construction.
-
-    pop() never blocks long: a short queue wait returns 'pending' so
-    a renderer-paced loop stays live between SLAM frames.
-    """
-
-    def __init__(self, cap, extractor, depth: int = 2):
-        self._cap = cap
-        self._extractor = extractor
-        self._q = queue.Queue(maxsize=depth)
-        self._eos_seen = False
-        self._stopped = False
-        self._thread = threading.Thread(
-            target=self._produce, daemon=True, name="intake-extract")
-        self._thread.start()
-
-    def _produce(self):
-        while not self._stopped:
-            ret, img = self._cap.read()
-            if not ret:
-                self._q.put(_EOS)
-                return
-            kps, desc = self._extractor.extract(_frame_gray(img))
-            self._q.put((img, kps, desc))
-
-    def pop(self, timeout_s: float = 0.01):
-        """('ready', (img, kps, desc)) | ('pending', None) | ('eos', None)."""
-        if self._eos_seen:
-            return "eos", None
-        try:
-            item = self._q.get(timeout=timeout_s)
-        except queue.Empty:
-            return "pending", None
-        if item is _EOS:
-            self._eos_seen = True
-            return "eos", None
-        return "ready", item
-
-    def stop(self):
-        """Ask the producer to exit at its next read boundary (it may
-        still be blocked inside cap.read(); the daemon thread dies
-        with the process either way)."""
-        self._stopped = True
-
-    def join(self, timeout_s: float = None):
-        """Wait for the producer to exit (after stop(), or naturally
-        at end-of-stream) - the caller must not release the capture
-        while the producer still reads it."""
-        self._thread.join(timeout=timeout_s)
-
 
 def _frame_gray(img: np.ndarray) -> np.ndarray:
     """The same grayscale conversion Frame.gray_image applies, so the
@@ -185,25 +110,23 @@ class FrameIntakeGate:
         self._reference_desc = None
         self._last_fed_decoded_index = 0
 
-    def should_feed(self, img: np.ndarray, pre=None) -> bool:
+    def should_feed(self, img: np.ndarray) -> bool:
         """One decoded frame: feed it to the tracker, or skip it?
 
         Deterministic, input-side only - no tracker/map state is
         touched. Every call counts one decoded frame.
 
-        `pre` is an already-extracted (kps, desc) pair for THIS image
-        (the [26c] pipeline's worker output): the decision consumes it
-        instead of re-extracting, and last_extraction carries it for
-        the fed frame. The pair must come from the same gray
-        conversion the tracker's extractor would use (_frame_gray
-        mirrors Frame.gray_image exactly), so both sources are
-        bit-identical.
+        The extraction is CACHED in last_extraction: the caller (the
+        live loop) attaches it to the fed frame, so the tracker's
+        update() skips its own re-extraction - the gate's features
+        come from the SAME gray image Frame.gray_image produces
+        (_frame_gray mirrors that conversion exactly), so the carried
+        features are bit-identical to what the tracker would have
+        computed ([26a] measured every fed frame paying the
+        extraction twice).
         """
         self.decoded_frames += 1
-        if pre is not None:
-            kps, desc = pre
-        else:
-            kps, desc = self.feature_extractor.extract(_frame_gray(img))
+        kps, desc = self.feature_extractor.extract(_frame_gray(img))
         self.last_extraction = (kps, desc)
         kp_pts = cv.KeyPoint.convert(kps) if len(kps) else None
         has_features = (kp_pts is not None and desc is not None
