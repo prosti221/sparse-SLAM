@@ -278,7 +278,15 @@ def main():
                          "(<stem>_<tag>.json) - keeps verification/A-B "
                          "legs from colliding with existing evidence "
                          "(the skip-if-exists guard stays intact)")
+    ap.add_argument("--override", action="append", default=[],
+                    help="pin a sweepable flag for this run "
+                         "(repeatable NAME=VALUE; same resolution "
+                         "as benchmarks.run's --override, so A/B legs "
+                         "can hold machinery flags)")
     args = ap.parse_args()
+
+    from benchmarks.run import apply_overrides
+    apply_overrides(args.override)
 
     config = ConfigParser(str(CONFIG_PATH))
     OUT_DIR.mkdir(parents=True, exist_ok=True)

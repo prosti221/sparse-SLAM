@@ -1,5 +1,6 @@
 import g2o
 import numpy as np
+import time as _time
 from collections import defaultdict
 from slam.core.frame import Frame
 from slam.core.point import Point
@@ -49,6 +50,15 @@ LOOP_INFO_ODOMETRY_AGGREGATE = 500.0
 # Ships OFF; the machinery + pins remain for a redesigned criterion
 # (the IMPROVEMENT.md record holds the numbers).
 LOOP_BA_GATE_ENABLED = 0
+
+
+# The BA stage's internal split (build vs native solve vs write-back),
+# recorded into the telemetry VALUE store when the diagnostic flag is
+# ON - observation-only, the [26d] measurement (the stage timer only
+# sees the whole; the pip g2o package cannot host a batched API, so
+# the fixable side must be identified by measurement). Flag 0 = no
+# emission anywhere (byte-identical); read at CALL time.
+BA_TIMING_ATTRIB_ENABLED = 0
 
 
 class G2OBundleAdjustment:
@@ -371,6 +381,7 @@ class G2OBundleAdjustment:
 
     def _reconcile_and_optimize(self, local_keyframes, local_points,
                                  observations, fix_points) -> bool:
+        t_attrib = _time.perf_counter() if BA_TIMING_ATTRIB_ENABLED else 0.0
         if self._local_opt is None:
             self._ensure_local_optimizer()
         opt = self._local_opt
@@ -478,11 +489,15 @@ class G2OBundleAdjustment:
                         frame_id not in local_kf_ids)
 
         # --- Optimize ---
+        t_solve0 = _time.perf_counter() if BA_TIMING_ATTRIB_ENABLED \
+            else 0.0
         opt.initialize_optimization()
         iterations = opt.optimize(30)
         telemetry.event("ba_iterations", int(iterations))
 
         # --- Write back (same semantics as the fresh build) ---
+        t_write0 = _time.perf_counter() if BA_TIMING_ATTRIB_ENABLED \
+            else 0.0
         for frame_id, v in self._kf_vertex.items():
             kf = self.map.get_keyframe_by_id(frame_id)
             if kf is None:
@@ -500,6 +515,11 @@ class G2OBundleAdjustment:
                     p.pt_3d = np.array(v.estimate())
 
         self._recompute_point_errors(observations)
+        if BA_TIMING_ATTRIB_ENABLED:
+            t_end = _time.perf_counter()
+            telemetry.value("ba_build_s", t_solve0 - t_attrib)
+            telemetry.value("ba_solve_s", t_write0 - t_solve0)
+            telemetry.value("ba_writeback_s", t_end - t_write0)
         return True
 
     def global_bundle_adjustment(self, gated: bool = False) -> bool:
