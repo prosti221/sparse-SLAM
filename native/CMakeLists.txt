@@ -40,7 +40,6 @@ add_subdirectory(third_party/g2o third_party/g2o-build EXCLUDE_FROM_ALL)
 
 pybind11_add_module(slam_native
                     src/slam_native.cpp
-                    src/map_core.cpp
                     src/error_fold.cpp
                     src/ba_solver.cpp
                     src/persistent_ba.cpp

@@ -266,35 +266,49 @@ class G2OBundleAdjustment:
         local_point_set = self.map.get_local_points(local_keyframes)
         local_points = [p for p in self.map.points if p in local_point_set]
 
-        # All observations of the local points, INCLUDING observations from
-        # keyframes outside the window. Those extra keyframes are added as
-        # fixed vertices and anchor the optimization: without them, the free
-        # window poses + points form a gauge-free subsystem that can drift
-        # rigidly with no reprojection penalty. (The list can also contain
-        # NON-keyframe tracker observations - frames never promoted; both
-        # the fresh-build path and the persistent graph skip them at edge
-        # construction.)
-        observations = [obs for p in local_points
-                        for obs in p.observations.values()]
+        if self.map._point_registry is None or not local_points:
+            telemetry.event("ba_insufficient_observations")
+            warning_log(LOG_TAG, "Insufficient observations for BA: 0")
+            return False
 
-        if len(observations) < const.MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
+        # The C5a assembly: the fold + BA inputs derived from the obs
+        # registry's rows in the EXACT Python orders (the local points
+        # in map order, each point's rows in its observation insertion
+        # order), one native call. All observations of the local points
+        # INCLUDING keyframes outside the window and never-promoted
+        # tracker frames - the same set the per-object list
+        # comprehension built; the edges filter to keyframe frames at
+        # the solve (the anchors: without the fixed out-of-window
+        # keyframes the free window + points is a gauge-free subsystem).
+        kf_ids = [kf.frame_id for kf in self.map.keyframes]
+        local_ids = [p.point_id for p in local_points]
+        rows_map = self.map._registry_rows
+        local_rows = [rows_map[pid] for pid in local_ids]
+        local_avg = [p.average_reprojection_error for p in local_points]
+        asm = self.map._obs_registry.assemble_local_ba(
+            kf_ids, [kf.frame_id for kf in local_keyframes],
+            local_ids, local_rows,
+            self.map._point_registry.positions_view(),
+            np.array(local_avg, dtype=np.float64))
+        fold_obs_frame = asm[0]
+
+        if len(fold_obs_frame) < const.MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT:
             telemetry.event("ba_insufficient_observations")
             warning_log(
-                LOG_TAG, f"Insufficient observations for BA: {len(observations)}")
+                LOG_TAG,
+                f"Insufficient observations for BA: {len(fold_obs_frame)}")
             return False
         else:
             debug_log(
-                LOG_TAG, f"Using : {len(observations)} observations for BA optimization")
+                LOG_TAG,
+                f"Using : {len(fold_obs_frame)} observations for BA optimization")
 
-        return self._local_ba_persistent(
-            local_keyframes, local_points, observations,
-            fix_points=fix_points)
+        return self._local_ba_persistent(local_points, asm,
+                                         fix_points=fix_points)
 
-    def _local_ba_persistent(self, local_keyframes, local_points,
-                             observations, fix_points) -> bool:
+    def _local_ba_persistent(self, local_points, asm, fix_points) -> bool:
         try:
-            return self._reconcile_and_optimize(
-                local_keyframes, local_points, observations, fix_points)
+            return self._reconcile_and_optimize(local_points, asm, fix_points)
         except Exception as e:
             telemetry.event("ba_exception")
             error_log(LOG_TAG, f"persistent local BA failed: {e}")
@@ -309,79 +323,48 @@ class G2OBundleAdjustment:
             self._graph_edges_by_kf = {}
             return False
 
-    def _reconcile_and_optimize(self, local_keyframes, local_points,
-                                 observations, fix_points) -> bool:
-        """The reconcile-and-solve driver: membership/anchor here, the
-        reconcile + solve + extraction in ONE native call
-        (PersistentLocalBA - migration C2b2b), the write-back and the
-        fold here. The native side preserves the Python reconcile's
-        exact op order (stale cascade, point vertices in map order, KF
-        vertices in map order, delta edges in the observations list
-        order, the fixed-flag refresh), so the solve sequence is
-        identical to the g2o-python path this ports.
+    def _reconcile_and_optimize(self, local_points, asm, fix_points) -> bool:
+        """The reconcile-and-solve driver: membership/anchor resolved
+        by the C5a assembly (the obs registry's row space, the exact
+        Python orders), the reconcile + solve + extraction in ONE
+        native call (PersistentLocalBA - migration C2b2b), the
+        write-back and the fold here. The native side preserves the
+        Python reconcile's exact op order (stale cascade, point
+        vertices in map order, KF vertices in map order, delta edges
+        in the observations list order, the fixed-flag refresh), so
+        the solve sequence is identical to the g2o-python path this
+        ports.
         """
         t_attrib = _time.perf_counter() if BA_TIMING_ATTRIB_ENABLED else 0.0
 
-        # --- Compute the target membership ---
-        target_kf_ids = {obs.frame.frame_id for obs in observations}
-        local_kf_ids = {kf.frame_id for kf in local_keyframes}
-
-        # Gauge anchor semantics preserved from the fresh build: the
-        # OLDEST involved keyframe is fixed (involved_keyframes[0] in
-        # _create_keyframe_vertices), plus every keyframe outside the
-        # window.
-        anchor_kf_id = None
-        for kf in self.map.keyframes:
-            if kf.frame_id in target_kf_ids:
-                anchor_kf_id = kf.frame_id
-                break
-
-        frames = [kf for kf in self.map.keyframes
-                  if kf.frame_id in target_kf_ids]
-        frame_row = {kf.frame_id: i for i, kf in enumerate(frames)}
-        point_row = {p.point_id: i for i, p in enumerate(local_points)}
-        # The observations list also contains non-keyframe tracker
-        # observations - frames that were never promoted - which get
-        # no vertex and no edge (the same skip the g2o-python reconcile
-        # made inside its delta pass; filtering here preserves the
-        # kept edges' order exactly).
-        edge_obs = [obs for obs in observations
-                    if obs.frame.frame_id in frame_row]
+        (fold_obs_frame, fold_obs_point, fold_norm, _fold_rows, fold_avg,
+         fold_nobs, fold_slot, fold_frame_ids, ba_frame_ids, anchor_a,
+         in_window, edge_frame_rows, edge_point_rows, edge_uv,
+         positions) = asm
+        anchor_row = int(anchor_a[0])
+        frames = [self.map.keyframes_by_id[fid] for fid in ba_frame_ids]
 
         T_wc = np.stack([np.linalg.inv(kf.pose) for kf in frames])
-        in_window = np.array(
-            [1 if kf.frame_id in local_kf_ids else 0 for kf in frames],
-            dtype=np.uint8)
-        positions = np.array([p.pt_3d for p in local_points],
-                             dtype=np.float64)
-        obs_frame_row = np.fromiter(
-            (frame_row[obs.frame.frame_id] for obs in edge_obs),
-            dtype=np.int64, count=len(edge_obs))
-        obs_point_row = np.fromiter(
-            (point_row[obs.point.point_id] for obs in edge_obs),
-            dtype=np.int64, count=len(edge_obs))
-        obs_uv = np.array([obs.pt_2d_norm for obs in edge_obs],
-                          dtype=np.float64)
+        local_ids = [p.point_id for p in local_points]
 
         if BA_TIMING_ATTRIB_ENABLED:
             t_solve0 = _time.perf_counter()
 
         T_wc_new, pos_new, iterations, actual_edges = \
             self._native_local_ba.solve_local(
-                frame_ids=[kf.frame_id for kf in frames],
-                point_ids=[p.point_id for p in local_points],
+                frame_ids=ba_frame_ids, point_ids=local_ids,
                 T_wc=T_wc, positions=positions, in_window=in_window,
-                anchor_row=frame_row[anchor_kf_id],
+                anchor_row=anchor_row,
                 points_fixed=1 if fix_points else 0,
-                obs_frame_row=obs_frame_row.tolist(),
-                obs_point_row=obs_point_row.tolist(),
-                obs_uv=obs_uv, max_iterations=30)
+                obs_frame_row=edge_frame_rows,
+                obs_point_row=edge_point_rows,
+                obs_uv=edge_uv, max_iterations=30)
         telemetry.event("ba_iterations", int(iterations))
 
         # Safety net: every KEYFRAME observation must now be an edge.
-        if len(edge_obs) != actual_edges:
+        if len(edge_frame_rows) != actual_edges:
             telemetry.event("ba_edge_mismatch",
-                            len(edge_obs) - actual_edges)
+                            len(edge_frame_rows) - actual_edges)
 
         if BA_TIMING_ATTRIB_ENABLED:
             t_write0 = _time.perf_counter()
@@ -400,7 +383,7 @@ class G2OBundleAdjustment:
                 reg.update_positions(
                     [p.point_id for p in local_points], pos_new)
 
-        self._recompute_point_errors(observations)
+        self._recompute_point_errors(local_points, assembly=asm)
         if BA_TIMING_ATTRIB_ENABLED:
             t_end = _time.perf_counter()
             telemetry.value("ba_build_s", t_solve0 - t_attrib)
@@ -458,6 +441,7 @@ class G2OBundleAdjustment:
                 kf.pose = pre_poses[kf.frame_id]
             for p, x in zip(points, pre_pts):
                 p.pt_3d = x
+            self.map.rebuild_point_coords()
             self._recompute_point_errors(observations)
             telemetry.event("loop_global_ba_rejected")
             warning_log(
@@ -798,7 +782,8 @@ class G2OBundleAdjustment:
 
     def _recompute_point_errors(
         self,
-        observations: List[Observation]
+        observations,
+        assembly=None,
     ) -> None:
         """Recompute every observation's reprojection error and fold it
         into each point's running average (the NATIVE error-fold
@@ -818,7 +803,35 @@ class G2OBundleAdjustment:
         updated - the same idempotent set the interleaved flags
         produced (the flag is lazily consumed: Frame.tracking_quality
         recomputes on next read).
+
+        Two input modes: the GLOBAL path passes the Observation list
+        and the flat SOA is extracted per object here; the LOCAL path
+        (migration C5a) passes the local Point objects plus the
+        assembly tuple - the SOA comes from the obs registry's row
+        space in the same orders, zero per-observation Python.
         """
+        if assembly is not None:
+            (fold_obs_frame, fold_obs_point, fold_norm, fold_rows, fold_avg,
+             fold_nobs, fold_slot, fold_frame_ids, _ba_frame_ids, _anchor_a,
+             _in_window, _e_fr, _e_pr, _e_uv, _positions) = assembly
+            points = [observations[i] for i in fold_slot]
+            poses_inv = np.stack(
+                [self.map.frames_by_id[fid].pose_inv
+                 for fid in fold_frame_ids])
+            # The solve moved the geometry after the assembly ran: the
+            # fold's positions must be the POST-write-back values, so
+            # they re-gather from the live registry block here (the
+            # write-back's bulk update put the solved positions in it).
+            fold_pos = np.asarray(
+                self.map._point_registry.positions_view())[fold_rows]
+            err, new_avg, updated = error_fold(FoldInputs(
+                poses_inv=poses_inv, obs_frame=fold_obs_frame,
+                point_pos=fold_pos, obs_norm=fold_norm,
+                obs_point=fold_obs_point, point_avg=fold_avg,
+                point_nobs=fold_nobs))
+            self._apply_fold(points, err, new_avg, updated)
+            return
+
         O = len(observations)
         if O == 0:
             return
@@ -851,6 +864,12 @@ class G2OBundleAdjustment:
                              point_nobs=point_nobs)
         err, new_avg, updated = error_fold(fold_in)
 
+        self._apply_fold(points, err, new_avg, updated)
+
+    def _apply_fold(self, points, err, new_avg, updated) -> None:
+        """The fold's write-back: the running average per updated point
+        (the idempotent flag flush - flags only points whose fold
+        updated)."""
         for i, pt in enumerate(points):
             if updated[i]:
                 pt.average_reprojection_error = new_avg[i]

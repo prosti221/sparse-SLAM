@@ -95,12 +95,19 @@ class KeyframeCostAudit:
                                 "retained_keyframe": frame.frame_id in tracker.map.keyframes_by_id})
             return result
 
-        def local(optimizer, local_keyframes, *args, **kwargs):
+        def local(optimizer, local_points, asm, *args, **kwargs):
             start = perf_counter()
-            window = self.window(local_keyframes)
+            # The C5a conversion: the window keyframes no longer ride
+            # in as a leading argument - they are the asm tuple's
+            # target frames with in_window set (map order, the same
+            # list get_local_keyframes returned).
+            window_kfs = [optimizer.map.keyframes_by_id[fid]
+                          for fid, w in zip(asm[8], np.asarray(asm[10]).tolist())
+                          if w]
+            window = self.window(window_kfs)
             self.collection_seconds += perf_counter() - start
             try:
-                return original_local(optimizer, local_keyframes, *args, **kwargs)
+                return original_local(optimizer, local_points, asm, *args, **kwargs)
             finally:
                 native = optimizer._native_local_ba
                 row = {"input_index": self._index, "kind": "local_ba",

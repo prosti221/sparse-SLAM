@@ -44,6 +44,11 @@ class Map:
 
         self.points_by_id: dict[int, Point] = {}
         self.keyframes_by_id: dict[int, Frame] = {}
+        # Every frame with at least one point-side observation, by id
+        # (the C5 anchor: the fold's first-appearance frames resolve
+        # pose_inv through it; the Observation references that used to
+        # keep old tracker frames alive are gone from the BA path).
+        self.frames_by_id: dict[int, Frame] = {}
 
         # Covisibility graph: {keyframe_id: {keyframe_id: shared_observations_count}}
         self.covisibility_graph: dict[int, dict[int, int]] = defaultdict(
@@ -86,14 +91,6 @@ class Map:
         # construct Frames directly).
         self.intrinsics = None
 
-        # The native map window (migration C1): the C++ side's copy of
-        # the BA input, REPLACED wholesale at every get_observations
-        # call (the transaction point). No granular accessors - the
-        # Python graph stays the working state until its readers go
-        # native (C2 the fold, C3 the correspondence, C5 the rest).
-        from slam_native import MapCore
-        self._native_core = MapCore()
-
         # The live point registry (migration C3b): the full point set's
         # geometry + descriptors in native capacity-managed storage,
         # updated incrementally at the map's event points. Created
@@ -128,6 +125,8 @@ class Map:
         point->observations dicts, which stay the working state)."""
         if not observations:
             return
+        for obs in observations:
+            self.frames_by_id.setdefault(obs.frame_id, obs.frame)
         self._obs_registry.add_observations(
             [obs.point_id for obs in observations],
             [obs.frame_id for obs in observations],
@@ -328,115 +327,8 @@ class Map:
         return local_points
 
     def get_observations(self, local_keyframes: List[Frame]) -> List[Observation]:
-        observations = [obs for kf in local_keyframes
-                        for obs in kf.observed_points.values()]
-        self._push_native_window(local_keyframes, observations)
-        return observations
-
-    def _push_native_window(self, local_keyframes: List[Frame],
-                            observations: List[Observation]):
-        """Copy the BA input window into the native core (REPLACE
-        semantics - always consistent, no event hooks). The assembly is
-        the transaction's Python side; the core releases the GIL for
-        the bulk copies."""
-        import numpy as np
-        frames = local_keyframes
-        F = len(frames)
-        O = len(observations)
-
-        pose_arr = np.empty((F, 4, 4))
-        k_arr = np.empty((F, 3, 3))
-        k1_arr = np.empty(F)
-        kp_off = np.zeros(F + 1, dtype=np.int64)
-        kp_slices = []
-        norm_slices = []
-        desc_mats = []
-        desc_dtype = 0
-        for i, kf in enumerate(frames):
-            pose_arr[i] = kf.pose
-            k_arr[i] = kf.K
-            k1_arr[i] = kf.k1
-            pts = kf.kp_pts
-            n = 0 if pts is None else len(pts)
-            kp_off[i + 1] = kp_off[i] + n
-            if n:
-                kp_slices.append(np.ascontiguousarray(pts, dtype=np.float64))
-                norm = kf.kp_pts_norm
-                norm_slices.append(
-                    np.ascontiguousarray(norm, dtype=np.float64))
-                desc = kf.descriptors
-                if desc is not None and len(desc):
-                    desc_mats.append(
-                        np.ascontiguousarray(desc).view(np.uint8).reshape(
-                            len(desc), -1))
-                    desc_dtype = 2 if np.issubdtype(
-                        np.asarray(desc).dtype, np.floating) else 1
-        if kp_slices:
-            kp_arr = np.concatenate(kp_slices)
-            norm_arr = np.concatenate(norm_slices)
-        else:
-            kp_arr = np.empty((0, 2))
-            norm_arr = np.empty((0, 2))
-        if desc_mats and all(m.shape[1] == desc_mats[0].shape[1]
-                             for m in desc_mats):
-            fdesc_arr = np.concatenate(desc_mats)
-        else:
-            fdesc_arr = np.empty((0, 0), dtype=np.uint8)
-
-        obs_f = np.empty(O, dtype=np.uint64)
-        obs_p = np.empty(O, dtype=np.uint64)
-        obs_k = np.empty(O, dtype=np.int64)
-        obs_n = np.empty((O, 2))
-        for j, ob in enumerate(observations):
-            obs_f[j] = ob.frame_id
-            obs_p[j] = ob.point_id
-            obs_k[j] = ob.kp_idx
-            obs_n[j] = ob.pt_2d_norm
-
-        # Unique points in window order (dict preserves insertion).
-        points = {}
-        for ob in observations:
-            if ob.point_id not in points:
-                points[ob.point_id] = ob.point
-        M = len(points)
-        pos_arr = np.empty((M, 3))
-        nobs_arr = np.empty(M, dtype=np.int64)
-        pdescs = []
-        for i, (pid, pt) in enumerate(points.items()):
-            pos_arr[i] = pt.pt_3d
-            nobs_arr[i] = len(pt.observations)
-            if pt.descriptor is not None and len(pt.descriptor):
-                pdescs.append(
-                    np.ascontiguousarray(pt.descriptor).view(np.uint8).reshape(
-                        1, -1))
-        if pdescs and all(m.shape[1] == pdescs[0].shape[1] for m in pdescs):
-            pdesc_arr = np.concatenate(pdescs)
-            pdesc_dtype = 2 if np.issubdtype(
-                np.asarray(list(points.values())[0].descriptor).dtype,
-                np.floating) else 1
-        else:
-            pdesc_arr = np.empty((0, 0), dtype=np.uint8)
-            pdesc_dtype = 0
-
-        self._native_core.push_window(
-            frame_ids=[kf.frame_id for kf in frames],
-            poses=pose_arr,
-            Ks=k_arr,
-            k1s=k1_arr,
-            kp_offsets=kp_off,
-            kp_pts=kp_arr,
-            kp_pts_norm=norm_arr,
-            frame_desc_bytes=fdesc_arr,
-            frame_desc_dtype=desc_dtype,
-            point_ids=list(points.keys()),
-            positions=pos_arr,
-            point_desc_bytes=pdesc_arr,
-            point_desc_dtype=pdesc_dtype,
-            point_num_obs=nobs_arr,
-            obs_frame_ids=obs_f.tolist(),
-            obs_point_ids=obs_p.tolist(),
-            obs_kp_idx=obs_k,
-            obs_pt2d_norm=obs_n)
+        return [obs for kf in local_keyframes
+                for obs in kf.observed_points.values()]
 
     def prune_outlier_points(self):
         redundant_points = bad_points = 0
@@ -593,11 +485,11 @@ class Map:
         self.covisibility_graph.clear()
         self._covisibility_score_cache.clear()
         self.tracking_quality_history.clear()
-        self._native_core.clear()
         if self._point_registry is not None:
             self._point_registry.clear()
         self._registry_rows = None
         self._obs_registry.clear()
+        self.frames_by_id.clear()
 
         # Reset state counters
         self.consecutive_low_quality_frames = 0

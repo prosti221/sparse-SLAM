@@ -174,4 +174,233 @@ py::object ObsRegistry::cull_scan(
   return py::make_tuple(bs, rc);
 }
 
+py::object ObsRegistry::assemble_local_ba(
+    const std::vector<uint64_t>& kf_ids,
+    const std::vector<uint64_t>& window_kf_ids,
+    const std::vector<uint64_t>& local_point_ids,
+    const std::vector<int64_t>& local_point_rows,
+    py::array_t<double, py::array::c_style | py::array::forcecast> positions,
+    py::array_t<double, py::array::c_style | py::array::forcecast> point_avg)
+    const {
+  const size_t P = local_point_ids.size();
+  if (local_point_rows.size() != P ||
+      static_cast<size_t>(point_avg.shape(0)) != P) {
+    throw std::invalid_argument(
+        "assemble_local_ba: the local point arrays must be parallel");
+  }
+  const size_t B = static_cast<size_t>(positions.shape(0));
+  if (positions.shape(1) != 3) {
+    throw std::invalid_argument("assemble_local_ba: positions must be (B, 3)");
+  }
+  const auto pos_in = positions.unchecked<2>();
+  for (size_t i = 0; i < P; ++i) {
+    if (local_point_rows[i] < 0 ||
+        static_cast<size_t>(local_point_rows[i]) >= B) {
+      throw std::invalid_argument(
+          "assemble_local_ba: local point row out of the positions block");
+    }
+  }
+
+  std::unordered_set<uint64_t> local_set(local_point_ids.begin(),
+                                         local_point_ids.end());
+  std::unordered_map<uint64_t, size_t> local_index;
+  for (size_t i = 0; i < P; ++i) {
+    local_index.emplace(local_point_ids[i], i);
+  }
+  std::unordered_set<uint64_t> kf_set(kf_ids.begin(), kf_ids.end());
+  std::unordered_set<uint64_t> window_set(window_kf_ids.begin(),
+                                          window_kf_ids.end());
+
+  // The fold's point subset: local points with >= 1 live row, in the
+  // local (map) order - the first-appearance order restricted to
+  // appearing points (the sequence is point-major).
+  std::unordered_map<uint64_t, int64_t> live_count;
+  for (const auto& row : rows_) {
+    if (row.live && local_set.count(row.point_id)) {
+      ++live_count[row.point_id];
+    }
+  }
+  std::vector<size_t> fold_slots;
+  std::unordered_map<uint64_t, size_t> slot_of;
+  for (size_t i = 0; i < P; ++i) {
+    if (live_count.count(local_point_ids[i])) {
+      slot_of.emplace(local_point_ids[i], fold_slots.size());
+      fold_slots.push_back(i);
+    }
+  }
+  const size_t PF = fold_slots.size();
+
+  // The point-major observation sequence: local points in map order,
+  // each point's live rows in global row-index order (= the dicts'
+  // insertion order; rows overwrite in place, dicts overwrite in
+  // place).
+  std::vector<int64_t> start(PF + 1, 0);
+  for (size_t j = 0; j < PF; ++j) {
+    start[j + 1] = start[j] + live_count[local_point_ids[fold_slots[j]]];
+  }
+  const long O = static_cast<long>(start[PF]);
+  std::vector<int64_t> cursor(start.begin(), start.end() - 1);
+  std::vector<uint64_t> seq_point(static_cast<size_t>(O));
+  std::vector<uint64_t> seq_frame(static_cast<size_t>(O));
+  std::vector<double> seq_uv(static_cast<size_t>(O) * 2);
+  for (const auto& row : rows_) {
+    if (!row.live) continue;
+    auto so = slot_of.find(row.point_id);
+    if (so == slot_of.end()) continue;
+    const int64_t at = cursor[so->second]++;
+    seq_point[static_cast<size_t>(at)] = row.point_id;
+    seq_frame[static_cast<size_t>(at)] = row.frame_id;
+    seq_uv[static_cast<size_t>(at) * 2] = row.xn;
+    seq_uv[static_cast<size_t>(at) * 2 + 1] = row.yn;
+  }
+
+  // The fold's first-appearance frame/point indices over the sequence
+  // (dict.fromkeys equivalence).
+  std::unordered_map<uint64_t, int64_t> first_frame, first_point;
+  std::vector<uint64_t> fold_frames;
+  std::vector<int64_t> f_obs_frame(static_cast<size_t>(O));
+  std::vector<int64_t> f_obs_point(static_cast<size_t>(O));
+  for (long i = 0; i < O; ++i) {
+    const size_t u = static_cast<size_t>(i);
+    auto fit = first_frame.find(seq_frame[u]);
+    if (fit == first_frame.end()) {
+      fit = first_frame.emplace(seq_frame[u],
+                                static_cast<int64_t>(fold_frames.size()))
+                .first;
+      fold_frames.push_back(seq_frame[u]);
+    }
+    f_obs_frame[u] = fit->second;
+    auto pit = first_point.find(seq_point[u]);
+    if (pit == first_point.end()) {
+      pit = first_point.emplace(seq_point[u],
+                                static_cast<int64_t>(first_point.size()))
+                .first;
+    }
+    f_obs_point[u] = pit->second;
+  }
+
+  // The fold's point arrays in the subset order (avgs reordered; nobs =
+  // the live-row counts = the dict sizes; fold_rows = the subset's
+  // registry rows - the fold re-gathers positions from the LIVE block
+  // at fold time, because the solve moves the geometry after this
+  // assembly runs).
+  py::array_t<double> f_avg(static_cast<long>(PF));
+  py::array_t<int64_t> f_nobs(static_cast<long>(PF));
+  py::array_t<int64_t> f_slot(static_cast<long>(PF));
+  py::array_t<int64_t> f_rows(static_cast<long>(PF));
+  {
+    auto fa = f_avg.mutable_unchecked<1>();
+    auto fn = f_nobs.mutable_unchecked<1>();
+    auto fs = f_slot.mutable_unchecked<1>();
+    auto fr = f_rows.mutable_unchecked<1>();
+    for (size_t j = 0; j < PF; ++j) {
+      const size_t i = fold_slots[j];
+      fa(static_cast<long>(j)) = point_avg.unchecked<1>()(
+          static_cast<long>(i));
+      fn(static_cast<long>(j)) = live_count[local_point_ids[i]];
+      fs(static_cast<long>(j)) = static_cast<int64_t>(i);
+      fr(static_cast<long>(j)) = local_point_rows[i];
+    }
+  }
+
+  // The BA edges: the sequence filtered to keyframe frames, list order
+  // preserved (the delta-edge contract). Frame rows are the BA frames'
+  // slots (map-kf order n target); point rows are the local slots.
+  std::unordered_map<uint64_t, int64_t> ba_frame_row;
+  std::vector<uint64_t> ba_frames;
+  std::vector<uint8_t> ba_in_window;
+  for (uint64_t fid : kf_ids) {
+    if (first_frame.count(fid)) {
+      ba_frame_row.emplace(fid, static_cast<int64_t>(ba_frames.size()));
+      ba_frames.push_back(fid);
+      ba_in_window.push_back(window_set.count(fid) ? 1 : 0);
+    }
+  }
+  // The anchor: the FIRST keyframe in map order among the target
+  // frames (the involved_keyframes[0] gauge semantics).
+  int64_t anchor = -1;
+  for (uint64_t fid : kf_ids) {
+    if (first_frame.count(fid)) {
+      anchor = ba_frame_row[fid];
+      break;
+    }
+  }
+  std::vector<int64_t> e_frame;
+  std::vector<int64_t> e_point;
+  std::vector<double> e_uv;
+  e_uv.reserve(static_cast<size_t>(O) * 2);
+  for (long i = 0; i < O; ++i) {
+    const size_t u = static_cast<size_t>(i);
+    auto fit = ba_frame_row.find(seq_frame[u]);
+    if (fit == ba_frame_row.end()) continue;  // a tracker frame
+    e_frame.push_back(fit->second);
+    e_point.push_back(
+        static_cast<int64_t>(local_index[seq_point[u]]));
+    e_uv.push_back(seq_uv[u * 2]);
+    e_uv.push_back(seq_uv[u * 2 + 1]);
+  }
+
+  auto list_from_u64 = [](const std::vector<uint64_t>& v) {
+    py::list l;
+    for (uint64_t x : v) l.append(py::int_(static_cast<long long>(x)));
+    return l;
+  };
+  auto list_from_i64 = [](const std::vector<int64_t>& v) {
+    py::list l;
+    for (int64_t x : v) l.append(py::int_(static_cast<long long>(x)));
+    return l;
+  };
+
+  py::array_t<int64_t> f_of(static_cast<long>(O));
+  py::array_t<int64_t> f_op(static_cast<long>(O));
+  py::array_t<double> f_norm({static_cast<long>(O), 2L});
+  {
+    auto of = f_of.mutable_unchecked<1>();
+    auto op = f_op.mutable_unchecked<1>();
+    auto on = f_norm.mutable_unchecked<2>();
+    for (long i = 0; i < O; ++i) {
+      const size_t u = static_cast<size_t>(i);
+      of(i) = f_obs_frame[u];
+      op(i) = f_obs_point[u];
+      on(i, 0) = seq_uv[u * 2];
+      on(i, 1) = seq_uv[u * 2 + 1];
+    }
+  }
+  // The BA's positions over ALL local points (map order) - the vertex
+  // set includes zero-row points (defensive; none in practice).
+  py::array_t<double> b_pos({static_cast<long>(P), 3L});
+  {
+    auto bp = b_pos.mutable_unchecked<2>();
+    for (size_t i = 0; i < P; ++i) {
+      const long row = local_point_rows[i];
+      for (int c = 0; c < 3; ++c) {
+        bp(static_cast<long>(i), c) = pos_in(row, c);
+      }
+    }
+  }
+
+  py::array_t<double> e_uvs({static_cast<long>(e_frame.size()), 2L});
+  {
+    auto eu = e_uvs.mutable_unchecked<2>();
+    for (size_t i = 0; i < e_frame.size(); ++i) {
+      eu(static_cast<long>(i), 0) = e_uv[i * 2];
+      eu(static_cast<long>(i), 1) = e_uv[i * 2 + 1];
+    }
+  }
+  py::array_t<int64_t> anchor_a(1);
+  anchor_a.mutable_unchecked<1>()(0) = anchor;
+  py::array_t<uint8_t> win_a(static_cast<long>(ba_in_window.size()));
+  {
+    auto w = win_a.mutable_unchecked<1>();
+    for (size_t i = 0; i < ba_in_window.size(); ++i) {
+      w(static_cast<long>(i)) = ba_in_window[i];
+    }
+  }
+  return py::make_tuple(
+      f_of, f_op, f_norm, f_rows, f_avg, f_nobs, f_slot,
+      list_from_u64(fold_frames),
+      list_from_u64(ba_frames), anchor_a, win_a,
+      list_from_i64(e_frame), list_from_i64(e_point), e_uvs, b_pos);
+}
+
 }  // namespace slarnative

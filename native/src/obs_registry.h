@@ -9,6 +9,7 @@
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
@@ -65,6 +66,23 @@ class ObsRegistry {
   py::object cull_scan(const std::vector<uint64_t>& candidate_ids,
                        const std::vector<uint64_t>& keyframe_ids,
                        int64_t min_other) const;
+
+  // The C5 BA-path assembly (bulk): the local-BA + error-fold inputs
+  // derived from the registry's rows in the EXACT Python orders.
+  // Inputs: kf ids in map-keyframe order, the window kf subset, the
+  // local point ids in map order (the frame-side get_local_points set,
+  // Python-authored - its dedup-only entries have no rows), their
+  // registry rows, the registry's positions block, the running avgs.
+  // Returns (fold arrays..., ba arrays...) - see the binding.
+  py::object assemble_local_ba(
+      const std::vector<uint64_t>& kf_ids,
+      const std::vector<uint64_t>& window_kf_ids,
+      const std::vector<uint64_t>& local_point_ids,
+      const std::vector<int64_t>& local_point_rows,
+      py::array_t<double, py::array::c_style | py::array::forcecast>
+          positions,
+      py::array_t<double, py::array::c_style | py::array::forcecast>
+          point_avg) const;
 
  private:
   struct ObsRow {

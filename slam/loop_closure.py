@@ -868,6 +868,7 @@ class PoseGraphOptimizer:
             reanchored += 1
         debug_log(LOG_TAG, f"Re-anchored {reanchored} map points "
                   f"with the loop correction")
+        self.map.rebuild_point_coords()
 
     def create_constraint_from_verified_loop(self, verified_loop: LoopClosureCandidate) -> PoseGraphConstraint:
         """Convert a verified loop closure to a pose graph constraint.

@@ -289,6 +289,7 @@ class IntrinsicsRefiner:
             kf.pose = pose
         for pt, X in zip(self.map.points, pts3d):
             pt.pt_3d = X
+        self.map.rebuild_point_coords()
 
     def _solve_into_basin(self, obs_list):
         """Re-solve the whole map toward the CURRENT intrinsics basin:
