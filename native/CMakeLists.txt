@@ -44,7 +44,8 @@ pybind11_add_module(slam_native
                     src/error_fold.cpp
                     src/ba_solver.cpp
                     src/persistent_ba.cpp
-                    src/correspondence.cpp)
+                    src/correspondence.cpp
+                    src/point_registry.cpp)
 target_link_libraries(slam_native PRIVATE
                       core types_sba types_slam3d solver_eigen stuff)
 

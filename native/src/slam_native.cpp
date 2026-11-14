@@ -9,6 +9,7 @@
 #include "ba_solver.h"
 #include "persistent_ba.h"
 #include "correspondence.h"
+#include "point_registry.h"
 
 namespace py = pybind11;
 
@@ -172,4 +173,23 @@ PYBIND11_MODULE(slam_native, m) {
   m.def("match_projected", &slarnative::match_projected, py::arg("in"),
         "The C3a projection-match kernel (route B). Returns "
         "(point_rows, kp_indices, repro_errors, n_matches).");
+
+  py::class_<slarnative::PointRegistry>(m, "PointRegistry")
+      .def(py::init<int>(), py::arg("desc_width"))
+      .def("register_points", &slarnative::PointRegistry::register_points,
+           py::arg("ids"), py::arg("positions"), py::arg("desc_bytes"),
+           py::arg("has_desc"))
+      .def("update_positions", &slarnative::PointRegistry::update_positions,
+           py::arg("ids"), py::arg("positions"))
+      .def("remove_points", &slarnative::PointRegistry::remove_points,
+           py::arg("ids"))
+      .def("clear", &slarnative::PointRegistry::clear)
+      .def("size", &slarnative::PointRegistry::size)
+      .def("has", &slarnative::PointRegistry::has)
+      .def("desc_width", &slarnative::PointRegistry::desc_width)
+      .def("positions_view", &slarnative::PointRegistry::positions_view)
+      .def("descriptors_view", &slarnative::PointRegistry::descriptors_view)
+      .def("has_desc_view", &slarnative::PointRegistry::has_desc_view)
+      .def("row_of", &slarnative::PointRegistry::row_of)
+      .def("ids", &slarnative::PointRegistry::ids);
 }

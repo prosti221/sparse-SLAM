@@ -465,6 +465,21 @@ class Tracker:
             return []
 
         points = [mp for mp, _uv in projected_points]
+        # The C3b registry fast path: the point descriptors and
+        # has-desc flags come from the native registry's live blocks
+        # via ONE vectorized fancy-index (no per-point Python copies).
+        # Points NOT in the registry (the out-of-contract standalone
+        # points the contract pins construct) fall back to the C3a
+        # per-point assembly.
+        reg = self.map._point_registry
+        registry_rows = None
+        if reg is not None and reg.size():
+            row_map = self.map._registry_rows
+            rows = np.fromiter(
+                (row_map.get(p.point_id, -1) for p in points),
+                dtype=np.int64, count=len(points))
+            if (rows >= 0).all():
+                registry_rows = rows
         # The C3a native batch (route B): the candidate pre-filter, the
         # neighborhood search, and the best-descriptor accept run in
         # ONE native call over flat SOA; the object-graph side (the
@@ -473,23 +488,28 @@ class Tracker:
         # pre-registered route-B formulation (HAMMING popcount exact;
         # L2 in f64 - near-threshold pairs may flip vs cv.norm's float
         # SIMD, the accepted tolerance).
-        desc_width = 0
-        for p in points:
-            if p.descriptor is not None:
-                desc_width = int(np.ascontiguousarray(p.descriptor).nbytes)
-                break
-        if desc_width == 0:
-            # No candidate point carries a descriptor: nothing can
-            # match (the Python path's d1-is-None skip, wholesale).
-            return []
-        M = len(points)
-        point_desc = np.zeros((M, desc_width), dtype=np.uint8)
-        has_desc = np.zeros(M, dtype=np.uint8)
-        for i, p in enumerate(points):
-            if p.descriptor is not None:
-                point_desc[i] = np.ascontiguousarray(
-                    p.descriptor).view(np.uint8).reshape(-1)
-                has_desc[i] = 1
+        if registry_rows is not None:
+            M = len(points)
+            point_desc = reg.descriptors_view()[registry_rows]
+            has_desc = reg.has_desc_view()[registry_rows]
+        else:
+            desc_width = 0
+            for p in points:
+                if p.descriptor is not None:
+                    desc_width = int(np.ascontiguousarray(p.descriptor).nbytes)
+                    break
+            if desc_width == 0:
+                # No candidate point carries a descriptor: nothing can
+                # match (the Python path's d1-is-None skip, wholesale).
+                return []
+            M = len(points)
+            point_desc = np.zeros((M, desc_width), dtype=np.uint8)
+            has_desc = np.zeros(M, dtype=np.uint8)
+            for i, p in enumerate(points):
+                if p.descriptor is not None:
+                    point_desc[i] = np.ascontiguousarray(
+                        p.descriptor).view(np.uint8).reshape(-1)
+                    has_desc[i] = 1
 
         uv = np.empty((M, 2), dtype=np.float64)
         for i, (_p, uv_proj) in enumerate(projected_points):

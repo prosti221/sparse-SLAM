@@ -393,6 +393,12 @@ class G2OBundleAdjustment:
         if not fix_points:
             for j, p in enumerate(local_points):
                 p.pt_3d = np.array(pos_new[j])
+            # The C3b registry hook: the solved positions go native in
+            # one bulk update (the registry is the geometry cache).
+            reg = self.map._point_registry
+            if reg is not None:
+                reg.update_positions(
+                    [p.point_id for p in local_points], pos_new)
 
         self._recompute_point_errors(observations)
         if BA_TIMING_ATTRIB_ENABLED:
@@ -705,6 +711,11 @@ class G2OBundleAdjustment:
             if not fix_points:
                 for j, point in enumerate(points):
                     point.pt_3d = np.array(pos_new[j])
+                # The C3b registry hook (the bulk geometry update).
+                reg = self.map._point_registry
+                if reg is not None:
+                    reg.update_positions(
+                        [p.point_id for p in points], pos_new)
 
             self._recompute_point_errors(observations)
             return True

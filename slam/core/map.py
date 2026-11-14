@@ -94,6 +94,13 @@ class Map:
         from slam_native import MapCore
         self._native_core = MapCore()
 
+        # The live point registry (migration C3b): the full point set's
+        # geometry + descriptors in native capacity-managed storage,
+        # updated incrementally at the map's event points. Created
+        # lazily on the first registration (the descriptor width is
+        # per-extractor); None until then.
+        self._point_registry = None
+
         # Loop closure components
         self.feature_db = KeyframeFeatureDatabase()
         self.loop_detector = LoopClosureDetector(self, self.feature_db)
@@ -123,6 +130,34 @@ class Map:
             else:
                 warning_log(
                     LOG_TAG, f"Point with coordinates {coord_key} already exists. Skipping.")
+
+        # The C3b registry hook: the accepted points' geometry +
+        # descriptors go native once (never re-copied per frame).
+        if new_points:
+            from slam_native import PointRegistry
+            if self._point_registry is None:
+                first_desc = new_points[0].descriptor
+                width = (int(np.ascontiguousarray(first_desc).nbytes)
+                         if first_desc is not None else 32)
+                self._point_registry = PointRegistry(width)
+            w = self._point_registry.desc_width()
+            reg_ids, reg_pos, reg_desc, reg_has = [], [], [], []
+            for pt in new_points:
+                reg_ids.append(pt.point_id)
+                reg_pos.append(pt.pt_3d)
+                if pt.descriptor is not None:
+                    reg_desc.append(
+                        np.ascontiguousarray(pt.descriptor).view(np.uint8).reshape(-1))
+                    reg_has.append(1)
+                else:
+                    reg_desc.append(np.zeros(w, dtype=np.uint8))
+                    reg_has.append(0)
+            self._point_registry.register_points(
+                reg_ids, np.array(reg_pos, dtype=np.float64),
+                np.array(reg_desc, dtype=np.uint8),
+                np.array(reg_has, dtype=np.uint8))
+            self._registry_rows = {
+                pid: i for i, pid in enumerate(self._point_registry.ids())}
 
         self.points.extend(new_points)
 
@@ -412,6 +447,13 @@ class Map:
         # Remove from covisibility graph
         self._remove_point_from_covisibility_graph(point)
 
+        # The C3b registry hook: drop the point's native row (culls,
+        # prunes, orphans all funnel through here).
+        if self._point_registry is not None:
+            self._point_registry.remove_points([point_id])
+            self._registry_rows = {
+                pid: i for i, pid in enumerate(self._point_registry.ids())}
+
         # Remove from points list
         del self.points[idx]
 
@@ -504,6 +546,11 @@ class Map:
         point is rigidly moved into the archive's world frame)."""
         self.point_coords = {tuple(np.round(pt.pt_3d, 3))
                              for pt in self.points}
+        # The C3b registry hook: the re-anchoring moved every point.
+        if self._point_registry is not None and self.points:
+            self._point_registry.update_positions(
+                [pt.point_id for pt in self.points],
+                np.array([pt.pt_3d for pt in self.points], dtype=np.float64))
 
     def reset(self):
         info_log(LOG_TAG, "Resetting map - clearing all data")
@@ -518,6 +565,9 @@ class Map:
         self._covisibility_score_cache.clear()
         self.tracking_quality_history.clear()
         self._native_core.clear()
+        if self._point_registry is not None:
+            self._point_registry.clear()
+        self._registry_rows = None
 
         # Reset state counters
         self.consecutive_low_quality_frames = 0
