@@ -215,7 +215,14 @@ def test_graph_peaks_are_not_lost_when_the_local_cache_is_invalidated():
     world, _, _ = _criterion_map(5, [list(range(5)) for _ in range(32)], make_frame().K)
     assert world.g2o_optimizer.local_bundle_adjustment(world.cur_keyframe.frame_id)
     audit = KeyframeCostAudit(np.arange(10))
-    audit._graph(world.g2o_optimizer._local_opt, world.g2o_optimizer._kf_vertex, "local_ba")
+    native = world.g2o_optimizer._native_local_ba
+    # The cost sampler's row shape, from the native graph state.
+    audit.graphs.append({"input_index": audit._index, "kind": "local_ba",
+                         "vertices": native.num_frames() + native.num_points(),
+                         "pose_vertices": native.num_frames(),
+                         "point_vertices": native.num_points(),
+                         "fixed_pose_vertices": native.fixed_pose_count(),
+                         "edges": native.num_edges()})
     edges = audit.graphs[-1]["edges"]
     world.g2o_optimizer.reset_persistent_graph()
     assert audit.summary({"stage_calls": {}, "events": {}})["graph_peaks"]["local_ba"]["peak_edges"] == edges > 0

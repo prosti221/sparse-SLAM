@@ -265,32 +265,33 @@ def _seed_persistent_graph():
     ba = m.g2o_optimizer
     assert ba.local_bundle_adjustment(kfs[-1].frame_id, window_size=3,
                                       fix_points=False)
-    assert ba._local_opt is not None
-    assert ba._kf_vertex and ba._pt_vertex
+    assert ba._native_local_ba.num_frames() > 0
+    assert ba._native_local_ba.num_points() > 0
     return m, kfs, ba
 
 
 def _assert_persistent_graph_invalidated(ba):
-    assert ba._local_opt is None
-    assert ba._kf_vertex == {}
-    assert ba._pt_vertex == {}
-    assert ba._graph_edges_by_pt == {}
-    assert ba._graph_edges_by_kf == {}
+    native = ba._native_local_ba
+    assert native.num_frames() == 0
+    assert native.num_points() == 0
+    assert native.num_edges() == 0
+    assert len(native.bookkeeping_pairs()) == 0
 
 
 def _assert_persistent_estimates_match_map(ba):
-    assert ba._local_opt is not None
-    for fid, vertex in ba._kf_vertex.items():
-        kf = ba.map.keyframes_by_id.get(fid)
-        if kf is not None:
-            live = np.linalg.inv(kf.pose)
-            est = vertex.estimate()
-            assert np.allclose(est.rotation().matrix(), live[:3, :3], atol=1e-9, rtol=0)
-            assert np.allclose(est.translation(), live[:3, 3], atol=1e-9, rtol=0)
-    for pid, vertex in ba._pt_vertex.items():
-        point = ba.map.points_by_id.get(pid)
-        if point is not None:
-            assert np.allclose(vertex.estimate(), point.pt_3d, atol=1e-9, rtol=0)
+    native = ba._native_local_ba
+    assert native.num_frames() > 0
+    for kf in ba.map.keyframes:
+        if not native.has_frame(kf.frame_id):
+            continue
+        live = np.linalg.inv(kf.pose)
+        est = np.asarray(native.frame_estimate_T_wc(kf.frame_id)).reshape(4, 4)
+        assert np.allclose(est, live, atol=1e-9, rtol=0)
+    for point in ba.map.points:
+        if not native.has_point(point.point_id):
+            continue
+        est = np.asarray(native.point_estimate(point.point_id))
+        assert np.allclose(est, point.pt_3d, atol=1e-9, rtol=0)
 
 
 def test_global_ba_invalidates_local_cache_and_preserves_corrected_gauge():
@@ -337,21 +338,23 @@ def test_no_write_paths_keep_persistent_graph(monkeypatch):
     from slam.utils import constants as const
 
     m, _, ba = _seed_persistent_graph()
-    graph = ba._local_opt
+    native = ba._native_local_ba
     assert ba.pose_graph_optimization([])
-    assert ba._local_opt is graph
+    assert ba._native_local_ba is native
     monkeypatch.setattr(const, "MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT", 10**9)
     assert not ba.global_bundle_adjustment()
-    assert ba._local_opt is graph
+    assert ba._native_local_ba is native
 
 
 def test_local_ba_still_reuses_its_graph():
     """Invalidation is for external write-back, not every local solve."""
     _, kfs, ba = _seed_persistent_graph()
-    graph = ba._local_opt
+    native = ba._native_local_ba
     assert ba.local_bundle_adjustment(kfs[-1].frame_id, window_size=3,
                                       fix_points=False)
-    assert ba._local_opt is graph
+    # Reuse: the SAME native graph instance persists across solves.
+    assert ba._native_local_ba is native
+    assert native.num_frames() > 0
 
 
 def test_partial_external_write_failure_cannot_reuse_stale_graph(monkeypatch):
@@ -614,15 +617,10 @@ def test_persistent_graph_edge_bookkeeping_consistency():
     m, kfs = _build_trajectory_map(12, world_points, K)
 
     def bookkeeping_pairs(ba):
-        return {(pid, fid)
-                for pid, fids in ba._graph_edges_by_pt.items()
-                for fid in fids}
+        return set(ba._native_local_ba.bookkeeping_pairs())
 
     def graph_pairs(ba):
-        vid2pt = {v: pid for pid, v in ba._pt_vertex.items()}
-        vid2kf = {v: fid for fid, v in ba._kf_vertex.items()}
-        return {(vid2pt[e.vertex(0)], vid2kf[e.vertex(1)])
-                for e in ba._local_opt.edges()}
+        return set(ba._native_local_ba.graph_edge_pairs())
 
     ba = m.g2o_optimizer
     assert ba.local_bundle_adjustment(kfs[-1].frame_id,
@@ -635,7 +633,7 @@ def test_persistent_graph_edge_bookkeeping_consistency():
     assert ba.local_bundle_adjustment(m.keyframes[-1].frame_id,
                                       window_size=5, fix_points=False)
     assert bookkeeping_pairs(ba) == graph_pairs(ba)
-    assert kfs[2].frame_id not in ba._kf_vertex
+    assert not ba._native_local_ba.has_frame(kfs[2].frame_id)
 
     # A third reconcile with a sliding window (different stale set).
     assert ba.local_bundle_adjustment(m.keyframes[-1].frame_id,
@@ -643,6 +641,6 @@ def test_persistent_graph_edge_bookkeeping_consistency():
     assert bookkeeping_pairs(ba) == graph_pairs(ba)
 
     # Count consistency across both views.
-    n_pairs = sum(len(s) for s in ba._graph_edges_by_pt.values())
-    assert n_pairs == sum(len(s) for s in ba._graph_edges_by_kf.values())
-    assert n_pairs == len(ba._local_opt.edges())
+    n_pairs = len(ba._native_local_ba.bookkeeping_pairs())
+    assert n_pairs == len(ba._native_local_ba.graph_edge_pairs())
+    assert n_pairs == ba._native_local_ba.num_edges()

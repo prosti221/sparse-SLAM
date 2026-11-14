@@ -7,6 +7,7 @@
 #include "map_core.h"
 #include "error_fold.h"
 #include "ba_solver.h"
+#include "persistent_ba.h"
 
 namespace py = pybind11;
 
@@ -121,4 +122,26 @@ PYBIND11_MODULE(slam_native, m) {
         "The C2b1 smoke solve: a fresh-build SE3 BA graph with the "
         "vendored g2o, configured like the Python path. Returns "
         "(T_cw, positions, iterations, chi2).");
+
+  py::class_<slarnative::PersistentLocalBA>(m, "PersistentLocalBA")
+      .def(py::init<bool>(), py::arg("verbose"))
+      .def("reset", &slarnative::PersistentLocalBA::reset)
+      .def(
+          "solve_local",
+          &slarnative::PersistentLocalBA::solve_local,
+          py::arg("frame_ids"), py::arg("point_ids"), py::arg("T_wc"),
+          py::arg("positions"), py::arg("in_window"), py::arg("anchor_row"),
+          py::arg("points_fixed"), py::arg("obs_frame_row"),
+          py::arg("obs_point_row"), py::arg("obs_uv"),
+          py::arg("max_iterations"))
+      .def("num_frames", &slarnative::PersistentLocalBA::num_frames)
+      .def("num_points", &slarnative::PersistentLocalBA::num_points)
+      .def("num_edges", &slarnative::PersistentLocalBA::num_edges)
+      .def("fixed_pose_count", &slarnative::PersistentLocalBA::fixed_pose_count)
+      .def("has_frame", &slarnative::PersistentLocalBA::has_frame)
+      .def("has_point", &slarnative::PersistentLocalBA::has_point)
+      .def("graph_edge_pairs", &slarnative::PersistentLocalBA::graph_edge_pairs)
+      .def("bookkeeping_pairs", &slarnative::PersistentLocalBA::bookkeeping_pairs)
+      .def("frame_estimate_T_wc", &slarnative::PersistentLocalBA::frame_estimate_T_wc)
+      .def("point_estimate", &slarnative::PersistentLocalBA::point_estimate);
 }

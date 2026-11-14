@@ -215,7 +215,7 @@ def test_remove_keyframe_cleans_all_registries():
     assert m.g2o_optimizer.local_bundle_adjustment(
         kfs[-1].frame_id, window_size=5, fix_points=False)
     culled_id = kfs[2].frame_id
-    assert culled_id in m.g2o_optimizer._kf_vertex
+    assert m.g2o_optimizer._native_local_ba.has_frame(culled_id)
 
     assert m.remove_keyframe_by_id(culled_id)
 
@@ -246,11 +246,12 @@ def test_remove_keyframe_cleans_all_registries():
     # orphaned point vertices drop out on the next reconcile.
     assert m.g2o_optimizer.local_bundle_adjustment(
         m.keyframes[-1].frame_id, window_size=5, fix_points=False)
-    assert culled_id not in m.g2o_optimizer._kf_vertex
+    native = m.g2o_optimizer._native_local_ba
+    assert not native.has_frame(culled_id)
     for pt in weak + masked:
-        assert pt.point_id not in m.g2o_optimizer._pt_vertex
+        assert not native.has_point(pt.point_id)
     for pt in shared:
-        assert pt.point_id in m.g2o_optimizer._pt_vertex
+        assert native.has_point(pt.point_id)
 
 
 def test_remove_keyframes_after_is_positional():

@@ -840,7 +840,7 @@ def test_propagation_updates_frames_and_caches():
     assert np.allclose(new_norm, expect_norm, atol=1e-9)
     _ = old_norm  # (kept for the narrative; see the note above)
 
-    assert m.g2o_optimizer._local_opt is None, \
+    assert m.g2o_optimizer._native_local_ba.num_frames() == 0, \
         "persistent graph must be dropped on intrinsics change"
 
 

@@ -102,7 +102,16 @@ class KeyframeCostAudit:
             try:
                 return original_local(optimizer, local_keyframes, *args, **kwargs)
             finally:
-                self._graph(optimizer._local_opt, optimizer._kf_vertex, "local_ba", window)
+                native = optimizer._native_local_ba
+                row = {"input_index": self._index, "kind": "local_ba",
+                       "vertices": native.num_frames() + native.num_points(),
+                       "pose_vertices": native.num_frames(),
+                       "point_vertices": native.num_points(),
+                       "fixed_pose_vertices": native.fixed_pose_count(),
+                       "edges": native.num_edges()}
+                if window is not None:
+                    row["window"] = window
+                self.graphs.append(row)
 
         def vertices(optimizer, opt, *args, **kwargs):
             result = original_vertices(optimizer, opt, *args, **kwargs)
