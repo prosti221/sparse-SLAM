@@ -10,9 +10,11 @@ namespace slarnative {
 struct MatchInputs {
   c_arr<double> point_uv;      // (M, 2) projected pixel coords; NaN rows
                                // = behind camera (skipped)
-  c_arr<uint8_t> point_desc;   // (M, W) raw descriptor bytes (rows may be
-                               // zero-width when a point has no descriptor)
-  c_arr<uint8_t> point_has_desc;  // (M,) 0/1
+  c_arr<int64_t> point_rows;   // (M,) the candidates' rows into the
+                               // descriptor/has-desc blocks
+  c_arr<uint8_t> point_desc;   // (B, W) the descriptor BLOCK (the
+                               // registry's live rows; read via point_rows)
+  c_arr<uint8_t> point_has_desc;  // (B,) 0/1
   c_arr<double> kp_coords;     // (K, 2)
   c_arr<uint8_t> kp_desc;      // (K, W)
   c_arr<uint8_t> already_observed;  // (M,) 0/1 - the current frame already

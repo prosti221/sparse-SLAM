@@ -32,8 +32,10 @@ def test_tracker_uses_pnp_success_element_without_changing_pose_or_insertion_flo
     monkeypatch.setattr(tracker_mod, "match_features_between_frames", lambda *a, **kw: relative_pose)
     observations = [Observation(current, Point(np.array([i * 0.01, 0.0, 5.0])), i)
                     for i in range(10)]
-    monkeypatch.setattr(tracker, "_project_visible_map_points", lambda: [])
-    monkeypatch.setattr(tracker, "_match_projected_points", lambda projected: observations)
+    monkeypatch.setattr(tracker, "_project_visible_map_points",
+                         lambda: (np.empty((0, 2)), np.empty(0, dtype=np.int64)))
+    monkeypatch.setattr(tracker, "_match_projected_points",
+                         lambda uv, rows: observations)
     seed = previous.pose @ relative_pose
     refined = seed @ yaw_pose(0.005, (0.01, 0.0, 0.0))
     pnp_calls = []
@@ -86,8 +88,10 @@ def test_tracker_does_not_report_unattempted_pnp(monkeypatch, observation_count)
     monkeypatch.setattr(tracker_mod, "match_features_between_frames", lambda *a, **kw: np.eye(4))
     observations = [Observation(current, Point(np.array([i * 0.01, 0.0, 5.0])), i)
                     for i in range(observation_count)]
-    monkeypatch.setattr(tracker, "_project_visible_map_points", lambda: [])
-    monkeypatch.setattr(tracker, "_match_projected_points", lambda projected: observations)
+    monkeypatch.setattr(tracker, "_project_visible_map_points",
+                         lambda: (np.empty((0, 2)), np.empty(0, dtype=np.int64)))
+    monkeypatch.setattr(tracker, "_match_projected_points",
+                         lambda uv, rows: observations)
     monkeypatch.setattr(tracker, "_handle_keyframe_insertion", lambda: None)
     monkeypatch.setattr(tracker, "_handle_relocalization_check", lambda: None)
 
@@ -156,6 +160,21 @@ def _binary_descriptor(fill):
     return np.full(32, fill, dtype=np.uint8)
 
 
+def _projection_match_setup(fx=1449.6, method="ORB", point_desc=None):
+    """A tracker whose map's registry holds ONE point (the C3c index
+    flow requires registered points); returns (tracker, uv, rows,
+    point)."""
+    world = Map()
+    frame = make_frame(K=make_K(fx=fx, fy=fx))
+    tracker = Tracker(world, feature_extraction_method=method)
+    tracker.cur_frame = frame
+    desc = point_desc if point_desc is not None else _binary_descriptor(0)
+    point = Point(np.array([0.0, 0.0, 5.0]), None, desc)
+    world.add_points([point])
+    uv = np.array([[30.0, 30.0]])
+    rows = np.array([world._registry_rows[point.point_id]], dtype=np.int64)
+    return tracker, uv, rows, point
+
 @pytest.mark.parametrize("fx,offset_px,matched", [
     (450.0, 6.0, False),       # fr/orbit/translation focal: floor keeps 5 px
     (517.306409, 6.0, False),  # tum_xyz's true focal: still 5 px
@@ -174,12 +193,10 @@ def test_projection_match_radius_resolves_from_the_live_focal(fx, offset_px, mat
     anchoring) resolves to ~14 px. A keypoint 6 px from the projection
     is therefore rejected at benchmark focals and accepted at the long
     focal; 4 px is accepted everywhere (the floor is intact)."""
-    tracker, frame = _projection_tracker(fx)
-    set_keypoints(frame, [(30.0 + offset_px, 30.0)],
+    tracker, uv, rows, _point = _projection_match_setup(fx)
+    set_keypoints(tracker.cur_frame, [(30.0 + offset_px, 30.0)],
                   np.zeros((1, 32), dtype=np.uint8))
-    point = Point(np.array([0.0, 0.0, 5.0]), None, _binary_descriptor(0))
-    observations = tracker._match_projected_points(
-        [(point, np.array([30.0, 30.0]))])
+    observations = tracker._match_projected_points(uv, rows)
     assert (len(observations) == 1) == matched
 
 
@@ -187,22 +204,20 @@ def test_projection_match_still_requires_descriptor_agreement_at_wide_radius():
     """The radius only widens the SEARCH. Acceptance still
     requires the <20 Hamming gate (random-pair distance ~128 for ORB),
     so the wide radius cannot admit accidental keypoint collisions."""
-    tracker, frame = _projection_tracker(1449.6)
-    set_keypoints(frame, [(30.0, 30.0)], np.full((1, 32), 255, np.uint8))
-    point = Point(np.array([0.0, 0.0, 5.0]), None, _binary_descriptor(0))
-    assert tracker._match_projected_points(
-        [(point, np.array([30.0, 30.0]))]) == []
+    tracker, uv, rows, _point = _projection_match_setup(1449.6)
+    set_keypoints(tracker.cur_frame, [(30.0, 30.0)],
+                  np.full((1, 32), 255, np.uint8))
+    assert tracker._match_projected_points(uv, rows) == []
 
 
 def test_projection_match_explicit_radius_override_still_honored():
     """An explicit dist_thresh (the probe/diagnostic path)
     overrides the focal resolution unchanged."""
-    tracker, frame = _projection_tracker(1449.6)
-    set_keypoints(frame, [(36.0, 30.0)], np.zeros((1, 32), dtype=np.uint8))
-    point = Point(np.array([0.0, 0.0, 5.0]), None, _binary_descriptor(0))
-    projected = [(point, np.array([30.0, 30.0]))]
-    assert tracker._match_projected_points(projected, dist_thresh=5) == []
-    assert len(tracker._match_projected_points(projected, dist_thresh=14)) == 1
+    tracker, uv, rows, _point = _projection_match_setup(1449.6)
+    set_keypoints(tracker.cur_frame, [(36.0, 30.0)],
+                  np.zeros((1, 32), dtype=np.uint8))
+    assert tracker._match_projected_points(uv, rows, dist_thresh=5) == []
+    assert len(tracker._match_projected_points(uv, rows, dist_thresh=14)) == 1
 
 
 def _projection_match_fixture(descriptors, kp_positions, uv=(30.0, 30.0)):
@@ -243,9 +258,9 @@ def test_projection_match_hamming_threshold_is_strict():
 
     desc = np.stack([desc_with_popcount(19), desc_with_popcount(20)])
     positions = [(30.0, 30.0)] * 2  # both inside the ball, zero pixel dist
-    tracker, projected, point = _projection_match_fixture(
-        desc, positions)
-    obs = tracker._match_projected_points(projected, dist_thresh=5)
+    tracker, uv, rows, _point = _projection_match_setup()
+    set_keypoints(tracker.cur_frame, positions, desc)
+    obs = tracker._match_projected_points(uv, rows, dist_thresh=5)
     assert len(obs) == 1
     # the accepted one is the 19-bit keypoint (index 0: strictly < 20)
     assert obs[0].kp_idx == 0
@@ -259,9 +274,9 @@ def test_projection_match_ties_break_to_the_first_scanned():
     # point's zero descriptor), at different pixel positions.
     desc = np.zeros((2, 32), dtype=np.uint8)
     positions = [(30.0, 30.0), (32.0, 30.0)]
-    tracker, projected, point = _projection_match_fixture(
-        desc, positions)
-    obs = tracker._match_projected_points(projected, dist_thresh=5)
+    tracker, uv, rows, _point = _projection_match_setup()
+    set_keypoints(tracker.cur_frame, positions, desc)
+    obs = tracker._match_projected_points(uv, rows, dist_thresh=5)
     assert len(obs) == 1
     assert obs[0].kp_idx == 0  # the first scanned wins the tie
 
@@ -278,18 +293,11 @@ def test_projection_match_l2_formulation_is_f64():
     above = below.copy()
     above[0, 0] = np.float32(0.8640)   # widened: 0.86400005... > 0.8639
     # the POINT descriptor: the zero vector (width 128 float32 = 512 B)
-    point_desc = np.zeros(512, dtype=np.uint8)
-    world = Map()
-    frame = make_frame(K=make_K(fx=1449.6, fy=1449.6))
-    tracker = Tracker(world)
-    tracker.cur_frame = frame
-    # EXTRACTOR_DESCRIPTOR_KINDS: make the tracker float-kind
-    tracker.feature_extraction_method = "ALIKED"
-    kp_desc = np.concatenate([below, above])
-    set_keypoints(frame, [(30.0, 30.0), (31.0, 30.0)], kp_desc)
-    point = Point(np.array([0.0, 0.0, 5.0]), None, point_desc)
-    projected = [(point, np.array([30.0, 30.0]))]
-    obs = tracker._match_projected_points(projected, dist_thresh=5)
+    tracker, uv, rows, _point = _projection_match_setup(
+        method="ALIKED", point_desc=np.zeros(512, dtype=np.uint8))
+    set_keypoints(tracker.cur_frame, [(30.0, 30.0), (31.0, 30.0)],
+                  np.concatenate([below, above]))
+    obs = tracker._match_projected_points(uv, rows, dist_thresh=5)
     assert len(obs) == 1
     assert obs[0].kp_idx == 0  # the below-threshold keypoint
 

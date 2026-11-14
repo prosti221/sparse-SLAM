@@ -149,6 +149,7 @@ PYBIND11_MODULE(slam_native, m) {
 
   py::class_<slarnative::MatchInputs>(m, "MatchInputs")
       .def(py::init([](slarnative::c_arr<double> point_uv,
+                       slarnative::c_arr<int64_t> point_rows,
                        slarnative::c_arr<uint8_t> point_desc,
                        slarnative::c_arr<uint8_t> point_has_desc,
                        slarnative::c_arr<double> kp_coords,
@@ -158,16 +159,16 @@ PYBIND11_MODULE(slam_native, m) {
                        double reloc_thresh, double margin, double width,
                        double height) {
              return slarnative::MatchInputs{
-                 std::move(point_uv),         std::move(point_desc),
-                 std::move(point_has_desc),   std::move(kp_coords),
-                 std::move(kp_desc),          std::move(already_observed),
-                 desc_kind,                   search_radius,
-                 reloc_thresh,                margin,
-                 width,                       height};
+                 std::move(point_uv),  std::move(point_rows),
+                 std::move(point_desc), std::move(point_has_desc),
+                 std::move(kp_coords), std::move(kp_desc),
+                 std::move(already_observed), desc_kind,
+                 search_radius, reloc_thresh, margin, width, height};
            }),
-           py::arg("point_uv"), py::arg("point_desc"), py::arg("point_has_desc"),
-           py::arg("kp_coords"), py::arg("kp_desc"), py::arg("already_observed"),
-           py::arg("desc_kind"), py::arg("search_radius"), py::arg("reloc_thresh"),
+           py::arg("point_uv"), py::arg("point_rows"), py::arg("point_desc"),
+           py::arg("point_has_desc"), py::arg("kp_coords"), py::arg("kp_desc"),
+           py::arg("already_observed"), py::arg("desc_kind"),
+           py::arg("search_radius"), py::arg("reloc_thresh"),
            py::arg("margin"), py::arg("width"), py::arg("height"));
 
   m.def("match_projected", &slarnative::match_projected, py::arg("in"),

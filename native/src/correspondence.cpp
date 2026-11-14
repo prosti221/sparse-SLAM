@@ -33,6 +33,7 @@ inline double l2_dist(const uint8_t* a, const uint8_t* b, int w) {
 
 py::object match_projected(const MatchInputs& in) {
   const auto uv_in = in.point_uv.unchecked<2>();
+  const auto rows_in = in.point_rows.unchecked<1>();
   const auto pd_in = in.point_desc.unchecked<2>();
   const auto phas_in = in.point_has_desc.unchecked<1>();
   const auto kc_in = in.kp_coords.unchecked<2>();
@@ -42,15 +43,27 @@ py::object match_projected(const MatchInputs& in) {
   const long M = uv_in.shape(0);
   const long K = kc_in.shape(0);
   const long W = pd_in.shape(1);
+  const long B = pd_in.shape(0);
+  if (rows_in.shape(0) != M || obs_in.shape(0) != M) {
+    throw std::invalid_argument(
+        "match_projected: point_rows/already_observed must be (M,)");
+  }
+  if (in.point_has_desc.shape(0) != B) {
+    throw std::invalid_argument(
+        "match_projected: the has-desc block must be (B,)");
+  }
   if (kd_in.shape(1) != W) {
     throw std::invalid_argument(
         "match_projected: point and keypoint descriptor widths must match");
   }
-  if (in.point_has_desc.shape(0) != M || obs_in.shape(0) != M) {
-    throw std::invalid_argument("match_projected: (M,) arrays must be M-sized");
-  }
   if (in.kp_desc.shape(0) != K) {
     throw std::invalid_argument("match_projected: kp_desc must be (K, W)");
+  }
+  for (long m = 0; m < M; ++m) {
+    if (rows_in(m) < 0 || rows_in(m) >= B) {
+      throw std::invalid_argument(
+          "match_projected: point row out of block range");
+    }
   }
   if (in.desc_kind != 1 && in.desc_kind != 2) {
     throw std::invalid_argument(
@@ -88,7 +101,8 @@ py::object match_projected(const MatchInputs& in) {
       if (obs_in(m) != 0) {
         continue;  // the frame already observes this point
       }
-      if (phas_in(m) == 0) {
+      const long prow = rows_in(m);
+      if (phas_in(prow) == 0) {
         continue;  // no descriptor to match with
       }
 
@@ -104,8 +118,8 @@ py::object match_projected(const MatchInputs& in) {
           continue;
         }
         const double d = (in.desc_kind == 1)
-                             ? hamming_dist(&pd_in(m, 0), &kd_in(k, 0), w)
-                             : l2_dist(&pd_in(m, 0), &kd_in(k, 0), w);
+                             ? hamming_dist(&pd_in(prow, 0), &kd_in(k, 0), w)
+                             : l2_dist(&pd_in(prow, 0), &kd_in(k, 0), w);
         if (best_idx == -1 || d < best_dist) {
           best_dist = d;
           best_idx = k;
@@ -122,7 +136,7 @@ py::object match_projected(const MatchInputs& in) {
         // averages into culling).
         const double du = kc_in(best_idx, 0) - u_proj;
         const double dv = kc_in(best_idx, 1) - v_proj;
-        pr_buf(n_matches) = m;
+        pr_buf(n_matches) = prow;
         ki_buf(n_matches) = best_idx;
         re_buf(n_matches) = std::sqrt(std::fma(dv, dv, du * du));
         ++n_matches;

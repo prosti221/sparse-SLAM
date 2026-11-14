@@ -155,11 +155,11 @@ class Tracker:
 
         # Project the visible map points onto current frame for matching by projection
         with telemetry.stage("project"):
-            projected_points = self._project_visible_map_points()
+            projected = self._project_visible_map_points()
 
         # Match the projected points with the current frame's keypoints
         with telemetry.stage("proj_match"):
-            observations = self._match_projected_points(projected_points)
+            observations = self._match_projected_points(*projected)
 
         # Register the projection matches (map-point side AND frame side)
         # before pose refinement: refine_pose_pnp reads the frame's
@@ -416,23 +416,22 @@ class Tracker:
         self._on_keyframe_inserted()
 
     def _project_visible_map_points(self) -> List[Tuple[Point, np.ndarray]]:
-        # Batch-projected: project_points does the per-point math as
-        # one GEMM. In-front filtering matches the per-point
-        # semantics exactly (behind-camera -> skipped).
-        points = self.map.points
-        if not points:
-            return []
+        # Batch-projected (the C3c index flow): the GEMM reads the
+        # registry's live positions VIEW directly - no per-point Python
+        # loop. Returns (uv_finite, rows_finite): the finite projections
+        # and their REGISTRY rows (the registry is drift-guarded to
+        # equal the live map's point set; the rows are its row space).
+        reg = self.map._point_registry
+        if reg is None or reg.size() == 0:
+            return np.empty((0, 2)), np.empty(0, dtype=np.int64)
 
-        pts_3d = np.array([mp.pt_3d for mp in points], dtype=np.float64)
-        uv = self.cur_frame.project_points(pts_3d, normalized=False)
-
-        # Behind-camera rows are NaN; keep the rest as (point, pixel-row)
-        # pairs. The uv rows are read-only for consumers.
+        uv = self.cur_frame.project_points(reg.positions_view(),
+                                           normalized=False)
         finite_idx = np.flatnonzero(np.isfinite(uv).all(axis=1))
-        return [(points[i], uv[i]) for i in finite_idx]
+        return uv[finite_idx], finite_idx.astype(np.int64)
 
     def _match_projected_points(
-        self, projected_points: List[Tuple[Point, np.ndarray]],
+        self, uv_finite: np.ndarray, rows_finite: np.ndarray,
         dist_thresh: int = None
     ) -> List[Observation]:
         # The search radius is ANGULAR, resolved per call from the
@@ -464,60 +463,24 @@ class Tracker:
             # is behavior-neutral for the suite.
             return []
 
-        points = [mp for mp, _uv in projected_points]
-        # The C3b registry fast path: the point descriptors and
-        # has-desc flags come from the native registry's live blocks
-        # via ONE vectorized fancy-index (no per-point Python copies).
-        # Points NOT in the registry (the out-of-contract standalone
-        # points the contract pins construct) fall back to the C3a
-        # per-point assembly.
+        # The C3c index flow: the candidates are REGISTRY ROWS (the
+        # projection's finite rows); the descriptors/has-desc blocks
+        # are the registry's zero-copy views, read BY ROW inside the
+        # kernel. The already-observed flags come from the frame's own
+        # point-side registry (the ids the frame observes).
         reg = self.map._point_registry
-        registry_rows = None
-        if reg is not None and reg.size():
-            row_map = self.map._registry_rows
-            rows = np.fromiter(
-                (row_map.get(p.point_id, -1) for p in points),
-                dtype=np.int64, count=len(points))
-            if (rows >= 0).all():
-                registry_rows = rows
-        # The C3a native batch (route B): the candidate pre-filter, the
-        # neighborhood search, and the best-descriptor accept run in
-        # ONE native call over flat SOA; the object-graph side (the
-        # Observation objects, the running averages, the unique mask)
-        # stays Python below. The distance arithmetic is the
-        # pre-registered route-B formulation (HAMMING popcount exact;
-        # L2 in f64 - near-threshold pairs may flip vs cv.norm's float
-        # SIMD, the accepted tolerance).
-        if registry_rows is not None:
-            M = len(points)
-            point_desc = reg.descriptors_view()[registry_rows]
-            has_desc = reg.has_desc_view()[registry_rows]
-        else:
-            desc_width = 0
-            for p in points:
-                if p.descriptor is not None:
-                    desc_width = int(np.ascontiguousarray(p.descriptor).nbytes)
-                    break
-            if desc_width == 0:
-                # No candidate point carries a descriptor: nothing can
-                # match (the Python path's d1-is-None skip, wholesale).
-                return []
-            M = len(points)
-            point_desc = np.zeros((M, desc_width), dtype=np.uint8)
-            has_desc = np.zeros(M, dtype=np.uint8)
-            for i, p in enumerate(points):
-                if p.descriptor is not None:
-                    point_desc[i] = np.ascontiguousarray(
-                        p.descriptor).view(np.uint8).reshape(-1)
-                    has_desc[i] = 1
+        M = len(rows_finite)
+        if reg is None or M == 0:
+            return []
+        point_desc = reg.descriptors_view()
+        has_desc = reg.has_desc_view()
+        uv = uv_finite
 
-        uv = np.empty((M, 2), dtype=np.float64)
-        for i, (_p, uv_proj) in enumerate(projected_points):
-            uv[i] = uv_proj
-
+        observed_ids = set(self.cur_frame.observed_points.keys())
+        ids_vec = reg.ids()  # ONE C++->Python copy, not one per element
         already = np.fromiter(
-            (1 if self.cur_frame.frame_id in p.observations else 0
-             for p in points), dtype=np.uint8, count=M)
+            (1 if ids_vec[r] in observed_ids else 0
+             for r in rows_finite), dtype=np.uint8, count=M)
 
         kp_desc = np.ascontiguousarray(descriptors).view(np.uint8).reshape(
             len(descriptors), -1)
@@ -529,19 +492,30 @@ class Tracker:
 
         point_rows, kp_indices, repro_errors, n_matches = match_projected(
             MatchInputs(
-                point_uv=uv, point_desc=point_desc,
-                point_has_desc=has_desc,
+                point_uv=uv, point_rows=rows_finite,
+                point_desc=point_desc, point_has_desc=has_desc,
                 kp_coords=np.ascontiguousarray(kp_coords, dtype=np.float64),
                 kp_desc=kp_desc, already_observed=already,
                 desc_kind=desc_kind,
                 search_radius=float(dist_thresh), reloc_thresh=reloc_thresh,
                 margin=10.0, width=float(W), height=float(H)))
 
-        observations = []
+        # The object work for the ACCEPTED matches only, restored to
+        # the map.points order (the observations list order is the
+        # fold's load-bearing pass-2 order; the kernel's output order
+        # is the registry-row order).
+        order = {p.point_id: i for i, p in enumerate(self.map.points)}
+        accepted = []
+        ids_vec = reg.ids()
         for r in range(n_matches):
-            mp = points[int(point_rows[r])]
-            best_idx = int(kp_indices[r])
-            repro_error = float(repro_errors[r])
+            row = int(point_rows[r])
+            mp = self.map.points_by_id[ids_vec[row]]
+            accepted.append((order[mp.point_id], mp, int(kp_indices[r]),
+                             float(repro_errors[r])))
+        accepted.sort(key=lambda t: t[0])
+
+        observations = []
+        for _order_i, mp, best_idx, repro_error in accepted:
             observation = Observation(self.cur_frame, mp, best_idx)
             observations.append(observation)
             mp.update_reprojection_error(repro_error)
