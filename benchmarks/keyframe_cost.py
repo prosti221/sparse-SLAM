@@ -127,7 +127,16 @@ class KeyframeCostAudit:
                 try:
                     return original(optimizer, *args, **kwargs)
                 finally:
-                    self._graph(record["opt"], record["poses"], kind)
+                    if record["opt"] is not None:
+                        self._graph(record["opt"], record["poses"], kind)
+                    elif kind == "fresh_ba":
+                        # The native global solve has no g2o objects
+                        # to sample; the same row shape, from the
+                        # solve's own inputs.
+                        row = getattr(optimizer, "_last_global_graph", None)
+                        if row:
+                            self.graphs.append({"input_index": self._index,
+                                                "kind": kind, **row})
                     self._fresh.pop()  # Do not retain a solver handle in archived data.
             return solve
 

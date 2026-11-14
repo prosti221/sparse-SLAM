@@ -4,7 +4,7 @@ import time as _time
 from slam.core.frame import Frame
 from slam.core.point import Point
 from slam.core.observation import Observation
-from slam_native import FoldInputs, error_fold
+from slam_native import FoldInputs, error_fold, BASolveInputs, solve_se3_ba
 from typing import List, Tuple
 from slam.utils.logger import *
 from slam.utils.constants import *
@@ -638,82 +638,74 @@ class G2OBundleAdjustment:
                            fix_initial_poses: bool = False,
                            fix_points: bool = False,
                            fixed_keyframe_ids: set = None) -> bool:
+        """The global BA solve: the SOA assembly here, the build +
+        Levenberg + extraction in ONE native call (`solve_se3_ba` - the
+        C2b1-verified fresh-build kernel, bit-identical to the
+        g2o-python path on identical inputs), the write-back and the
+        fold here. The vertex/edge creation order and the fixed-flag
+        semantics are the g2o-python path's exactly (KFs in list order
+        with frame 0 fixed per fix_initial_poses plus any explicitly
+        anchored ids, points after them, edges in the observations
+        order skipping unregistered pairs).
+        """
         try:
-            # Create optimizer with standard setup
-            opt = self._create_g2o_optimizer()
-
-            # Robust kernel for outlier rejection
-            robust_kernel = g2o.RobustKernelHuber(
-                np.sqrt(5.991))  # sqrt(chi2 95%)
-
-            # Create keyframe vertices
-            frame_to_vertex = self._create_keyframe_vertices(
-                opt, keyframes, vertex_id_offset=0, fix_first=fix_initial_poses,
-                fixed_keyframe_ids=fixed_keyframe_ids)
-
-            # Create point vertices with interleaved IDs
-            point_to_vertex = {}
-            for i, point in enumerate(points):
-                v_point = g2o.VertexPointXYZ()
-                # Start after keyframe vertices
-                v_point.set_id(len(keyframes) + i)
-                v_point.set_estimate(point.pt_3d)
-                v_point.set_fixed(fix_points)
-                v_point.set_marginalized(True)
-                opt.add_vertex(v_point)
-                point_to_vertex[point] = v_point
-
-            # Add observation edges. The 2x2 information matrix
-            # is constant across edges - hoisted out of the loop instead
-            # of allocating np.eye(2) once per edge (~700k allocations on
-            # TUM). The dead best_indices sort (top-5 lowest-error point
-            # indices, consumed by a commented-out set_fixed line) is
-            # gone too.
-            edge_information = np.eye(2)
-            edge_count = 0
-            for obs in observations:
-                if obs.frame.frame_id not in frame_to_vertex or obs.point not in point_to_vertex:
-                    continue
-
-                edge = g2o.EdgeProjectXYZ2UV()
-                edge.set_parameter_id(0, 0)  # camera parameter
-                edge.set_vertex(0, point_to_vertex[obs.point])  # point
-                # camera pose
-                edge.set_vertex(1, frame_to_vertex[obs.frame.frame_id])
-                edge.set_information(edge_information)
-                edge.set_measurement(obs.pt_2d_norm)
-                edge.set_robust_kernel(robust_kernel)
-                opt.add_edge(edge)
-                edge_count += 1
-
-            if edge_count < 10:
+            frame_row = {kf.frame_id: i for i, kf in enumerate(keyframes)}
+            point_row = {p.point_id: i for i, p in enumerate(points)}
+            edge_obs = [obs for obs in observations
+                        if obs.frame.frame_id in frame_row
+                        and obs.point.point_id in point_row]
+            if len(edge_obs) < 10:
                 telemetry.event("ba_too_few_edges")
-                warning_log(LOG_TAG, f"Too few edges: {edge_count}")
+                warning_log(LOG_TAG, f"Too few edges: {len(edge_obs)}")
                 return False
 
-            if self.verbose:
-                opt.set_verbose(True)
+            fixed = np.zeros(len(keyframes), dtype=np.uint8)
+            for i, kf in enumerate(keyframes):
+                if ((i == 0 and fix_initial_poses) or
+                        (fixed_keyframe_ids is not None and
+                         kf.frame_id in fixed_keyframe_ids)):
+                    fixed[i] = 1
+            T_wc = np.stack([np.linalg.inv(kf.pose) for kf in keyframes])
+            positions = np.array([p.pt_3d for p in points], dtype=np.float64)
+            obs_frame_row = np.fromiter(
+                (frame_row[obs.frame.frame_id] for obs in edge_obs),
+                dtype=np.int64, count=len(edge_obs))
+            obs_point_row = np.fromiter(
+                (point_row[obs.point.point_id] for obs in edge_obs),
+                dtype=np.int64, count=len(edge_obs))
+            obs_uv = np.array([obs.pt_2d_norm for obs in edge_obs],
+                              dtype=np.float64)
 
-            # Optimize; the returned value is the number of LM iterations
-            # actually performed (early-exit via the terminate action).
-            opt.initialize_optimization()
-            iterations = opt.optimize(30)
+            T_wc_new, pos_new, iterations, _chi2 = solve_se3_ba(BASolveInputs(
+                T_wc=T_wc, fixed=fixed, positions=positions,
+                points_fixed=1 if fix_points else 0,
+                obs_frame=obs_frame_row.tolist(),
+                obs_point=obs_point_row.tolist(),
+                obs_uv=obs_uv, max_iterations=30))
             telemetry.event("ba_iterations", int(iterations))
+            # The cost audit's fresh-BA sampler reads the g2o objects
+            # created by _create_keyframe_vertices; the native solve
+            # has none - the same row shape, from this solve's inputs.
+            self._last_global_graph = {
+                "vertices": len(keyframes) + len(points),
+                "pose_vertices": len(keyframes),
+                "point_vertices": len(points),
+                "fixed_pose_vertices": int(fixed.sum()),
+                "edges": len(edge_obs),
+            }
 
             # This fresh solve rewrites state outside the persistent
             # local graph. Drop that cache before write-back so the
             # next local solve cannot restore pre-correction estimates.
             self.reset_persistent_graph()
 
-            # Update keyframe poses
-            self._update_keyframe_poses_from_vertices(frame_to_vertex)
+            for i, kf in enumerate(keyframes):
+                kf.pose = np.linalg.inv(T_wc_new[i])
 
-            # Update 3D points if they were optimized
             if not fix_points:
-                for point, vertex in point_to_vertex.items():
-                    point.pt_3d = np.array(vertex.estimate())
+                for j, point in enumerate(points):
+                    point.pt_3d = np.array(pos_new[j])
 
-            # Update reprojection errors
             self._recompute_point_errors(observations)
             return True
 

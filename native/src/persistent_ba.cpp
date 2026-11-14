@@ -1,15 +1,11 @@
 #include "persistent_ba.h"
+#include "ba_constants.h"
 
 #include <cmath>
 #include <set>
 #include <stdexcept>
 
 namespace slarnative {
-
-namespace {
-constexpr double kHuberDelta = 2.4497425365372686;  // sqrt(5.991)
-constexpr double kGainThreshold = 1e-4;             // BA_TERMINATE_GAIN_THRESHOLD
-}  // namespace
 
 PersistentLocalBA::PersistentLocalBA(bool verbose) : verbose_(verbose) {
   ensure_optimizer();

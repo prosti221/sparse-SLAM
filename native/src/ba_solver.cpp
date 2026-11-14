@@ -1,4 +1,5 @@
 #include "ba_solver.h"
+#include "ba_constants.h"
 
 #include <cmath>
 #include <memory>
@@ -16,11 +17,6 @@
 #include <g2o/types/slam3d/vertex_pointxyz.h>
 
 namespace slarnative {
-
-namespace {
-constexpr double kHuberDelta = 2.4497425365372686;  // sqrt(5.991)
-constexpr double kGainThreshold = 1e-4;             // BA_TERMINATE_GAIN_THRESHOLD
-}  // namespace
 
 py::object solve_se3_ba(const BASolveInputs& in) {
   const auto T_in = in.T_wc.unchecked<3>();
