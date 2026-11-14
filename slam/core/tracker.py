@@ -13,6 +13,7 @@ from slam.utils.constants import *
 from slam.utils import constants as const
 from slam.utils.logger import *
 from slam.utils import telemetry
+from slam_native import MatchInputs, match_projected
 from slam.features.matcher import *
 from slam.features.feature_extractor import FeatureExtractor
 # Loop-closure and rotation-model flags live beside their machinery
@@ -449,10 +450,8 @@ class Tracker:
                 const.PROJECTION_MATCH_MIN_RADIUS_PX,
                 int(round(fx * np.tan(np.radians(
                     const.PROJECTION_MATCH_RADIUS_DEG)))))
-        observations = []
         _, descriptors = self.cur_frame.get_keypoints_descriptors()
         kp_coords = self.cur_frame.kp_pts
-
         if kp_coords is None or len(kp_coords) == 0:
             warning_log(
                 LOG_TAG, "No keypoints available for projection matching")
@@ -465,83 +464,68 @@ class Tracker:
             # is behavior-neutral for the suite.
             return []
 
-        tree = cKDTree(kp_coords)
+        points = [mp for mp, _uv in projected_points]
+        # The C3a native batch (route B): the candidate pre-filter, the
+        # neighborhood search, and the best-descriptor accept run in
+        # ONE native call over flat SOA; the object-graph side (the
+        # Observation objects, the running averages, the unique mask)
+        # stays Python below. The distance arithmetic is the
+        # pre-registered route-B formulation (HAMMING popcount exact;
+        # L2 in f64 - near-threshold pairs may flip vs cv.norm's float
+        # SIMD, the accepted tolerance).
+        desc_width = 0
+        for p in points:
+            if p.descriptor is not None:
+                desc_width = int(np.ascontiguousarray(p.descriptor).nbytes)
+                break
+        if desc_width == 0:
+            # No candidate point carries a descriptor: nothing can
+            # match (the Python path's d1-is-None skip, wholesale).
+            return []
+        M = len(points)
+        point_desc = np.zeros((M, desc_width), dtype=np.uint8)
+        has_desc = np.zeros(M, dtype=np.uint8)
+        for i, p in enumerate(points):
+            if p.descriptor is not None:
+                point_desc[i] = np.ascontiguousarray(
+                    p.descriptor).view(np.uint8).reshape(-1)
+                has_desc[i] = 1
 
-        # Visibility bounds on the ALREADY projected pixel
-        # coordinates (same margin-10 bounds semantics as the previous
-        # is_point_visible call, which re-projected every map point a
-        # second time per frame). Pre-filter (bounds + not-yet-
-        # observed) so the KD-tree runs as ONE batched ball query
-        # instead of a per-point scipy call.
+        uv = np.empty((M, 2), dtype=np.float64)
+        for i, (_p, uv_proj) in enumerate(projected_points):
+            uv[i] = uv_proj
+
+        already = np.fromiter(
+            (1 if self.cur_frame.frame_id in p.observations else 0
+             for p in points), dtype=np.uint8, count=M)
+
+        kp_desc = np.ascontiguousarray(descriptors).view(np.uint8).reshape(
+            len(descriptors), -1)
+        desc_kind = 1 if EXTRACTOR_DESCRIPTOR_KINDS[
+            self.feature_extraction_method] == "binary" else 2
+        reloc_thresh = const.EXTRACTOR_RELOC_DESC_THRESHOLDS[
+            EXTRACTOR_DESCRIPTOR_KINDS[self.feature_extraction_method]]
         H, W = self.cur_frame.image.shape[:2]
-        margin = 10
 
-        candidates = []
-        centers = []
-        for mp, uv_proj in projected_points:
-            u_proj, v_proj = uv_proj
-            # Out-of-bounds projections are skipped.
-            if not (margin <= u_proj < W - margin and
-                    margin <= v_proj < H - margin):
-                continue
+        point_rows, kp_indices, repro_errors, n_matches = match_projected(
+            MatchInputs(
+                point_uv=uv, point_desc=point_desc,
+                point_has_desc=has_desc,
+                kp_coords=np.ascontiguousarray(kp_coords, dtype=np.float64),
+                kp_desc=kp_desc, already_observed=already,
+                desc_kind=desc_kind,
+                search_radius=float(dist_thresh), reloc_thresh=reloc_thresh,
+                margin=10.0, width=float(W), height=float(H)))
 
-            # Skip points this frame already observes (the check is
-            # load-bearing now that the frame-side and point-side
-            # registries are consistent).
-            if self.cur_frame.frame_id in mp.observations:
-                continue
-
-            candidates.append((mp, u_proj, v_proj))
-            centers.append((u_proj, v_proj))
-
-        if not candidates:
-            debug_log(
-                LOG_TAG, f"Found {len(observations)} projected matches after filtering")
-            return observations
-
-        # Batched ball query: one scipy call for all candidates. Verified
-        # bit-identical against per-point calls on all four sequences
-        # (the initial suspicion that batched results differed was a
-        # false attribution - the real divergence was the observation-
-        # update order in _recompute_point_errors, fixed separately).
-        nearby_lists = tree.query_ball_point(centers, r=dist_thresh)
-
-        # The accept threshold is per descriptor KIND - the old
-        # literal 20 was an ORB-Hamming pin (on unit-normalized float
-        # vectors the L2 max is 2.0, so it accepted everything).
-        # EXTRACTOR_RELOC_DESC_THRESHOLDS carries the kind->threshold
-        # map.
-        reloc_kind = EXTRACTOR_DESCRIPTOR_KINDS[self.feature_extraction_method]
-        reloc_thresh = const.EXTRACTOR_RELOC_DESC_THRESHOLDS[reloc_kind]
-
-        for (mp, u_proj, v_proj), nearby_indices in zip(candidates, nearby_lists):
-            best_idx = -1
-            best_dist = float('inf')
-
-            for i in nearby_indices:
-                d1 = mp.descriptor
-                d2 = descriptors[i]
-                if d1 is None or d2 is None:
-                    continue
-                desc_dist = cv.norm(
-                    d1, d2, descriptor_norm(self.feature_extraction_method))
-                if desc_dist < best_dist:
-                    best_dist = desc_dist
-                    best_idx = i
-
-            if best_idx != -1 and best_dist < reloc_thresh:
-                repro_error = np.linalg.norm(
-                    kp_coords[best_idx] - np.array([u_proj, v_proj]))
-
-                # Update observation relationships
-                observation = Observation(self.cur_frame, mp, best_idx)
-                observations.append(observation)
-                mp.update_reprojection_error(repro_error)
-                self.cur_frame.kp_unique_mask[best_idx] = False
-
-        debug_log(
-            LOG_TAG, f"Found {len(observations)} projected matches after filtering")
-
+        observations = []
+        for r in range(n_matches):
+            mp = points[int(point_rows[r])]
+            best_idx = int(kp_indices[r])
+            repro_error = float(repro_errors[r])
+            observation = Observation(self.cur_frame, mp, best_idx)
+            observations.append(observation)
+            mp.update_reprojection_error(repro_error)
+            self.cur_frame.kp_unique_mask[best_idx] = False
         return observations
 
     def _triangulate(self) -> List[Point]:

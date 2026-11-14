@@ -205,6 +205,95 @@ def test_projection_match_explicit_radius_override_still_honored():
     assert len(tracker._match_projected_points(projected, dist_thresh=14)) == 1
 
 
+def _projection_match_fixture(descriptors, kp_positions, uv=(30.0, 30.0)):
+    """A tracker whose frame carries the given keypoints/descriptors and
+    one map point at the fixed projection."""
+    world = Map()
+    frame = make_frame(K=make_K(fx=1449.6, fy=1449.6))
+    tracker = Tracker(world)
+    tracker.cur_frame = frame
+    set_keypoints(frame, kp_positions, descriptors)
+    point = Point(np.array([0.0, 0.0, 5.0]), None, _binary_descriptor(0))
+    return tracker, [(point, np.array(uv))], point
+
+
+def test_projection_match_hamming_threshold_is_strict():
+    """[C3a] the descriptor accept is STRICTLY below the reloc
+    threshold (20 for binary): distance 19 matches, 20 does not - the
+    knife-edge pair regime the route-B port must preserve. The pair is
+    crafted so the KIND DISPATCH is bound: a 19-bit Hamming distance is
+    ACCEPTED under kind=1 but the same bytes' L2-on-reinterpreted-float
+    distance is ~2.0 (far above the float threshold 0.8639) - so a
+    kind=2 dispatch produces ZERO matches here, making this pin fail
+    loudly on a kind-map regression (measured: the 'binary'/'HAMMING'
+    literal mismatch dispatched ORB to L2 and the battery collapsed)."""
+    # d_popcount(descA, descB) = popcount(A XOR B): craft A=0x00 and
+    # B with exactly 19 / 20 differing bits.
+    def desc_with_popcount(n):
+        d = np.zeros(32, dtype=np.uint8)
+        remaining = n
+        for byte in range(32):
+            if remaining >= 8:
+                d[byte] = 0xFF
+                remaining -= 8
+            elif remaining > 0:
+                d[byte] = (1 << remaining) - 1
+                remaining = 0
+        return d
+
+    desc = np.stack([desc_with_popcount(19), desc_with_popcount(20)])
+    positions = [(30.0, 30.0)] * 2  # both inside the ball, zero pixel dist
+    tracker, projected, point = _projection_match_fixture(
+        desc, positions)
+    obs = tracker._match_projected_points(projected, dist_thresh=5)
+    assert len(obs) == 1
+    # the accepted one is the 19-bit keypoint (index 0: strictly < 20)
+    assert obs[0].kp_idx == 0
+
+
+def test_projection_match_ties_break_to_the_first_scanned():
+    """[C3a] two keypoints at the SAME descriptor distance: the match
+    goes to the FIRST in the scan order (the pre-registered route-B
+    tie-break, replacing scipy's implementation-defined order)."""
+    # both keypoints share the SAME descriptor (distance 0 to the
+    # point's zero descriptor), at different pixel positions.
+    desc = np.zeros((2, 32), dtype=np.uint8)
+    positions = [(30.0, 30.0), (32.0, 30.0)]
+    tracker, projected, point = _projection_match_fixture(
+        desc, positions)
+    obs = tracker._match_projected_points(projected, dist_thresh=5)
+    assert len(obs) == 1
+    assert obs[0].kp_idx == 0  # the first scanned wins the tie
+
+
+def test_projection_match_l2_formulation_is_f64():
+    """[C3a] the float-kind (ALIKED) descriptor distance is the
+    pre-registered f64 accumulation: a knife-edge pair straddling the
+    float reloc threshold (0.8639) behaves as f64 arithmetic dictates
+    - distance just below matches, just above does not. (The f32 value
+    0.8639 widened to f64 is 0.8639000058... > the threshold double
+    0.8639 - so the straddle is crafted at 0.8638/0.8640.)"""
+    below = np.zeros((1, 128), dtype=np.float32)
+    below[0, 0] = np.float32(0.8638)   # widened: 0.86379998922... < 0.8639
+    above = below.copy()
+    above[0, 0] = np.float32(0.8640)   # widened: 0.86400005... > 0.8639
+    # the POINT descriptor: the zero vector (width 128 float32 = 512 B)
+    point_desc = np.zeros(512, dtype=np.uint8)
+    world = Map()
+    frame = make_frame(K=make_K(fx=1449.6, fy=1449.6))
+    tracker = Tracker(world)
+    tracker.cur_frame = frame
+    # EXTRACTOR_DESCRIPTOR_KINDS: make the tracker float-kind
+    tracker.feature_extraction_method = "ALIKED"
+    kp_desc = np.concatenate([below, above])
+    set_keypoints(frame, [(30.0, 30.0), (31.0, 30.0)], kp_desc)
+    point = Point(np.array([0.0, 0.0, 5.0]), None, point_desc)
+    projected = [(point, np.array([30.0, 30.0]))]
+    obs = tracker._match_projected_points(projected, dist_thresh=5)
+    assert len(obs) == 1
+    assert obs[0].kp_idx == 0  # the below-threshold keypoint
+
+
 def test_update_skips_extraction_when_features_carried(monkeypatch):
     """[26c] the dedup: a frame whose features the caller attached
     (the intake gate's carry) takes NO extractor call, and the

@@ -8,6 +8,7 @@
 #include "error_fold.h"
 #include "ba_solver.h"
 #include "persistent_ba.h"
+#include "correspondence.h"
 
 namespace py = pybind11;
 
@@ -144,4 +145,31 @@ PYBIND11_MODULE(slam_native, m) {
       .def("bookkeeping_pairs", &slarnative::PersistentLocalBA::bookkeeping_pairs)
       .def("frame_estimate_T_wc", &slarnative::PersistentLocalBA::frame_estimate_T_wc)
       .def("point_estimate", &slarnative::PersistentLocalBA::point_estimate);
+
+  py::class_<slarnative::MatchInputs>(m, "MatchInputs")
+      .def(py::init([](slarnative::c_arr<double> point_uv,
+                       slarnative::c_arr<uint8_t> point_desc,
+                       slarnative::c_arr<uint8_t> point_has_desc,
+                       slarnative::c_arr<double> kp_coords,
+                       slarnative::c_arr<uint8_t> kp_desc,
+                       slarnative::c_arr<uint8_t> already_observed,
+                       int desc_kind, double search_radius,
+                       double reloc_thresh, double margin, double width,
+                       double height) {
+             return slarnative::MatchInputs{
+                 std::move(point_uv),         std::move(point_desc),
+                 std::move(point_has_desc),   std::move(kp_coords),
+                 std::move(kp_desc),          std::move(already_observed),
+                 desc_kind,                   search_radius,
+                 reloc_thresh,                margin,
+                 width,                       height};
+           }),
+           py::arg("point_uv"), py::arg("point_desc"), py::arg("point_has_desc"),
+           py::arg("kp_coords"), py::arg("kp_desc"), py::arg("already_observed"),
+           py::arg("desc_kind"), py::arg("search_radius"), py::arg("reloc_thresh"),
+           py::arg("margin"), py::arg("width"), py::arg("height"));
+
+  m.def("match_projected", &slarnative::match_projected, py::arg("in"),
+        "The C3a projection-match kernel (route B). Returns "
+        "(point_rows, kp_indices, repro_errors, n_matches).");
 }
