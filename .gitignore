@@ -9,12 +9,17 @@ __pycache__/
 # vendored third_party sources at native/third_party/ ARE committed)
 build/
 
-output/
-videos/
-data/
-slam/depth_estimation/
-slam/external/
-weights/
+# The regenerable/license-restricted trees - ANCHORED to the repo root:
+# unanchored patterns exclude same-named directories at ANY depth
+# (measured twice: g2o's vendored types/data was excluded here after
+# being excluded from the rsync sync for the same reason).
+/output/
+/videos/
+/data/
+/weights/
+/slam/depth_estimation/
+/slam/external/
+/debug.txt
 
 # macOS system files
 .DS_Store
