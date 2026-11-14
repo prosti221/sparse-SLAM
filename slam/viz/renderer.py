@@ -213,7 +213,7 @@ class Renderer:
             # old leaked-`kf` save crashed on empty lists and only
             # saved the LAST keyframe per update; poses can also move
             # under BA without a quality change)
-            self.session_data['poses'][kf.frame_id.int] = {
+            self.session_data['poses'][kf.frame_id] = {
                 'pose': kf.pose.tolist(),
                 'tracking_quality': kf.tracking_quality,
             }
