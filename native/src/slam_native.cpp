@@ -10,6 +10,7 @@
 #include "persistent_ba.h"
 #include "correspondence.h"
 #include "point_registry.h"
+#include "obs_registry.h"
 
 namespace py = pybind11;
 
@@ -193,4 +194,23 @@ PYBIND11_MODULE(slam_native, m) {
       .def("has_desc_view", &slarnative::PointRegistry::has_desc_view)
       .def("row_of", &slarnative::PointRegistry::row_of)
       .def("ids", &slarnative::PointRegistry::ids);
+
+  py::class_<slarnative::ObsRegistry>(m, "ObsRegistry")
+      .def(py::init<>())
+      .def("add_observations", &slarnative::ObsRegistry::add_observations,
+           py::arg("point_ids"), py::arg("frame_ids"), py::arg("kp_idx"),
+           py::arg("pt2d_norm"))
+      .def("remove_by_points", &slarnative::ObsRegistry::remove_by_points,
+           py::arg("point_ids"))
+      .def("remove_by_frames", &slarnative::ObsRegistry::remove_by_frames,
+           py::arg("frame_ids"))
+      .def("clear", &slarnative::ObsRegistry::clear)
+      .def("size", &slarnative::ObsRegistry::size)
+      .def("has_pair", &slarnative::ObsRegistry::has_pair)
+      .def("observers_for_points",
+           &slarnative::ObsRegistry::observers_for_points,
+           py::arg("point_ids"))
+      .def("cull_scan", &slarnative::ObsRegistry::cull_scan,
+           py::arg("candidate_ids"), py::arg("keyframe_ids"),
+           py::arg("min_other"));
 }

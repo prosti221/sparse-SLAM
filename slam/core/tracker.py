@@ -169,6 +169,7 @@ class Tracker:
         # and refined the wrong frame entirely.
         for obs in observations:
             obs.point.add_observation(obs)
+        self.map._add_observation_events(observations)
 
         # Refine the current frame's pose against the map. The E-chained
         # estimate is only the SEED; PnP over the frame's map-point

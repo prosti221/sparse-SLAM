@@ -101,6 +101,13 @@ class Map:
         # per-extractor); None until then.
         self._point_registry = None
 
+        # The observation registry (migration C4): the point-side
+        # observation graph native, append-only (the row order is the
+        # fold's pass-2 order contract). Updated at the same event
+        # funnel as the point registry.
+        from slam_native import ObsRegistry
+        self._obs_registry = ObsRegistry()
+
         # Loop closure components
         self.feature_db = KeyframeFeatureDatabase()
         self.loop_detector = LoopClosureDetector(self, self.feature_db)
@@ -114,6 +121,20 @@ class Map:
         # (all four curated sequences) - the curated battery is
         # untouched by construction.
         self.archives: List[ArchivedMap] = []
+
+    def _add_observation_events(self, observations) -> None:
+        """The C4 obs-registry event: bulk-add point-side observations
+        (one native call per event batch; the mirror of the Python
+        point->observations dicts, which stay the working state)."""
+        if not observations:
+            return
+        self._obs_registry.add_observations(
+            [obs.point_id for obs in observations],
+            [obs.frame_id for obs in observations],
+            np.fromiter((obs.kp_idx for obs in observations), dtype=np.int64,
+                        count=len(observations)),
+            np.array([obs.pt_2d_norm for obs in observations],
+                     dtype=np.float64))
 
     def add_points(self, points: List[Point]):
         new_points = []
@@ -156,6 +177,13 @@ class Map:
                 reg_ids, np.array(reg_pos, dtype=np.float64),
                 np.array(reg_desc, dtype=np.uint8),
                 np.array(reg_has, dtype=np.uint8))
+
+            # The C4 obs-registry event: the new points' current
+            # observations (the triangulation pairs) go native in the
+            # same funnel.
+            obs_events = [obs for pt in new_points
+                          for obs in pt.observations.values()]
+            self._add_observation_events(obs_events)
             self._registry_rows = {
                 pid: i for i, pid in enumerate(self._point_registry.ids())}
 
@@ -453,6 +481,7 @@ class Map:
             self._point_registry.remove_points([point_id])
             self._registry_rows = {
                 pid: i for i, pid in enumerate(self._point_registry.ids())}
+        self._obs_registry.remove_by_points([point_id])
 
         # Remove from points list
         del self.points[idx]
@@ -568,6 +597,7 @@ class Map:
         if self._point_registry is not None:
             self._point_registry.clear()
         self._registry_rows = None
+        self._obs_registry.clear()
 
         # Reset state counters
         self.consecutive_low_quality_frames = 0
@@ -650,6 +680,7 @@ class Map:
         # matches, die with it). Collect points that fall below the
         # keyframe-observation minimum.
         orphan_ids = set()
+        self._obs_registry.remove_by_frames([keyframe_id])
         for point in self.points:
             if keyframe_id in point.observations:
                 point.remove_observation(keyframe_id)
@@ -724,35 +755,26 @@ class Map:
         end = n - protected_tail
         if end <= 1:
             return False
-        candidates = {kf.frame_id for kf in self.keyframes[1:end]}
+        candidates = [kf.frame_id for kf in self.keyframes[1:end]]
 
-        # One pass over live points: bucket each point by which
-        # candidate keyframes observe it (point-side registry), and
-        # count the point's OTHER keyframe observers once (a point
-        # needs >= CULL_MIN_OTHER_OBSERVERS+1 keyframe observers in
-        # total to be redundant evidence for anyone).
-        candidate_points: dict[int, list] = defaultdict(list)
-        for point in self.points:
-            kf_observers = [fid for fid in point.observations
-                            if fid in self.keyframes_by_id]
-            n_others = len(kf_observers) - 1
-            for fid in kf_observers:
-                if fid in candidates:
-                    candidate_points[fid].append((point, n_others))
-
-        for kf in self.keyframes[1:end]:
-            bucket = candidate_points.get(kf.frame_id)
-            if not bucket:
+        # The C4 native scan: the bucketing and the other-observer
+        # counting run in ONE native pass over the obs registry
+        # (integer/set logic, exactly replicable). The decision - the
+        # ratio and the oldest-first selection - stays here.
+        bucket_sizes, redundant_counts = self._obs_registry.cull_scan(
+            candidates, list(self.keyframes_by_id),
+            const.CULL_MIN_OTHER_OBSERVERS)
+        for kf, bucket, redundant in zip(self.keyframes[1:end],
+                                         bucket_sizes, redundant_counts):
+            if bucket == 0:
                 # No point-side observations (all its points pruned):
                 # ratio undefined. Conservative - skip (it may still
                 # serve relocalization matching).
                 continue
-            redundant = sum(1 for _, n_others in bucket
-                             if n_others >= const.CULL_MIN_OTHER_OBSERVERS)
-            if redundant >= const.CULL_REDUNDANCY_RATIO * len(bucket):
+            if redundant >= const.CULL_REDUNDANCY_RATIO * bucket:
                 debug_log(
                     LOG_TAG, f"Culling redundant keyframe {kf.frame_id} "
-                    f"({redundant}/{len(bucket)} points redundantly observed)")
+                    f"({redundant}/{bucket} points redundantly observed)")
                 return self.remove_keyframe_by_id(kf.frame_id)
         return False
 
