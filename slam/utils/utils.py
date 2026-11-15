@@ -262,46 +262,9 @@ def normalize_vec(v):
 # exactly, warning included.
 TRIANGULATION_DEGENERATE_GUARD_ENABLED = 1
 
-# The depth-uncertainty parallax floor (D2b, the replacement
-# semantics): at flag 1 the fixed 0.65-deg floor becomes
-# theta_min = sigma_d / (f * tau) expressed in degrees - the SAME
-# strictness at the battery's focal (0.637 vs 0.65 deg at fx=450)
-# and focal-adaptive elsewhere (looser at high fx - the salem class
-# gets 3x better depth per degree; tighter at low fx - the
-# wide-angle penalty). Flag 0 = the fixed floor (byte-identical).
-# INT flag (the --override trap); read at call time via the module
-# alias.
-TRIANGULATION_DEPTH_UNCERTAINTY_GATE = 0
-# The scene-relative depth ceiling (D2): Zmax = K * the batch's scene
-# depth median, clamped by the absolute emergency ceiling; the
-# fallback (no median) is the fixed MAX_DEPTH. Flag 0 = the fixed
-# MAX_DEPTH (byte-identical).
-TRIANGULATION_SCENE_RELATIVE_MAX_DEPTH = 0
 
 
-def _parallax_floor_deg(fx):
-    """The focal-adaptive parallax floor: the angular floor whose
-    depth uncertainty equals the threshold, theta_min =
-    sigma_d / (f * tau) in degrees. At the battery's fx=450 this is
-    ~0.637 deg (near-equivalent to the fixed 0.65); high fx loosens
-    (better depth per degree), low fx tightens."""
-    import math
-    return math.degrees(const.TRIANGULATION_SIGMA_D_PX / (
-        fx * const.TRIANGULATION_MAX_RELATIVE_DEPTH_UNCERTAINTY))
-
-
-def _scene_relative_max_depth(scene_depth_median):
-    """The batch's depth ceiling: K * the scene depth median, clamped
-    by the absolute emergency ceiling; the no-median fallback is the
-    fixed MAX_DEPTH."""
-    if not scene_depth_median or scene_depth_median <= 0.0:
-        return const.MAX_DEPTH
-    return min(const.TRIANGULATION_SCENE_DEPTH_K * scene_depth_median,
-               const.TRIANGULATION_MAX_DEPTH_EMERGENCY)
-
-
-def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d,
-                                scene_depth_median=None):
+def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d):
     """Gate every triangulation candidate against geometry and
     consistency. ACCEPTANCE is unchanged from the original: VALID iff
     every gate passes.
@@ -347,13 +310,11 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d,
 
     # 2. Depth ceiling - a latent divergence guard. 5a measured it
     #    never binds on the battery (its candidates always co-fail
-    #    parallax/reprojection); it stays as cheap insurance. D2: the
-    #    scene-relative form scales the ceiling with the batch's
-    #    scene depth (the fallback is the fixed MAX_DEPTH).
-    depth_ceiling = (_scene_relative_max_depth(scene_depth_median)
-                     if TRIANGULATION_SCENE_RELATIVE_MAX_DEPTH
-                     else const.MAX_DEPTH)
-    if cur_cam_coords[2] > depth_ceiling or prev_cam_coords[2] > depth_ceiling:
+    #    parallax/reprojection); it stays as cheap insurance. The D2b
+    #    scene-relative form measured BIT-IDENTICAL here and
+    #    attribution-only on its value-case stem (finding 42) -
+    #    removed with its record.
+    if cur_cam_coords[2] > const.MAX_DEPTH or prev_cam_coords[2] > const.MAX_DEPTH:
         failed_codes.append(
             TRIANGULATION_VALIDATION_CODE['MAX_DEPTH_VIOLATION'])
 
@@ -362,9 +323,6 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d,
     #    at flag 1 the floor is focal-adaptive - the depth-uncertainty
     #    criterion expressed as an angle (theta_min = sigma_d/(f*tau));
     #    the fixed 0.65 is its value at the battery's focal.
-    floor_deg = (_parallax_floor_deg(cur_frame.K[0, 0])
-                 if TRIANGULATION_DEPTH_UNCERTAINTY_GATE
-                 else const.MIN_PARALLAX_DEG)
     v1 = point_3d - cur_frame.pose[:3, 3]
     v2 = point_3d - prev_frame.pose[:3, 3]
     n1 = np.linalg.norm(v1)
@@ -385,7 +343,7 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d,
         cos_parallax = np.dot(v1 / n1, v2 / n2)
         parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax,
                                                       -1.0, 1.0)))
-        if parallax_angle < floor_deg:
+        if parallax_angle < const.MIN_PARALLAX_DEG:
             failed_codes.append(
                 TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION'])
     else:
@@ -396,7 +354,7 @@ def is_valid_triangulated_point(point_idx, cur_frame, prev_frame, point_4d,
         parallax_angle = np.degrees(np.arccos(np.clip(cos_parallax,
                                                       -1.0, 1.0)))
 
-        if parallax_angle < floor_deg:
+        if parallax_angle < const.MIN_PARALLAX_DEG:
             failed_codes.append(
                 TRIANGULATION_VALIDATION_CODE['MIN_PARALLAX_VIOLATION'])
 
