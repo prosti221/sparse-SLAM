@@ -218,12 +218,12 @@ class Renderer:
                 'tracking_quality': kf.tracking_quality,
             }
 
-        # Place the camera once, over the first keyframe (the 't' follow
-        # mode this placement used to serve is deprecated in favor of
-        # the fly controls).
+        # Place the camera once, at the first keyframe, facing its
+        # orientation (the 't' follow mode this placement used to
+        # serve is deprecated in favor of the fly controls).
         if not self.camera_initialized and keyframes:
             self.camera_initialized = True
-            self._place_initial_camera(keyframes[-1])
+            self._place_initial_camera(keyframes[0])
 
         self.vis.poll_events()
         self.vis.update_renderer()
@@ -366,41 +366,17 @@ class Renderer:
         self.vis.update_geometry(self.poses[keyframe.frame_id][0])
 
     def _place_initial_camera(self, keyframe):
-        """One-time top-down placement over the first keyframe. (This
-        placement used to run per-keyframe as the 't' follow mode;
-        that mode is deprecated in favor of the fly controls.)"""
-        tracked_pose = np.linalg.inv(keyframe.pose)
-        tracked_position = tracked_pose[:3, 3]
-
-        # Project position to ground plane (assuming y is up)
-        ground_position = tracked_position.copy()
-        ground_position[1] = 0  # Project to ground
-
-        # Fixed top-down camera setup
-        camera_height = 20  # Fixed height above ground
-        tilt_angle = np.radians(25)
-
-        # Camera position
-        # TODO: This way of positioning the cmaera is a bit unreliable due to scale drift...
-        camera_position = ground_position + \
-            np.array([0, camera_height, 60])  # Slightly behind
-
-        # Fixed orientation (looking down and slightly forward)
-        cos_a = np.cos(tilt_angle)
-        sin_a = np.sin(tilt_angle)
-
-        R_topdown = np.array([
-            [1,     0,      0],
-            [0, cos_a, -sin_a],
-            [0, sin_a,  cos_a]
-        ])
-
-        # Create camera pose
-        camera_pose = np.eye(4)
-        camera_pose[:3, :3] = R_topdown
-        camera_pose[:3, 3] = camera_position
-
-        self.camera_parameters.extrinsic = camera_pose
+        """One-time placement AT the first keyframe, facing the same
+        direction the keyframe looks. Open3D's PinholeCameraParameters
+        convention is world-to-camera in the CV camera frame (X right,
+        Y down, Z forward - measured: create_camera_visualization
+        places the frustum tip at -t for a translated identity
+        extrinsic), i.e. the inverse of the pipeline's camera pose
+        (camera-to-world). The old top-down placement fed a
+        camera-to-world pose with the world position as translation;
+        Open3D inverted it, mirroring the camera position and flipping
+        the view."""
+        self.camera_parameters.extrinsic = np.linalg.inv(keyframe.pose)
         self.ctrl.convert_from_pinhole_camera_parameters(
             self.camera_parameters, allow_arbitrary=True)
 
