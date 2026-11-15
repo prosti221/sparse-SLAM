@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ba_constants.h"  // kHuberDelta
 #include "error_fold.h"  // c_arr
 
 #include <cstdint>
@@ -71,6 +72,14 @@ class PersistentLocalBA {
   bool has_frame(uint64_t id) const { return kf_vertices_.count(id) != 0; }
   bool has_point(uint64_t id) const { return pt_vertices_.count(id) != 0; }
 
+  // The robust kernel scale (D3): the delta for NEWLY-created edges,
+  // and an update pass over the existing edges' kernels (the graph
+  // persists across solves - a mid-run delta change must reach the
+  // in-graph edges). The default is kHuberDelta (behaviorally
+  // identical until the Python side passes a scaled delta).
+  void set_huber_delta(double delta);
+  double huber_delta() const { return huber_delta_; }
+
   // Both views of the (point, keyframe) edge pairs, for the stage
   // pin that asserts the registry mirrors the graph.
   std::vector<std::pair<uint64_t, uint64_t>> graph_edge_pairs() const;
@@ -96,6 +105,7 @@ class PersistentLocalBA {
   // EdgeSet of shared_ptr); no separate owner registry is needed.
   std::unordered_map<uint64_t, std::unordered_set<uint64_t>> edges_by_pt_;
   std::unordered_map<uint64_t, std::unordered_set<uint64_t>> edges_by_kf_;
+  double huber_delta_ = kHuberDelta;
   int next_vertex_id_ = 0;
 };
 

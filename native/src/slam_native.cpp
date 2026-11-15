@@ -76,17 +76,20 @@ PYBIND11_MODULE(slam_native, m) {
                        slarnative::c_arr<int64_t> obs_frame,
                        slarnative::c_arr<int64_t> obs_point,
                        slarnative::c_arr<double> obs_uv,
-                       int max_iterations) {
+                       int max_iterations,
+                       double huber_delta) {
              return slarnative::BASolveInputs{
                  std::move(T_wc),      std::move(fixed),
                  std::move(positions), points_fixed,
                  std::move(obs_frame), std::move(obs_point),
-                 std::move(obs_uv),    max_iterations};
+                 std::move(obs_uv),    max_iterations,
+                 huber_delta};
            }),
            py::arg("T_wc"), py::arg("fixed"), py::arg("positions"),
            py::arg("points_fixed"), py::arg("obs_frame"),
            py::arg("obs_point"), py::arg("obs_uv"),
-           py::arg("max_iterations"));
+           py::arg("max_iterations"),
+           py::arg("huber_delta") = slarnative::kHuberDelta);
 
   m.def("solve_se3_ba", &slarnative::solve_se3_ba, py::arg("in"),
         "The C2b1 smoke solve: a fresh-build SE3 BA graph with the "
@@ -96,6 +99,12 @@ PYBIND11_MODULE(slam_native, m) {
   py::class_<slarnative::PersistentLocalBA>(m, "PersistentLocalBA")
       .def(py::init<bool>(), py::arg("verbose"))
       .def("reset", &slarnative::PersistentLocalBA::reset)
+      .def("set_huber_delta",
+           &slarnative::PersistentLocalBA::set_huber_delta,
+           py::arg("delta"),
+           "D3: the robust kernel scale for the new edges + an "
+           "update pass over the in-graph edges' kernels.")
+      .def("huber_delta", &slarnative::PersistentLocalBA::huber_delta)
       .def(
           "solve_local",
           &slarnative::PersistentLocalBA::solve_local,

@@ -208,7 +208,7 @@ py::object PersistentLocalBA::solve_local(
       e->setMeasurement(g2o::Vector2(uv_in(i, 0), uv_in(i, 1)));
       e->setInformation(info);
       auto huber = std::make_shared<g2o::RobustKernelHuber>();
-      huber->setDelta(kHuberDelta);
+      huber->setDelta(huber_delta_);
       e->setRobustKernel(huber);
       if (optimizer_->addEdge(e)) {
         // Register only if the edge entered the graph: a failed edge
@@ -255,6 +255,21 @@ py::object PersistentLocalBA::solve_local(
 
 size_t PersistentLocalBA::num_edges() const {
   return optimizer_->edges().size();
+}
+
+// The robust kernel scale (D3): update the member for the
+// newly-created edges and sweep the in-graph edges' kernels (the
+// graph persists across solves - a mid-run delta change must reach
+// them). The optimizer owns the edges strongly.
+void PersistentLocalBA::set_huber_delta(double delta) {
+  huber_delta_ = delta;
+  for (const auto& e_handle : optimizer_->edges()) {
+    auto e = std::dynamic_pointer_cast<g2o::EdgeProjectXYZ2UV>(
+        e_handle);
+    if (e && e->robustKernel()) {
+      e->robustKernel()->setDelta(delta);
+    }
+  }
 }
 
 size_t PersistentLocalBA::fixed_pose_count() const {

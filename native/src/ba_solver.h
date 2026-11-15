@@ -16,6 +16,9 @@ struct BASolveInputs {
   c_arr<int64_t> obs_point;  // (O,) point rows
   c_arr<double> obs_uv;      // (O, 2) normalized measurements
   int max_iterations;
+  double huber_delta;        // the robust kernel scale (D3): the
+                             // Python side may pass a noise-scaled
+                             // delta; kHuberDelta is the default.
 };
 
 // The C2b1 smoke solve: a FRESH-BUILD SE3 BA graph solved with the

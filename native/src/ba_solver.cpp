@@ -123,7 +123,7 @@ py::object solve_se3_ba(const BASolveInputs& in) {
           g2o::Vector2(uv_in(i, 0), uv_in(i, 1)));
       e->setInformation(info);
       auto huber = std::make_shared<g2o::RobustKernelHuber>();
-      huber->setDelta(kHuberDelta);
+      huber->setDelta(in.huber_delta);
       e->setRobustKernel(huber);
       optimizer.addEdge(e);
     }
