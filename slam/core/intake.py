@@ -38,13 +38,19 @@ safe direction).
 """
 import threading
 
+import multiprocessing as mp
+import queue as queue_mod
+import time
+from multiprocessing import shared_memory
+
 import cv2 as cv
 import numpy as np
 
 from slam.features.feature_extractor import FeatureExtractor
 from slam.features.matcher import _get_or_create_matcher, lowe_ratio_filter
 from slam.utils import telemetry
-from slam.utils.constants import (FRAME_INTAKE_MAX_GAP_S,
+from slam.utils.constants import (EXTRACTOR_DESCRIPTOR_KINDS,
+                                  FRAME_INTAKE_MAX_GAP_S,
                                   FRAME_INTAKE_MIN_DISPLACEMENT_PX,
                                   FRAME_INTAKE_MIN_MATCHES,
                                   KNN_K_VALUE,
@@ -61,6 +67,26 @@ LOG_TAG = 'Intake'
 # the gate extracts from the same gray image). INT flag (the
 # --override trap); read at call time via the module alias.
 INTAKE_CARRY_EXTRACTION = 1
+
+# The extraction process (the dominant `extract` bucket off the
+# critical path): the decode+extract producer ONE AHEAD in a worker
+# PROCESS. The thread shape was measured and deleted three times - the
+# extractor's GIL behavior (torch op dispatch needs the GIL the
+# consumer holds; cv2 releases it) is the measured boundary, and a
+# process sidesteps it. ADOPTED by C7b (2026-11-15): bit-silent
+# everywhere, kyoto -12.2% / drone -17.9% across the board. Flag 0 =
+# the inline path (the kill-switch, byte-identical behavior). INT flag
+# (the --override trap); read at call time via the module alias.
+INTAKE_EXTRACT_PROCESS = 1
+
+# The worker's torch thread bound: the torch-default intra-op pool is
+# ~2x SLOWER than the bounded variants on the gate machine AND its
+# threads contend with the consumer's native stages across processes
+# (the measured C7 deficit). k = 1 is the C7b-adopted value (the best
+# measured wall); 0 = no bound. The ORB worker never imports torch
+# (the bound routes to the float-descriptor stack only). INT flag;
+# read at call time via the module alias.
+INTAKE_EXTRACT_WORKER_THREADS = 1
 
 def _frame_gray(img: np.ndarray) -> np.ndarray:
     """The same grayscale conversion Frame.gray_image applies, so the
@@ -110,11 +136,17 @@ class FrameIntakeGate:
         self._reference_desc = None
         self._last_fed_decoded_index = 0
 
-    def should_feed(self, img: np.ndarray) -> bool:
+    def should_feed(self, img: np.ndarray, preextracted=None) -> bool:
         """One decoded frame: feed it to the tracker, or skip it?
 
         Deterministic, input-side only - no tracker/map state is
         touched. Every call counts one decoded frame.
+
+        preextracted (the extraction-process seam): a (kps, desc) pair
+        produced for THIS frame by the ExtractionProcess worker. When
+        given, the gate consumes it instead of extracting inline -
+        every other line identical (last_extraction is set either way,
+        so the caller's carry keeps working).
 
         The extraction is CACHED in last_extraction: the caller (the
         live loop) attaches it to the fed frame, so the tracker's
@@ -126,7 +158,10 @@ class FrameIntakeGate:
         extraction twice).
         """
         self.decoded_frames += 1
-        kps, desc = self.feature_extractor.extract(_frame_gray(img))
+        if preextracted is None:
+            kps, desc = self.feature_extractor.extract(_frame_gray(img))
+        else:
+            kps, desc = preextracted
         self.last_extraction = (kps, desc)
         kp_pts = cv.KeyPoint.convert(kps) if len(kps) else None
         has_features = (kp_pts is not None and desc is not None
@@ -204,3 +239,172 @@ class FrameIntakeGate:
         if self.decoded_frames == 0:
             return self.container_fps
         return self.container_fps * self.fed_frames / self.decoded_frames
+
+
+# ===== The extraction process (worker decode+extract, one ahead) =====
+
+def _kps_to_rows(kps) -> np.ndarray:
+    """cv.KeyPoint does not pickle - the message carries the fields
+    the consumer rebuilds into a FIELD-identical list (x, y, size,
+    angle, response, octave, class_id)."""
+    if len(kps) == 0:
+        return np.empty((0, 7), dtype=np.float64)
+    return np.array([[kp.pt[0], kp.pt[1], kp.size, kp.angle, kp.response,
+                      kp.octave, kp.class_id] for kp in kps],
+                    dtype=np.float64)
+
+
+def _rows_to_kps(rows: np.ndarray) -> list:
+    return [cv.KeyPoint(x=r[0], y=r[1], size=r[2], angle=r[3],
+                        response=r[4], octave=int(r[5]),
+                        class_id=int(r[6])) for r in rows]
+
+
+def _extract_process_main(video_path, extractor_name, enable_multiscale,
+                          frame_w, frame_h, shm_names, msg_queue,
+                          free_slots, stop_event, worker_threads):
+    """The worker PROCESS target (module level: spawn-safe, picklable
+    args). Opens its own capture on the same path, decodes + extracts
+    ONE AHEAD, writes each decoded BGR frame into the shared slot
+    whose token it holds, and ships (idx, slot, kps_rows, desc) on the
+    message queue. Message convention: idx None is terminal - desc
+    carrying a BaseException means a worker error; otherwise (idx,
+    slot, kps rows, desc). No telemetry; no cv RNG draws (the
+    extraction is deterministic given the frame).
+
+    worker_threads > 0 bounds the torch intra-op pool (the torch
+    stack only - an ORB worker never imports torch): the torch
+    default pool is ~2x slower than the bounded variants on the gate
+    machine and its threads contend with the consumer's native stages
+    across processes (the measured C7 deficit). Extraction numerics
+    are thread-count-invariant (measured on both gate machines), so
+    the bound does not move a bit."""
+    try:
+        if worker_threads > 0 and EXTRACTOR_DESCRIPTOR_KINDS.get(
+                extractor_name) == 'float':
+            import torch
+            torch.set_num_threads(worker_threads)
+
+        cap = cv.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(
+                f"extract worker cannot open {video_path}")
+        w = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+        if (w, h) != (frame_w, frame_h):
+            raise RuntimeError(
+                f"extract worker capture is {w}x{h}, expected "
+                f"{frame_w}x{frame_h}")
+        shms = [shared_memory.SharedMemory(name=n) for n in shm_names]
+        slots = [np.ndarray((frame_h, frame_w, 3), dtype=np.uint8,
+                            buffer=s.buf) for s in shms]
+        extractor = FeatureExtractor(extractor_name)
+        extractor.set_multiscale_enabled(enable_multiscale)
+
+        idx = -1
+        slot = 0
+        while True:
+            ret, img = cap.read()
+            if not ret:
+                msg_queue.put((None, None, None, None))
+                return
+            idx += 1
+            # The free-slot token: timeout-bounded so a stopped
+            # consumer cannot hang the worker.
+            while not free_slots.acquire(timeout=0.1):
+                if stop_event.is_set():
+                    return
+            kps, desc = extractor.extract(_frame_gray(img))
+            slots[slot][:] = img
+            rows = _kps_to_rows(kps)
+            while True:
+                try:
+                    msg_queue.put((idx, slot, rows, desc), timeout=0.1)
+                    break
+                except queue_mod.Full:
+                    if stop_event.is_set():
+                        return
+            slot = 1 - slot
+    except BaseException as e:
+        try:
+            msg_queue.put((None, None, e, None))
+        except Exception:
+            pass
+        raise
+
+
+class ExtractionProcess:
+    """The decode+extract producer ONE AHEAD in a worker PROCESS.
+
+    next_frame() yields (idx, img, kps, desc) per decoded frame (the
+    consumer copies the frame out of the shared slot before the slot's
+    token is released); None at end-of-stream; the worker's exception
+    re-raises here. close() is idempotent: it stops and joins the
+    worker (bounded, loud on a stuck worker, terminate as the last
+    resort), then releases the shared blocks. The pacing keeps the
+    worker at most ~2 frames ahead of the consumer."""
+
+    def __init__(self, video_path, frame_w, frame_h, extractor_name,
+                 enable_multiscale=False, worker_threads=0):
+        self._frame_w = int(frame_w)
+        self._frame_h = int(frame_h)
+        frame_bytes = self._frame_h * self._frame_w * 3
+        self._shm = [shared_memory.SharedMemory(create=True,
+                                                size=frame_bytes)
+                     for _ in range(2)]
+        self._slots = [np.ndarray((self._frame_h, self._frame_w, 3),
+                                  dtype=np.uint8, buffer=s.buf)
+                       for s in self._shm]
+        self._free_slots = mp.BoundedSemaphore(2)
+        self._msgs = mp.Queue(maxsize=1)
+        self._stop = mp.Event()
+        self._proc = mp.Process(
+            target=_extract_process_main,
+            args=(str(video_path), extractor_name, enable_multiscale,
+                  self._frame_w, self._frame_h,
+                  [s.name for s in self._shm], self._msgs,
+                  self._free_slots, self._stop, int(worker_threads)),
+            daemon=True)
+        self._proc.start()
+        self._closed = False
+
+    def next_frame(self):
+        while True:
+            try:
+                idx, slot, rows, desc = self._msgs.get(timeout=0.1)
+                break
+            except queue_mod.Empty:
+                if self._stop.is_set():
+                    return None
+                if not self._proc.is_alive():
+                    raise RuntimeError(
+                        "extract worker died without a terminal "
+                        "message")
+        if idx is None:
+            if isinstance(rows, BaseException):
+                raise rows
+            return None
+        img = np.array(self._slots[slot])
+        self._free_slots.release()
+        return idx, img, _rows_to_kps(rows), desc
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._stop.set()
+        # Drain so a worker blocked on the bounded put can observe the
+        # stop and exit; then a bounded join.
+        while True:
+            try:
+                self._msgs.get(timeout=0.05)
+            except queue_mod.Empty:
+                break
+        self._proc.join(timeout=5.0)
+        if self._proc.is_alive():
+            debug_log(LOG_TAG, "extract worker stuck; terminating")
+            self._proc.terminate()
+            self._proc.join(timeout=2.0)
+        for s in self._shm:
+            s.close()
+            s.unlink()

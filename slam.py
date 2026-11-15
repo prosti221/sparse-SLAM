@@ -75,6 +75,22 @@ if __name__ == "__main__":
     if config.get_global_config_property("enable_adaptive_frame_intake", True):
         intake_gate = FrameIntakeGate(
             FEATURE_EXTRACTOR, ENABLE_MULTISCALE, container_fps)
+
+    # The extraction process (INTAKE_EXTRACT_PROCESS): the worker owns
+    # the video source and runs decode+extract ONE AHEAD; constructed
+    # before the GeoCalib init batch so the worker's torch import +
+    # model load overlap it. The worker decodes the same stream from 0
+    # (its own capture), so the replay frames line up with its items.
+    # The construction decision pins the whole run's decode path (and
+    # reads the worker-thread bound once).
+    extract_pipeline = None
+    if intake_gate is not None and intake_mod.INTAKE_EXTRACT_PROCESS:
+        from slam.core.intake import ExtractionProcess
+        video_path = config.get_video_property(
+            config.get_global_config_property("load_video"), 'path')
+        extract_pipeline = ExtractionProcess(
+            video_path, CAP_W, CAP_H, FEATURE_EXTRACTOR, ENABLE_MULTISCALE,
+            worker_threads=intake_mod.INTAKE_EXTRACT_WORKER_THREADS)
     renderer = Renderer(global_map, K, W=1920, H=1080)
 
     tracker = Tracker(global_map, FEATURE_EXTRACTOR, ENABLE_MULTISCALE, ENABLE_BA)
@@ -119,10 +135,27 @@ if __name__ == "__main__":
             cv.destroyAllWindows()
             continue  # Skip SLAM updates
 
-        if init_frames:
+        if extract_pipeline is not None:
+            item = extract_pipeline.next_frame()
+            if item is None:
+                info_log(
+                    LOG_TAG,
+                    f"SLAM processing finished with {len(global_map.keyframes)} keyframes and {len(global_map.points)} points in the map!",
+                )
+                extract_pipeline.close()
+                slam_in_progress = False
+                continue
+            img, preextracted = item[1], (item[2], item[3])
+            if init_frames:
+                # Replay phase: the pipeline item's stream position IS
+                # the replayed batch frame (the worker decodes the same
+                # capture from 0); the batch entry only marks the phase.
+                init_frames.pop(0)
+        elif init_frames:
             # Replay the auto-calibration init batch
             # (consumed from the capture by estimate_video_intrinsics).
             img = init_frames.pop(0)
+            preextracted = None
         else:
             ret, img = cap.read()
             if not ret:
@@ -132,9 +165,10 @@ if __name__ == "__main__":
                 )
                 slam_in_progress = False
                 continue
+            preextracted = None
 
         if intake_gate is not None:
-            if not intake_gate.should_feed(img):
+            if not intake_gate.should_feed(img, preextracted):
                 continue
 
         frame = Frame(img, global_map.intrinsics.K,
@@ -161,5 +195,10 @@ if __name__ == "__main__":
         prev_img = img
 
     cv.destroyAllWindows()
+    if extract_pipeline is not None:
+        # Covers the mid-run exits (the EOS break already closed it -
+        # close() is idempotent); the worker is a daemon, so a hard
+        # crash cannot leave it running.
+        extract_pipeline.close()
     renderer.save_session_data()
     renderer.stop()

@@ -169,17 +169,39 @@ def run_one(config, video_path, frames_cap, seed,
     gate_rows = []
     resets = []
     idx = -1
+    # The extraction process (INTAKE_EXTRACT_PROCESS): the census
+    # mirrors the production loop's decode path (the pipeline owns the
+    # source; the item's idx replaces the inline idx increment, the
+    # cap break stays before should_feed, the finally closes the
+    # pipeline). The battery path (frame files, no gate) is untouched.
+    pipeline = None
+    if gate is not None and intake_mod.INTAKE_EXTRACT_PROCESS:
+        from slam.core.intake import ExtractionProcess
+        pipeline = ExtractionProcess(
+            str(video_path), W, H, feature_extractor, multiscale,
+            worker_threads=intake_mod.INTAKE_EXTRACT_WORKER_THREADS)
     t0 = time.perf_counter()
     try:
         while True:
-            ret, img = cap.read()
-            if not ret:
-                break
-            idx += 1
-            if idx >= frames_cap:
-                break
+            if pipeline is not None:
+                item = pipeline.next_frame()
+                if item is None:
+                    break
+                idx, img = item[0], item[1]
+                preextracted = (item[2], item[3])
+                if idx >= frames_cap:
+                    break
+            else:
+                ret, img = cap.read()
+                if not ret:
+                    break
+                idx += 1
+                if idx >= frames_cap:
+                    break
+                preextracted = None
 
-            fed = gate.should_feed(img) if gate is not None else True
+            fed = (gate.should_feed(img, preextracted)
+                   if gate is not None else True)
             gate_rows.append({"i": idx, "fed": bool(fed)})
             if not fed:
                 continue
@@ -229,6 +251,8 @@ def run_one(config, video_path, frames_cap, seed,
     finally:
         elapsed = time.perf_counter() - t0
         telemetry.set_recorder(None)
+        if pipeline is not None:
+            pipeline.close()
         cap.release()
 
     summary = summarize_run(frames, resets, dict(recorder.events),
