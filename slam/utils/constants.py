@@ -1,7 +1,5 @@
 # --- State estimator constants
 MINIMUM_NUMBER_OF_INLIERS_FOR_PROJECTION_MATCHING = 10
-PNP_ITERATIONS_COUNT = 1000  # Iterations for PnP RANSAC
-PNP_REPROJECTION_ERROR = 8.0  # Reprojection error for PnP RANSAC
 PNP_MINIMUM_INLIERS = 10  # Minimum inliers for PnP
 
 ### CAMERA INTRINSICS DIAGNOSTIC ###
@@ -133,8 +131,6 @@ MINIMUM_BASELINE_THRESHOLD = 2.0  # Minimum translation for new keyframe
 # (orbit inserts every ~2.7 frames) are naturally pre-empted.
 KEYFRAME_MINIMUM_ROTATION_DEG = 1.5
 KEYFRAME_ROTATION_MIN_FRAME_GAP = 3
-# Minimum scene coverage for new keyframe
-MINIMUM_SCENE_COVERAGE_THRESHOLD = 0.30
 MINIMUM_KEYFRAME_QUALITY_THRESHOLD = 0.01  # Minimum quality for new keyframe
 # Minimum number of new points for keyframe selection
 MINIMUM_NEW_POINTS_RATIO = 0.4
@@ -326,8 +322,6 @@ MATCHER_PRIOR_DECISIVE_FLIP_RATIO = 2.0
 MINIMUM_LOCAL_KEYFRAMES = 2  # Minimum keyframes for local BA
 MINIMUM_LOCAL_POINTS = 10  # Minimum points for local BA
 MINIMUM_LOCAL_OBSERVATIONS_FOR_POINT = 20
-# Threshold for number of ovservations needed to consider a point as outlier
-LEAST_SQUARES_F_SCALE = 0.2  # Scale for least squares optimization
 
 MINIMUM_GLOBAL_OBSERVATIONS_FOR_POINT = 50
 # Early-exit threshold for BA iterations: the LM loop stops
