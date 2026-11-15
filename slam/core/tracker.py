@@ -546,6 +546,21 @@ class Tracker:
         points = []
         valid_indices = np.where(valid_points)[0]
 
+        # The scene-relative depth ceiling's input (D2): the live
+        # map's depths in the current keyframe's camera, computed ONCE
+        # per insertion (the validator decides per its flag whether to
+        # use it - flag-0 ignores it entirely).
+        scene_depth_median = None
+        if self.map.points:
+            pts3d = np.array([p.pt_3d for p in self.map.points])
+            cam = (self.map.cur_keyframe._pose_inv
+                   @ np.column_stack([pts3d,
+                                      np.ones(len(pts3d))]).T).T
+            zs = cam[:, 2]
+            zs = zs[np.isfinite(zs) & (zs > 0)]
+            if len(zs):
+                scene_depth_median = float(np.median(zs))
+
         rejected_points = 0
         validation_results = defaultdict(lambda: 0)
 
@@ -557,7 +572,8 @@ class Tracker:
             point_4d = points_4d[i]
 
             point_validation_result = is_valid_triangulated_point(
-                idx, self.map.cur_keyframe, self.map.prev_keyframe, point_4d)
+                idx, self.map.cur_keyframe, self.map.prev_keyframe, point_4d,
+                scene_depth_median=scene_depth_median)
 
             failed_codes = point_validation_result['failed_codes']
             if failed_codes:

@@ -215,9 +215,25 @@ TRIANGULATION_VALIDATION_CODE = {
     'MAX_DEPTH_VIOLATION': 2,
     'MAX_REPROJECTION_ERROR_VIOLATION': 4,
     'MIN_PARALLAX_VIOLATION': 6,
+    'DEPTH_UNCERTAINTY_VIOLATION': 8,
 }
 TRIANGULATION_VALIDATION_CODE.update(
     dict([reversed(i) for i in TRIANGULATION_VALIDATION_CODE.items()]))
+
+# The depth-uncertainty criterion's parameters (D2b): the parallax
+# floor is focal-adaptive at flag 1 - theta_min = sigma_d / (f * tau)
+# - the SAME strictness as the fixed 0.65 deg at the battery's focal,
+# focal-adaptive elsewhere. tau = 0.2 is the corrected pre-registered
+# value (the perpendicular-relation equivalence; the failed D2 leg's
+# 0.15 was a 0.85-deg floor - 30% tighter).
+TRIANGULATION_SIGMA_D_PX = 1.0
+TRIANGULATION_MAX_RELATIVE_DEPTH_UNCERTAINTY = 0.2
+# The scene-relative depth ceiling (D2): Zmax = K * the median map
+# depth of the current insertion batch, clamped by an absolute
+# emergency ceiling (10x the old fixed MAX_DEPTH - the user's
+# "retain an absolute emergency ceiling" design).
+TRIANGULATION_SCENE_DEPTH_K = 10.0
+TRIANGULATION_MAX_DEPTH_EMERGENCY = 10000.0
 
 
 # --- Feature extractor constants

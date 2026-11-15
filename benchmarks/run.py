@@ -199,14 +199,18 @@ def apply_overrides(pairs) -> None:
     import slam.core.intake as intake_mod
     import slam.loop_closure as loop_closure_mod
     import slam.ba.bundle_adjustment_g2o as ba_mod
+    import slam.utils.utils as utils_mod
     # Resolution order is LOAD-BEARING: modules that STAR-IMPORT
-    # another flag module (tracker star-imports matcher; matcher
-    # star-imports constants) hold COPY bindings - setattr on the
-    # copy would never reach the machinery that reads the origin's
-    # own global. Origins resolve first: constants, then matcher,
-    # then tracker.
-    flag_modules = (const, matcher_mod, tracker_mod, intake_mod,
-                    loop_closure_mod, ba_mod)
+    # another flag module (tracker star-imports matcher AND utils;
+    # matcher star-imports constants AND utils) hold COPY bindings -
+    # setattr on the copy would never reach the machinery that reads
+    # the origin's own global. Origins resolve before their
+    # star-importers: constants, then utils, then matcher, then
+    # tracker. utils's OWN flags (the D2 triangulation gates) are
+    # defined in it - its star-imported constant copies are stale,
+    # but the validator reads constants through the module alias.
+    flag_modules = (const, utils_mod, matcher_mod, tracker_mod,
+                    intake_mod, loop_closure_mod, ba_mod)
 
     for pair in pairs:
         name, sep, value = pair.partition("=")
