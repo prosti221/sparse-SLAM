@@ -1,4 +1,5 @@
 import g2o
+import math
 import numpy as np
 import time as _time
 from slam.core.frame import Frame
@@ -58,6 +59,39 @@ LOOP_BA_GATE_ENABLED = 0
 # emission anywhere (byte-identical); read at CALL time.
 BA_TIMING_ATTRIB_ENABLED = 0
 
+# The noise-scaled Huber delta (D3b, UNCONDITIONAL since adoption):
+# delta = clamp(2.4477 * sigma_MAD, floor, ceiling) - the sigma
+# estimated from the LAST error fold's per-observation normalized
+# errors (the finite filtered, one-solve-stale AND current at the
+# next solve's pre-solve state). The floor is the chi2 radius at the
+# measurement-noise scale (sigma_d = 1 px over the frame's fx): the
+# Huber never tighter than the pixel noise justifies. The ceiling is
+# kHuberDelta: the dynamic delta can only make the loss MORE robust,
+# never less. The fallback (no stash) is the fixed kHuberDelta.
+# The gate flag was removed post-adoption (the user-directed
+# convention; the A/B lever lives in git history and the records).
+BA_HUBER_SIGMA_D_PX = 1.0
+# The chi2 radius itself (the native kHuberDelta's value, computed
+# identically): the k in delta = k * sigma_MAD.
+BA_HUBER_TAU_K = math.sqrt(5.991)
+BA_HUBER_BASE = BA_HUBER_TAU_K
+
+
+def _adaptive_huber_delta(err, fx, k, base):
+    """The noise-scaled robust delta: the chi2 radius (k = 2.4477)
+    times the MAD-estimated sigma of the finite residual population,
+    clamped to [the measurement-noise radius, base]. The None/no-data
+    fallback is the base (the historical fixed delta)."""
+    arr = np.asarray(err, dtype=np.float64) if err is not None \
+        else np.empty(0)
+    arr = arr[np.isfinite(arr)]
+    if len(arr) == 0 or fx <= 0.0:
+        return base
+    med = float(np.median(arr))
+    sigma_mad = 1.4826 * float(np.median(np.abs(arr - med)))
+    floor = k * BA_HUBER_SIGMA_D_PX / fx
+    return min(max(k * sigma_mad, floor), base)
+
 # The noise-aware PnP acceptance guard (D1): an EMA of the ACCEPTED
 # solutions' median reprojection errors (the clean population) sets
 # tau = clamp(k * ema, base, 4 * base) - the lower clamp is the base
@@ -94,6 +128,11 @@ class G2OBundleAdjustment:
         # The noise-aware guard's state: the EMA of the accepted
         # solutions' median reprojection errors (normalized).
         self._pnp_median_ema = None
+        # The D3b stash: the LAST error fold's per-observation
+        # normalized errors - the residual population the adaptive
+        # Huber delta consumes (one-solve-stale AND current at the
+        # next solve's pre-solve state).
+        self._last_fold_err = None
         # Persistent local-BA graph. Consecutive local BA calls
         # share ~90% of their problem; rebuilding it every call was ~60%
         # of BA time in per-edge pybind construction. The graph is
@@ -361,6 +400,15 @@ class G2OBundleAdjustment:
             self._graph_edges_by_kf = {}
             return False
 
+    def _adaptive_huber_delta(self, fx):
+        """The noise-scaled robust delta for the next solve (D3b): the
+        chi2 radius times the MAD-estimated sigma of the last fold's
+        residual population, clamped to [the measurement-noise radius,
+        the historical base]. The fallback is the base."""
+        return _adaptive_huber_delta(
+            self._last_fold_err, fx, BA_HUBER_TAU_K,
+            BA_HUBER_BASE)
+
     def _reconcile_and_optimize(self, local_points, asm, fix_points) -> bool:
         """The reconcile-and-solve driver: membership/anchor resolved
         by the C5a assembly (the obs registry's row space, the exact
@@ -387,6 +435,16 @@ class G2OBundleAdjustment:
 
         if BA_TIMING_ATTRIB_ENABLED:
             t_solve0 = _time.perf_counter()
+
+        # The D3b noise-scaled Huber delta (the local path,
+        # unconditional): the member set before the solve reaches the
+        # in-graph edges too.
+        delta = self._adaptive_huber_delta(frames[0].K[0, 0])
+        self._native_local_ba.set_huber_delta(delta)
+        err_pop = self._last_fold_err
+        telemetry.value("ba_huber_delta",
+                        (round(delta, 6),
+                         0 if err_pop is None else int(len(err_pop))))
 
         T_wc_new, pos_new, iterations, actual_edges = \
             self._native_local_ba.solve_local(
@@ -703,7 +761,9 @@ class G2OBundleAdjustment:
                 points_fixed=1 if fix_points else 0,
                 obs_frame=obs_frame_row.tolist(),
                 obs_point=obs_point_row.tolist(),
-                obs_uv=obs_uv, max_iterations=30))
+                obs_uv=obs_uv, max_iterations=30,
+                huber_delta=self._adaptive_huber_delta(
+                    keyframes[0].K[0, 0])))
             telemetry.event("ba_iterations", int(iterations))
             # The cost audit's fresh-BA sampler reads the g2o objects
             # created by _create_keyframe_vertices; the native solve
@@ -858,6 +918,8 @@ class G2OBundleAdjustment:
                 obs_point=fold_obs_point, point_avg=fold_avg,
                 point_nobs=fold_nobs))
             self._apply_fold(points, err, new_avg, updated)
+            # The D3b stash (the hot local path).
+            self._last_fold_err = err
             return
 
         O = len(observations)
@@ -893,6 +955,10 @@ class G2OBundleAdjustment:
         err, new_avg, updated = error_fold(fold_in)
 
         self._apply_fold(points, err, new_avg, updated)
+        # The D3b stash: the per-observation normalized errors are the
+        # residual population the adaptive Huber delta consumes at the
+        # next solve (one array, trivial memory).
+        self._last_fold_err = err
 
     def _apply_fold(self, points, err, new_avg, updated) -> None:
         """The fold's write-back: the running average per updated point
