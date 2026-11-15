@@ -120,6 +120,14 @@ class FakeKeyframe:
         self.tracking_quality = quality
 
 
+class FakeMapPoint:
+    """Just what pt_obj_to_array reads."""
+
+    def __init__(self):
+        self.pt_3d = np.array([1.0, 2.0, 3.0])
+        self.color = np.array([128, 128, 128], dtype=np.float32)
+
+
 @pytest.fixture
 def fx(monkeypatch, tmp_path):
     """A started Renderer with Open3D mocked (start() also mkdirs the
@@ -287,24 +295,41 @@ def test_tracking_mode_fully_removed(fx):
     assert not hasattr(fx.r, 'should_quit')
 
     placement_after_start = fx.ctrl.from_pinhole_calls
-    fx.r.update_poses([FakeKeyframe(1)])
+    fx.r.update_points([FakeMapPoint()])   # the live update() order:
+    fx.r.update_poses([FakeKeyframe(1)])   # points first, then poses
     assert fx.ctrl.from_pinhole_calls == placement_after_start + 1
     assert fx.r.camera_initialized
     fx.r.update_poses([FakeKeyframe(1), FakeKeyframe(2)])
     assert fx.ctrl.from_pinhole_calls == placement_after_start + 1
 
 
-def test_initial_placement_skipped_on_empty_keyframes(fx):
-    """No keyframes yet -> no placement (and no leaked-`kf` crash: the
-    session save now lives inside the loop); it fires on the first
-    non-empty update, and the session save covers EVERY keyframe (the
-    old leaked-`kf` form saved only the last one per update)."""
+def test_initial_placement_deferred_until_the_cloud_is_in_the_scene(fx):
+    """The placement fires on the first update that has BOTH keyframes
+    and the point cloud in the scene: on an empty scene the conversion
+    produces an invalid NaN view state, and the cloud's later
+    add_geometry (reset_bounding_box defaults True) re-fits the view
+    over it. update() runs update_points before update_poses, so the
+    placement lands after the only view-resetting add. Empty keyframes
+    -> no placement; keyframes without the cloud -> no placement (and
+    no leaked-`kf` crash: the session save lives inside the loop)."""
     placement_after_start = fx.ctrl.from_pinhole_calls
+
     fx.r.update_poses([])
     assert fx.ctrl.from_pinhole_calls == placement_after_start
+
+    # keyframes but no cloud yet -> still deferred
+    fx.r.update_poses([FakeKeyframe(1)])
+    assert fx.ctrl.from_pinhole_calls == placement_after_start
+    assert not fx.r.camera_initialized
+
+    # the cloud arrives (update_points), the NEXT update_poses places
+    fx.r.update_points([FakeMapPoint()])
     fx.r.update_poses([FakeKeyframe(1)])
     assert fx.ctrl.from_pinhole_calls == placement_after_start + 1
+    assert fx.r.camera_initialized
+
     fx.r.update_poses([FakeKeyframe(1), FakeKeyframe(2)])
+    assert fx.ctrl.from_pinhole_calls == placement_after_start + 1
     assert set(fx.r.session_data['poses'].keys()) == {1, 2}
     assert fx.r.session_data['poses'][2] == {
         'pose': np.eye(4).tolist(), 'tracking_quality': 0.9}

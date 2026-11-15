@@ -219,9 +219,16 @@ class Renderer:
             }
 
         # Place the camera once, at the first keyframe, facing its
-        # orientation (the 't' follow mode this placement used to
-        # serve is deprecated in favor of the fly controls).
-        if not self.camera_initialized and keyframes:
+        # orientation - but only once the POINT CLOUD is in the scene
+        # (update_points ran first in this same update()): a placement
+        # on an empty scene yields a NaN view state, and the cloud's
+        # subsequent add_geometry (reset_bounding_box defaults True)
+        # re-fits the view, overriding it with the default fit - which
+        # looks at the map from behind, the 'opposite direction and
+        # upside down' symptom. Every other add/remove passes False
+        # and preserves the view. (The 't' follow mode this placement
+        # used to serve is deprecated in favor of the fly controls.)
+        if not self.camera_initialized and keyframes and self.cloud_initialized:
             self.camera_initialized = True
             self._place_initial_camera(keyframes[0])
 
