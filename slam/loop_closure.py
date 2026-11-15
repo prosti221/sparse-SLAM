@@ -40,6 +40,33 @@ from slam.utils import telemetry
 from slam.utils.logger import debug_log, warning_log
 from slam.utils.utils import extractRtFromE
 
+# The adaptive loop-RANSAC budget (D1, unconditional since adoption):
+# during sampling, recompute the samples needed for 99.9% confidence
+# at the CURRENT best inlier ratio and stop once enough have been
+# drawn (the classic adaptive-RANSAC rule - no history, no trusting
+# the previous frame); the cap bounds the hopeless-w cases. The
+# fixed-50 budget was measured inadequate on 73% of real calls, and
+# the adaptive rule transformed the loop-bearing battery sequence's
+# accuracy (tum_xyz KF-ATE -82%) at a measured loop-stage cost.
+
+
+def _ransac_required_iters(best_count, n, confidence=0.999):
+    """The samples needed for `confidence` probability of an
+    all-inlier minimal sample (s = 4, the PnP minimal sample) at the
+    current best inlier ratio: N = log(1-p) / log(1 - w^4). Returns
+    1 when the ratio is ~1 and an effectively unbounded count when no
+    all-inlier sample is plausibly reachable (the caller's cap
+    governs)."""
+    if n <= 0 or best_count <= 0:
+        return 10 ** 12
+    w4 = (best_count / n) ** 4
+    if w4 >= 1.0 - 1e-12:
+        return 1
+    if w4 <= 1e-12:
+        return 10 ** 12
+    import math
+    return math.ceil(math.log(1.0 - confidence) / math.log(1.0 - w4))
+
 LOG_TAG = 'LoopClosure'
 
 # Recovery-validation kill-switch. MODULE-level for now (the
@@ -467,7 +494,10 @@ class LoopClosureDetector:
         best_rvec = best_tvec = None
         best_inliers = None
         best_count = 0
-        for _ in range(const.LOOP_RANSAC_ITERATIONS):
+        max_iters = const.LOOP_RANSAC_MAX_ITERATIONS
+        iters_used = 0
+        while iters_used < max_iters:
+            iters_used += 1
             idx = rng.choice(n, size=4, replace=False)
             try:
                 ok, rvec, tvec = cv.solvePnP(
@@ -481,6 +511,13 @@ class LoopClosureDetector:
             if len(inliers) > best_count:
                 best_count = len(inliers)
                 best_rvec, best_tvec, best_inliers = rvec, tvec, inliers
+            if best_inliers is not None \
+                    and iters_used >= _ransac_required_iters(best_count, n):
+                break
+        telemetry.value("loop_ransac_iters", (
+            iters_used,
+            _ransac_required_iters(best_count, n),
+            round(best_count / n, 3) if n else 0.0))
 
         if best_inliers is None or len(best_inliers) < 4:
             return None, None, None

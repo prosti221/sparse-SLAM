@@ -58,11 +58,42 @@ LOOP_BA_GATE_ENABLED = 0
 # emission anywhere (byte-identical); read at CALL time.
 BA_TIMING_ATTRIB_ENABLED = 0
 
+# The noise-aware PnP acceptance guard (D1): an EMA of the ACCEPTED
+# solutions' median reprojection errors (the clean population) sets
+# tau = clamp(k * ema, base, 4 * base) - the lower clamp is the base
+# constant itself, so the dynamic guard can only LOOSEN, never
+# tighten (a tighter threshold is regularization creep). The EMA
+# starts None -> the first call uses the fixed constant (the
+# fallback), and updates ONLY on accepted solutions. The residuals
+# are normalized coordinates (focal-aware already - the mechanism
+# adds the noise dimension). Unconditional since the D1 adoption:
+# neutral on the clean sequences (the tau stayed at the base clamp)
+# and engaged only where the noise population demanded it (tum_xyz,
+# tau up to 1.9x the base).
+PNP_GUARD_TAU_K = 3.0
+PNP_GUARD_EMA_ALPHA = 0.25
+
+
+def _pnp_guard_tau(ema, base):
+    if ema is None:
+        return base
+    return min(max(PNP_GUARD_TAU_K * ema, base), 4.0 * base)
+
+
+def _pnp_guard_ema_update(ema, median_err):
+    if ema is None:
+        return median_err
+    return (1.0 - PNP_GUARD_EMA_ALPHA) * ema \
+        + PNP_GUARD_EMA_ALPHA * median_err
+
 
 class G2OBundleAdjustment:
     def __init__(self, map, verbose=False):
         self.verbose = verbose
         self.map = map
+        # The noise-aware guard's state: the EMA of the accepted
+        # solutions' median reprojection errors (normalized).
+        self._pnp_median_ema = None
         # Persistent local-BA graph. Consecutive local BA calls
         # share ~90% of their problem; rebuilding it every call was ~60%
         # of BA time in per-edge pybind construction. The graph is
@@ -210,7 +241,11 @@ class G2OBundleAdjustment:
         proj = X_cam[front, :2] / X_cam[front, 2:3]
         median_err = float(np.median(
             np.linalg.norm(proj - obs2d64[front], axis=1)))
-        if median_err > const.PNP_MAX_MEDIAN_REPROJECTION_ERROR:
+        tau = _pnp_guard_tau(self._pnp_median_ema,
+                             const.PNP_MAX_MEDIAN_REPROJECTION_ERROR)
+        telemetry.value("pnp_guard_tau",
+                        (round(tau, 5), round(median_err, 5)))
+        if median_err > tau:
             return _reject("reprojection")
 
         # A refinement may not teleport or spin the camera: bounds relative
@@ -237,6 +272,8 @@ class G2OBundleAdjustment:
 
         # Update frame pose
         frame.pose = refined_pose
+        self._pnp_median_ema = _pnp_guard_ema_update(
+            self._pnp_median_ema, median_err)
 
         debug_log(LOG_TAG, f"Pose refined with {input_count} input correspondences "
                            f"(median reproj {median_err:.5f}, "

@@ -449,7 +449,11 @@ LOOP_PNP_RANSAC_THRESHOLD_PX = 5.0
 # per-call numpy Generator with this seed, this many minimal-sample
 # iterations (EPnP per sample, iterative refine on the winner).
 LOOP_RANSAC_SEED = 1701
-LOOP_RANSAC_ITERATIONS = 50
+# The adaptive rule's cap (D1): the fixed-50 budget was measured
+# inadequate on 73% of real loop calls (w 0.5-0.7 demanding 25-107
+# samples at p=0.999); the adaptive rule stops at the formula's N and
+# the cap bounds the hopeless-w cases.
+LOOP_RANSAC_MAX_ITERATIONS = 200
 # PnP vs two-view relative-rotation agreement: the E-matrix rotation
 # (independent of the map) vs the PnP rotation; catches mirrored /
 # degenerate PnP solutions that reproject well.

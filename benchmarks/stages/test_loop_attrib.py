@@ -44,11 +44,13 @@ def _run_hook(monkeypatch, flag):
     return rec
 
 
-def test_attrib_flag_off_records_no_values(monkeypatch):
-    """Shipped default: the correction FIRES and the value store stays
-    empty - the battery never sees attribution data."""
+def test_attrib_flag_off_records_no_attribution_values(monkeypatch):
+    """Shipped default: the correction FIRES and the value store
+    carries no ATTRIBUTION data (the D1 fire-rate values may ride the
+    same diagnostic channel - the attribution flag's own silence is
+    the contract)."""
     rec = _run_hook(monkeypatch, 0)
-    assert rec.values == {}
+    assert not [k for k in rec.values if k.startswith("loop_attr_")]
 
 
 def test_attrib_flag_on_records_magnitudes(monkeypatch):
