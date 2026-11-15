@@ -73,11 +73,10 @@ INTAKE_CARRY_EXTRACTION = 1
 # PROCESS. The thread shape was measured and deleted three times - the
 # extractor's GIL behavior (torch op dispatch needs the GIL the
 # consumer holds; cv2 releases it) is the measured boundary, and a
-# process sidesteps it. ADOPTED by C7b (2026-11-15): bit-silent
-# everywhere, kyoto -12.2% / drone -17.9% across the board. Flag 0 =
-# the inline path (the kill-switch, byte-identical behavior). INT flag
-# (the --override trap); read at call time via the module alias.
-INTAKE_EXTRACT_PROCESS = 1
+# process sidesteps it. ADOPTED by C7b (2026-11-15) and made
+# UNCONDITIONAL after it (user-directed flag removal: verified
+# bit-silent on both machines; the inline path lives in git history
+# and the C7/C7b records).
 
 # The worker's torch thread bound: the torch-default intra-op pool is
 # ~2x SLOWER than the bounded variants on the gate machine AND its

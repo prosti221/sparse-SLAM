@@ -76,15 +76,16 @@ if __name__ == "__main__":
         intake_gate = FrameIntakeGate(
             FEATURE_EXTRACTOR, ENABLE_MULTISCALE, container_fps)
 
-    # The extraction process (INTAKE_EXTRACT_PROCESS): the worker owns
-    # the video source and runs decode+extract ONE AHEAD; constructed
-    # before the GeoCalib init batch so the worker's torch import +
-    # model load overlap it. The worker decodes the same stream from 0
-    # (its own capture), so the replay frames line up with its items.
-    # The construction decision pins the whole run's decode path (and
-    # reads the worker-thread bound once).
+    # The extraction process: the worker owns the video source and
+    # runs decode+extract ONE AHEAD (unconditional with the gate since
+    # the C7b adoption); constructed before the GeoCalib init batch so
+    # the worker's torch import + model load overlap it. The worker
+    # decodes the same stream from 0 (its own capture), so the replay
+    # frames line up with its items. The construction decision reads
+    # the worker-thread bound once and pins the whole run's decode
+    # path.
     extract_pipeline = None
-    if intake_gate is not None and intake_mod.INTAKE_EXTRACT_PROCESS:
+    if intake_gate is not None:
         from slam.core.intake import ExtractionProcess
         video_path = config.get_video_property(
             config.get_global_config_property("load_video"), 'path')

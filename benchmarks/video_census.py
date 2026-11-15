@@ -169,13 +169,13 @@ def run_one(config, video_path, frames_cap, seed,
     gate_rows = []
     resets = []
     idx = -1
-    # The extraction process (INTAKE_EXTRACT_PROCESS): the census
-    # mirrors the production loop's decode path (the pipeline owns the
-    # source; the item's idx replaces the inline idx increment, the
-    # cap break stays before should_feed, the finally closes the
-    # pipeline). The battery path (frame files, no gate) is untouched.
+    # The extraction process: the census mirrors the production loop's
+    # decode path (the pipeline owns the source; the item's idx
+    # replaces the inline idx increment, the cap break stays before
+    # should_feed, the finally closes the pipeline). The battery path
+    # (frame files, no gate) is untouched.
     pipeline = None
-    if gate is not None and intake_mod.INTAKE_EXTRACT_PROCESS:
+    if gate is not None:
         from slam.core.intake import ExtractionProcess
         pipeline = ExtractionProcess(
             str(video_path), W, H, feature_extractor, multiscale,

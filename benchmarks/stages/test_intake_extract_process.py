@@ -1,5 +1,5 @@
 """Stage tests: the extraction process (worker decode+extract, one
-ahead, behind INTAKE_EXTRACT_PROCESS / INTAKE_EXTRACT_WORKER_THREADS).
+ahead, behind INTAKE_EXTRACT_WORKER_THREADS).
 
 The real worker PROCESS runs in these tests (spawn is the macOS
 default start method; the worker target is module-level and
@@ -266,22 +266,19 @@ def test_worker_thread_bound_routing(monkeypatch, fixture_video):
 
 
 def test_flag_contract(monkeypatch):
-    """Both flags are module-level INTs with the ADOPTED defaults
-    (process on, the worker bound at k=1) and the --override machinery
-    reaches them - including the flag-off kill-switch path."""
-    assert isinstance(intake_mod.INTAKE_EXTRACT_PROCESS, int)
-    assert intake_mod.INTAKE_EXTRACT_PROCESS == 1
+    """INTAKE_EXTRACT_WORKER_THREADS is a module-level INT with the
+    ADOPTED default (the worker bound at k=1) and the --override
+    machinery reaches it (including 0 = no bound). The process gate
+    flag itself is gone: the extraction process is unconditional with
+    the gate (the C7b adoption's user-directed flag removal)."""
     assert isinstance(intake_mod.INTAKE_EXTRACT_WORKER_THREADS, int)
     assert intake_mod.INTAKE_EXTRACT_WORKER_THREADS == 1
+    assert not hasattr(intake_mod, "INTAKE_EXTRACT_PROCESS")
 
     from benchmarks.run import apply_overrides
-    apply_overrides(["INTAKE_EXTRACT_PROCESS=0",
-                     "INTAKE_EXTRACT_WORKER_THREADS=0"])
+    apply_overrides(["INTAKE_EXTRACT_WORKER_THREADS=0"])
     try:
-        assert intake_mod.INTAKE_EXTRACT_PROCESS == 0
         assert intake_mod.INTAKE_EXTRACT_WORKER_THREADS == 0
     finally:
-        intake_mod.INTAKE_EXTRACT_PROCESS = 1
         intake_mod.INTAKE_EXTRACT_WORKER_THREADS = 1
-    assert intake_mod.INTAKE_EXTRACT_PROCESS == 1
     assert intake_mod.INTAKE_EXTRACT_WORKER_THREADS == 1
