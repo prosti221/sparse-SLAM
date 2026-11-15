@@ -281,14 +281,13 @@ class IntrinsicsRefiner:
 
     def _snapshot(self):
         return ([kf.pose.copy() for kf in self.map.keyframes],
-                [pt.pt_3d.copy() for pt in self.map.points])
+                self.map.positions_of(self.map.points))
 
     def _restore(self, snap):
         poses, pts3d = snap
         for kf, pose in zip(self.map.keyframes, poses):
             kf.pose = pose
-        for pt, X in zip(self.map.points, pts3d):
-            pt.pt_3d = X
+        self.map.set_positions(self.map.points, pts3d)
         self.map.rebuild_point_coords()
 
     def _solve_into_basin(self, obs_list):

@@ -14,7 +14,13 @@ _next_point_id = itertools.count(1)
 class Point:
     def __init__(self, pt_3d: np.ndarray, color: np.ndarray = None, descriptor: np.ndarray = None):
         self.point_id: int = next(_next_point_id)
-        self.pt_3d: np.ndarray = pt_3d
+        # Staging geometry: the geometry home is the map's native point
+        # registry (read through the pt_3d property below once the
+        # point is registered by Map.add_points, which sets _map).
+        # Unregistered points (pre-registration, removed, or plain
+        # test-constructed) read and write this slot.
+        self._pt_3d = pt_3d
+        self._map = None
         self.color: np.ndarray = color
         self.descriptor: np.ndarray = descriptor
 
@@ -23,6 +29,29 @@ class Point:
 
         # Track quality metrics
         self.average_reprojection_error = 0.0
+
+    @property
+    def pt_3d(self):
+        m = self._map
+        if m is not None and m._registry_rows is not None:
+            row = m._registry_rows.get(self.point_id)
+            if row is not None:
+                # A live view row of the registry buffer - the
+                # geometry home. Production code rebinds pt_3d, never
+                # mutates the returned array in place.
+                return m._positions_view[row]
+        return self._pt_3d
+
+    @pt_3d.setter
+    def pt_3d(self, value):
+        m = self._map
+        if m is not None and m._registry_rows is not None \
+                and self.point_id in m._registry_rows:
+            m._point_registry.update_positions(
+                [self.point_id],
+                np.asarray(value, dtype=np.float64).reshape(1, 3))
+        else:
+            self._pt_3d = value
 
     def add_observation(self, observation: Observation) -> None:
         self.observations[observation.frame_id] = observation

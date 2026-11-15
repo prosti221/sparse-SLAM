@@ -849,6 +849,8 @@ class PoseGraphOptimizer:
         kf_order = {kf.frame_id: i
                     for i, kf in enumerate(self.map.keyframes)}
         reanchored = 0
+        moved_pts = []
+        moved_rows = []
         for pt in self.map.points:
             best_order, best_id = None, None
             for fid in pt.observations.keys():
@@ -864,8 +866,13 @@ class PoseGraphOptimizer:
                 continue
             delta = kf.pose @ np.linalg.inv(pre)
             p = np.asarray(pt.pt_3d, dtype=np.float64).reshape(3)
-            pt.pt_3d = delta[:3, :3] @ p + delta[:3, 3]
+            moved_pts.append(pt)
+            moved_rows.append(delta[:3, :3] @ p + delta[:3, 3])
             reanchored += 1
+        # The registry is the geometry home: per-point math kept
+        # verbatim, the write funneled into ONE bulk update.
+        if moved_pts:
+            self.map.set_positions(moved_pts, moved_rows)
         debug_log(LOG_TAG, f"Re-anchored {reanchored} map points "
                   f"with the loop correction")
         self.map.rebuild_point_coords()

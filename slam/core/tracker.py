@@ -997,11 +997,14 @@ class Tracker:
         for kf in self.map.keyframes:
             kf.pose = G @ kf.pose
         R, t = G[:3, :3], G[:3, 3]
-        for pt in self.map.points:
-            pt.pt_3d = R @ pt.pt_3d + t
-        # Observations read Point.pt_3d through a live property, so
-        # they follow automatically; only the dedup set needs the
-        # rebuild.
+        pts = self.map.points
+        rows = self.map.positions_of(pts)
+        moved = np.empty_like(rows)
+        for j in range(len(pts)):
+            moved[j] = R @ rows[j] + t
+        # The registry is the geometry home: per-point math kept
+        # verbatim, the write funneled into ONE bulk update.
+        self.map.set_positions(pts, moved)
         self.map.rebuild_point_coords()
 
     def _match_frame_to_keyframe(self, frame: Frame, keyframe: Frame) -> Tuple[Optional[np.ndarray], int]:

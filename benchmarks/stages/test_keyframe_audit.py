@@ -153,7 +153,12 @@ def test_missing_data_is_unavailable_not_perfect_geometry():
 
 def test_invalid_projections_are_not_support():
     world, current, reference, points = _geometry_pair()
-    points[0].pt_3d[2] = -2.0
+    # Explicit rebinding write: pt_3d is the registry's geometry home
+    # (migration C6), so the value is replaced, never mutated through
+    # a shared view row.
+    x = points[0].pt_3d.copy()
+    x[2] = -2.0
+    points[0].pt_3d = x
 
     signals = capture_signals(current, reference, world)
 

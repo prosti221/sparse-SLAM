@@ -137,21 +137,22 @@ class G2OBundleAdjustment:
             warning_log(LOG_TAG, "No frame given for pose refinement")
             return False, 0
 
-        points_3d = []
-        points_2d = []
+        obs_list = list(frame.observed_points.values())
 
-        for obs in frame.observed_points.values():
-            points_3d.append(obs.pt_3d)
-            points_2d.append(obs.pt_2d_norm)
-
-        if len(points_3d) < 4:
+        if len(obs_list) < 4:
             telemetry.event("pnp_few_points")
             warning_log(
-                LOG_TAG, f"Not enough points for pose refinement ({len(points_3d)} provided).")
+                LOG_TAG, f"Not enough points for pose refinement "
+                f"({len(obs_list)} provided).")
             return False, 0
 
-        points_3d = np.array(points_3d, dtype=np.float32)
-        points_2d = np.array(points_2d, dtype=np.float32)
+        # Bulk geometry read: registry rows in the SAME
+        # observation order, one fancy-index copy (bit-identical to
+        # the per-obs property reads it replaces).
+        points_3d = self.map.positions_of(
+            [ob.point for ob in obs_list]).astype(np.float32)
+        points_2d = np.array([ob.pt_2d_norm for ob in obs_list],
+                             dtype=np.float32)
 
         # Initial extrinsic guess: cv.solvePnP refines the world-to-camera
         # transform (X_cam = R @ X_world + t), so the guess must come from the
@@ -374,14 +375,9 @@ class G2OBundleAdjustment:
             kf.pose = np.linalg.inv(T_wc_new[i])
 
         if not fix_points:
-            for j, p in enumerate(local_points):
-                p.pt_3d = np.array(pos_new[j])
-            # The C3b registry hook: the solved positions go native in
-            # one bulk update (the registry is the geometry cache).
-            reg = self.map._point_registry
-            if reg is not None:
-                reg.update_positions(
-                    [p.point_id for p in local_points], pos_new)
+            # The registry IS the geometry home: one bulk write, no
+            # per-point Python twin to sync.
+            self.map.set_positions(local_points, pos_new)
 
         self._recompute_point_errors(local_points, assembly=asm)
         if BA_TIMING_ATTRIB_ENABLED:
@@ -420,7 +416,7 @@ class G2OBundleAdjustment:
         # failed its A/B partly because a rejection would have
         # left the moved-poses/stale-points mess).
         pre_poses = {kf.frame_id: kf.pose.copy() for kf in keyframes}
-        pre_pts = [np.asarray(p.pt_3d).copy() for p in points]
+        pre_pts = self.map.positions_of(points)
         err_pre = self._total_reprojection_sq_error(observations)
 
         ok = self._optimize_with_g2o(keyframes, points, observations, fix_initial_poses=True, fix_points=False)
@@ -439,8 +435,7 @@ class G2OBundleAdjustment:
             # restored state.
             for kf in keyframes:
                 kf.pose = pre_poses[kf.frame_id]
-            for p, x in zip(points, pre_pts):
-                p.pt_3d = x
+            self.map.set_positions(points, pre_pts)
             self.map.rebuild_point_coords()
             self._recompute_point_errors(observations)
             telemetry.event("loop_global_ba_rejected")
@@ -656,7 +651,7 @@ class G2OBundleAdjustment:
                          kf.frame_id in fixed_keyframe_ids)):
                     fixed[i] = 1
             T_wc = np.stack([np.linalg.inv(kf.pose) for kf in keyframes])
-            positions = np.array([p.pt_3d for p in points], dtype=np.float64)
+            positions = self.map.positions_of(points)
             obs_frame_row = np.fromiter(
                 (frame_row[obs.frame.frame_id] for obs in edge_obs),
                 dtype=np.int64, count=len(edge_obs))
@@ -693,13 +688,9 @@ class G2OBundleAdjustment:
                 kf.pose = np.linalg.inv(T_wc_new[i])
 
             if not fix_points:
-                for j, point in enumerate(points):
-                    point.pt_3d = np.array(pos_new[j])
-                # The C3b registry hook (the bulk geometry update).
-                reg = self.map._point_registry
-                if reg is not None:
-                    reg.update_positions(
-                        [p.point_id for p in points], pos_new)
+                # The registry IS the geometry home: one bulk write,
+                # no per-point Python twin to sync.
+                self.map.set_positions(points, pos_new)
 
             self._recompute_point_errors(observations)
             return True
@@ -851,7 +842,7 @@ class G2OBundleAdjustment:
             dtype=np.int64, count=O)
         obs_norm = np.array([ob.pt_2d_norm for ob in observations],
                             dtype=np.float64)
-        point_pos = np.array([p.pt_3d for p in points], dtype=np.float64)
+        point_pos = self.map.positions_of(points)
         poses_inv = np.stack([f.pose_inv for f in frames])
         point_avg = np.array([p.average_reprojection_error for p in points],
                              dtype=np.float64)

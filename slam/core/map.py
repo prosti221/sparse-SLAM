@@ -92,11 +92,17 @@ class Map:
         self.intrinsics = None
 
         # The live point registry (migration C3b): the full point set's
-        # geometry + descriptors in native capacity-managed storage,
-        # updated incrementally at the map's event points. Created
-        # lazily on the first registration (the descriptor width is
-        # per-extractor); None until then.
+        # geometry + descriptors in native capacity-managed storage.
+        # The registry IS the geometry home - Point.pt_3d resolves
+        # here - created lazily on the first registration (the
+        # descriptor width is per-extractor); None until then.
         self._point_registry = None
+        # The pid->registry-row index and the matching zero-copy
+        # positions view, refreshed TOGETHER at the only events that
+        # change row identity or reallocate the buffer (registration,
+        # removal, reset).
+        self._registry_rows = None
+        self._positions_view = None
 
         # The observation registry (migration C4): the point-side
         # observation graph native, append-only (the row order is the
@@ -134,6 +140,47 @@ class Map:
                         count=len(observations)),
             np.array([obs.pt_2d_norm for obs in observations],
                      dtype=np.float64))
+
+    def _refresh_registry_index(self):
+        """The pid->row index and the positions view are refreshed
+        TOGETHER at the only events that change row identity or
+        reallocate the buffer (registration, removal, reset) - every
+        geometry read resolves rows through the CURRENT pair."""
+        self._registry_rows = {
+            pid: i for i, pid in enumerate(self._point_registry.ids())}
+        self._positions_view = self._point_registry.positions_view()
+
+    def positions_of(self, points):
+        """Bulk geometry read: (N, 3) float64 row copies in the
+        given order. Registered points resolve through the rows+view
+        pair; unregistered ones (coordinate-duplicate rejections that
+        survive frame-side, removed points) fall back to their staging
+        slots - the values the removed twin's attr held."""
+        if self._registry_rows is None:
+            return np.array([p._pt_3d for p in points], dtype=np.float64)
+        rows = np.array(
+            [self._registry_rows.get(p.point_id, -1) for p in points],
+            dtype=np.int64)
+        out = np.empty((len(points), 3), dtype=np.float64)
+        reg = rows >= 0
+        if reg.any():
+            out[reg] = self._positions_view[rows[reg]]
+        for i in np.flatnonzero(~reg):
+            out[i] = np.asarray(points[i]._pt_3d, dtype=np.float64)
+        return out
+
+    def set_positions(self, points, positions) -> None:
+        """Bulk geometry write: ONE native update (the registry is the
+        geometry home); the native-absence fallback writes the staging
+        slots."""
+        if self._point_registry is None:
+            for p, x in zip(points, positions):
+                p._pt_3d = np.array(x)
+            return
+        self._point_registry.update_positions(
+            [p.point_id for p in points],
+            np.asarray(positions, dtype=np.float64).reshape(
+                len(points), 3))
 
     def add_points(self, points: List[Point]):
         new_points = []
@@ -183,8 +230,9 @@ class Map:
             obs_events = [obs for pt in new_points
                           for obs in pt.observations.values()]
             self._add_observation_events(obs_events)
-            self._registry_rows = {
-                pid: i for i, pid in enumerate(self._point_registry.ids())}
+            self._refresh_registry_index()
+            for pt in new_points:
+                pt._map = self
 
         self.points.extend(new_points)
 
@@ -364,6 +412,19 @@ class Map:
         point = self.points[idx]
         point_id = point.point_id
 
+        # The removal snapshots the LIVE row into the point's staging
+        # slot BEFORE the row is dropped: the point may survive in
+        # frame-side observed_points (PnP reads them), and the old
+        # twin's attr held this same last-known value - unregistered
+        # reads must keep returning it, not registration-time geometry.
+        # The dedup-coord cleanup reads the same live value.
+        if self._point_registry is not None \
+                and self._registry_rows is not None:
+            row = self._registry_rows.get(point_id)
+            if row is not None:
+                point._pt_3d = self._positions_view[row].copy()
+        coord_key = tuple(np.round(point.pt_3d, 3))
+
         # Remove from covisibility graph
         self._remove_point_from_covisibility_graph(point)
 
@@ -371,8 +432,7 @@ class Map:
         # prunes, orphans all funnel through here).
         if self._point_registry is not None:
             self._point_registry.remove_points([point_id])
-            self._registry_rows = {
-                pid: i for i, pid in enumerate(self._point_registry.ids())}
+            self._refresh_registry_index()
         self._obs_registry.remove_by_points([point_id])
 
         # Remove from points list
@@ -382,8 +442,6 @@ class Map:
         if point_id in self.points_by_id:
             del self.points_by_id[point_id]
 
-        # Remove coordinate from point_coords set
-        coord_key = tuple(np.round(point.pt_3d, 3))
         if coord_key in self.point_coords:
             self.point_coords.remove(coord_key)
 
@@ -456,7 +514,15 @@ class Map:
         kfs = [kf for kf in self.keyframes if kf is not exclude_frame]
         if not kfs:
             return
-        self.archives.append(ArchivedMap(kfs, list(self.points)))
+        pts = list(self.points)
+        # Snapshot the geometry into the points' staging slots: the
+        # reset clears the registry (the geometry home), and the
+        # archive's SAME Point objects must keep serving the recovery
+        # relocalization PnP afterwards (ids are never reused, so the
+        # post-reset points read staging, never a new registration).
+        for pt, x in zip(pts, self.positions_of(pts)):
+            pt._pt_3d = x
+        self.archives.append(ArchivedMap(kfs, pts))
         info_log(LOG_TAG, f"Archived pre-reset map: {len(kfs)} keyframes, "
                  f"{len(self.points)} points (recovery relocalization "
                  f"target)")
@@ -465,13 +531,8 @@ class Map:
         """The add_points coordinate-dedup set must follow
         the live geometry after the re-anchoring write (every map
         point is rigidly moved into the archive's world frame)."""
-        self.point_coords = {tuple(np.round(pt.pt_3d, 3))
-                             for pt in self.points}
-        # The C3b registry hook: the re-anchoring moved every point.
-        if self._point_registry is not None and self.points:
-            self._point_registry.update_positions(
-                [pt.point_id for pt in self.points],
-                np.array([pt.pt_3d for pt in self.points], dtype=np.float64))
+        self.point_coords = {tuple(np.round(x, 3))
+                             for x in self.positions_of(self.points)}
 
     def reset(self):
         info_log(LOG_TAG, "Resetting map - clearing all data")
@@ -488,6 +549,7 @@ class Map:
         if self._point_registry is not None:
             self._point_registry.clear()
         self._registry_rows = None
+        self._positions_view = None
         self._obs_registry.clear()
         self.frames_by_id.clear()
 

@@ -19,9 +19,9 @@ namespace slarnative {
 // remove, the BA write-back, rebuild) so the per-frame consumers
 // (projection matching, the error fold, the BA window push) read
 // zero-copy VIEWS instead of re-assembling Python-object arrays on
-// every call. Values are COPIES of the Python graph's - the Python
-// graph stays the working state; the drift pins compare the two after
-// every event class.
+// every call. The registry is the geometry home: the Point objects'
+// pt_3d resolves here through the map's rows index (the per-point
+// Python twin and its write-back sync are gone).
 class PointRegistry {
  public:
   explicit PointRegistry(int desc_width);

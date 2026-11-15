@@ -1,11 +1,11 @@
-"""[C3b] the point registry drift pins.
+"""The point registry's contract with the Python Point objects.
 
-The C1 MapCore window (and its eight pins) retired with migration C5a:
-the push model was write-only in production - the C2a fold and the C3
-correspondence take Python-assembled arrays, and the C3b/C4 registries
-superseded the window as the native mirror. The record lives in
-benchmarks/IMPROVEMENT.md; these pins keep the SURVIVING machinery
-(the point registry) guarded.
+Migration C6 inverted the C3b model: the registry IS the geometry
+home and Point.pt_3d reads it (the per-point Python twin and its
+write-back sync loops are gone - the drift-guard pins that compared
+the two retired with that record). These pins guard the surviving
+contract: the property's registered/staging resolution, the setter's
+routing, the map's bulk funnels, and the post-reset archive snapshot.
 """
 import numpy as np
 import pytest
@@ -13,70 +13,149 @@ import pytest
 slam_native = pytest.importorskip("slam_native")
 
 from benchmarks.stages.helpers import (  # noqa: E402
-    make_K, make_world_points)
+    make_world_points)
 from slam.core.map import Map  # noqa: E402
 from slam.core.point import Point  # noqa: E402
 
 
-def test_point_registry_matches_map_after_events():
-    """[C3b] the drift guard: the native point registry must equal the
-    Python graph's geometry + descriptors after every event class -
-    add, cull, the BA write-back, and rebuild_point_coords."""
-    K = make_K()
+def test_property_resolves_by_registration():
+    """A registered point reads the registry row (shared memory with
+    the registry buffer); an unregistered point reads its staging
+    slot; registration switches the source."""
     m = Map()
-    reg_probe = m._point_registry
-    assert reg_probe is None  # lazily created on the first add
+    pt = Point(np.array([1.0, 2.0, 3.0]))
+    assert pt.pt_3d is pt._pt_3d  # unregistered: the staging object
 
-    pts3d = make_world_points(6, z_range=(7.0, 9.0), rng_seed=13)
-    points = [Point(x.copy(), None, np.full(32, i, dtype=np.uint8))
-              for i, x in enumerate(pts3d)]
-    m.add_points(points)
-    reg = m._point_registry
-    assert reg is not None and reg.size() == 6
-    pv = np.asarray(reg.positions_view())
-    for i, pt in enumerate(m.points):
-        np.testing.assert_array_equal(pv[i], pt.pt_3d)
-        assert reg.has(pt.point_id)
+    m.add_points([pt])
+    row = m._registry_rows[pt.point_id]
+    val = pt.pt_3d
+    assert np.shares_memory(val, m._positions_view)
+    np.testing.assert_array_equal(val, [1.0, 2.0, 3.0])
+    assert row == m._point_registry.row_of(pt.point_id)
 
-    # cull (the remove funnel): every removed id leaves the registry.
-    # NOTE the registry's rows are in ITS internal order (swap-erase
-    # compaction reorders); the drift comparison goes BY ID (the
-    # consumers map ids to rows via row_of).
-    m.remove_point_by_index(2)
-    assert reg.size() == 5
-    assert not reg.has(points[2].point_id)
-    assert reg.has(points[5].point_id)
-    pv = np.asarray(reg.positions_view())
-    for pt in m.points:
-        np.testing.assert_array_equal(pv[reg.row_of(pt.point_id)], pt.pt_3d)
 
-    # the BA write-back class: bulk position update
-    moved = np.array([[99.0, 98.0, 97.0]] * len(m.points))
-    for i, pt in enumerate(m.points):
-        pt.pt_3d = moved[i].copy()
-    reg.update_positions([pt.point_id for pt in m.points], moved)
-    pv = np.asarray(reg.positions_view())
-    for pt in m.points:
-        np.testing.assert_array_equal(pv[reg.row_of(pt.point_id)], pt.pt_3d)
+def test_setter_routes_by_registration():
+    """The registered setter funnels through update_positions (the
+    staging slot untouched); the unregistered setter writes staging."""
+    m = Map()
+    unreg = Point(np.array([0.0, 0.0, 0.0]))
+    unreg.pt_3d = np.array([9.0, 9.0, 9.0])
+    np.testing.assert_array_equal(unreg._pt_3d, [9.0, 9.0, 9.0])
 
-    # rebuild_point_coords class: the re-anchoring moves every point
-    new_pts = [pt.pt_3d + 1.0 for pt in m.points]
-    for pt, n in zip(m.points, new_pts):
-        pt.pt_3d = n
-    m.rebuild_point_coords()
-    pv = np.asarray(reg.positions_view())
-    for pt in m.points:
-        np.testing.assert_array_equal(pv[reg.row_of(pt.point_id)], pt.pt_3d)
+    pts3d = make_world_points(2, z_range=(7.0, 9.0), rng_seed=5)
+    reg_pt = Point(pts3d[0].copy())
+    m.add_points([reg_pt])
+    staging_before = reg_pt._pt_3d
 
-    # reset clears
+    reg_pt.pt_3d = np.array([42.0, 41.0, 40.0])
+    np.testing.assert_array_equal(
+        m._positions_view[m._registry_rows[reg_pt.point_id]],
+        [42.0, 41.0, 40.0])
+    np.testing.assert_array_equal(staging_before, pts3d[0])
+
+    # and the unregistered point's write never touched the registry
+    assert m._point_registry.size() == 1
+
+
+def test_map_bulk_funnels():
+    """positions_of returns row copies in the given order; a
+    set_positions write is visible to every property read."""
+    m = Map()
+    pts3d = make_world_points(4, z_range=(7.0, 9.0), rng_seed=7)
+    pts = [Point(x.copy()) for x in pts3d]
+    m.add_points(pts)
+
+    got = m.positions_of([pts[2], pts[0], pts[2]])
+    np.testing.assert_array_equal(got[0], pts3d[2])
+    np.testing.assert_array_equal(got[1], pts3d[0])
+    np.testing.assert_array_equal(got[2], pts3d[2])
+    assert not np.shares_memory(got, m._positions_view)  # a copy
+
+    moved = np.arange(12, dtype=np.float64).reshape(4, 3) + 100.0
+    m.set_positions(pts, moved)
+    for i, pt in enumerate(pts):
+        np.testing.assert_array_equal(pt.pt_3d, moved[i])
+
+
+def test_view_survives_registry_growth():
+    """Capacity growth reallocates the buffer; the map's rows+view
+    pair refreshes with it, so property reads stay correct."""
+    m = Map()
+    n = 200  # the registry's initial capacity is 64
+    pts = [Point(np.array([float(i), 0.0, 1.0])) for i in range(n)]
+    m.add_points(pts)
+    for i in (0, 63, 64, 199):
+        np.testing.assert_array_equal(pts[i].pt_3d, [float(i), 0.0, 1.0])
+
+    m.set_positions(pts[100:], np.full((n - 100, 3), 7.0))
+    np.testing.assert_array_equal(pts[100].pt_3d, [7.0, 7.0, 7.0])
+    np.testing.assert_array_equal(pts[199].pt_3d, [7.0, 7.0, 7.0])
+    np.testing.assert_array_equal(pts[0].pt_3d, [0.0, 0.0, 1.0])
+
+
+def test_removed_point_reads_last_known_geometry():
+    """The removal snapshots the LIVE row into the staging slot before
+    the row is dropped: an unregistered read returns the point's
+    LAST-KNOWN geometry (what the removed twin's attr held), not
+    registration-time geometry."""
+    m = Map()
+    pt = Point(np.array([1.0, 1.0, 1.0]))
+    m.add_points([pt])
+    m.set_positions([pt], np.array([[5.0, 5.0, 5.0]]))
+    np.testing.assert_array_equal(pt.pt_3d, [5.0, 5.0, 5.0])
+
+    m.remove_point_by_index(0)
+    np.testing.assert_array_equal(pt.pt_3d, [5.0, 5.0, 5.0])
+    assert pt.point_id not in m._registry_rows
+
+
+def test_positions_of_mixed_population():
+    """Frame-side observed_points can hold unregistered points
+    (coordinate-duplicate rejections, removed points). positions_of
+    resolves the mixed population: rows for registered, staging
+    snapshots for the rest - the values the old attr reads gave."""
+    m = Map()
+    reg_pt = Point(np.array([1.0, 2.0, 3.0]))
+    # Same ROUNDED coord key as reg_pt (the dedup gate), different
+    # value so the staging fallback is distinguishable.
+    dup = Point(np.array([1.0, 2.0, 3.0004]))
+    m.add_points([reg_pt, dup])
+    assert dup.point_id not in m._registry_rows  # never registered
+    assert reg_pt.point_id in m._registry_rows
+
+    got = m.positions_of([dup, reg_pt, dup])
+    np.testing.assert_array_equal(got[0], [1.0, 2.0, 3.0004])
+    np.testing.assert_array_equal(got[1], [1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(got[2], [1.0, 2.0, 3.0004])
+
+
+def test_archive_snapshot_survives_reset():
+    """archive_current_state snapshots the LIVE rows into the staging
+    slots BEFORE the reset clears the registry: the archive's SAME
+    Point objects keep serving the recovery relocalization reads
+    afterwards (ids are never reused, so they can never false-hit a
+    new registration)."""
+    from benchmarks.stages.helpers import make_frame
+
+    m = Map()
+    m.add_keyframe(make_frame())
+    pts3d = make_world_points(3, z_range=(7.0, 9.0), rng_seed=11)
+    pts = [Point(x.copy()) for x in pts3d]
+    m.add_points(pts)
+    m.set_positions(pts, pts3d + 10.0)
+
+    m.archive_current_state()
     m.reset()
-    assert reg.size() == 0
+
+    assert len(m.archives) == 1
+    for i, pt in enumerate(m.archives[0].points):
+        np.testing.assert_array_equal(pt.pt_3d, pts3d[i] + 10.0)
 
 
-def test_point_registry_views_are_live():
-    """[C3b] the registry's views read the LIVE storage: an update
-    through the registry's own blocks is visible in the Python-held
-    view object (the zero-copy contract the consumers rely on)."""
+def test_registry_views_are_live():
+    """The registry's views read the LIVE storage: an update through
+    the registry's own blocks is visible in the Python-held view
+    object (the zero-copy contract the consumers rely on)."""
     from slam_native import PointRegistry
     reg = PointRegistry(32)
     ids = [5]
