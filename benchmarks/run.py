@@ -44,7 +44,8 @@ THRESHOLD_RULES = {
 
 
 def evaluate_sequence(name: str, seed: int,
-                      feature_extractor: str = "ORB") -> dict:
+                      feature_extractor: str = "ORB",
+                      rotmodel: bool = False) -> dict:
     if name in SEQUENCES:
         seq_dir = generate_sequence(name)
     elif name in TUM_SEQUENCES:
@@ -63,7 +64,8 @@ def evaluate_sequence(name: str, seed: int,
     if (seq_dir / "scene_points.txt").exists():
         scene_points, planes = load_scene(seq_dir)
 
-    result = run_slam(seq_dir, seed=seed, extractor=feature_extractor)
+    result = run_slam(seq_dir, seed=seed, extractor=feature_extractor,
+                      rotmodel=rotmodel)
     metrics_dict = metrics.evaluate(result, gt_poses, scene_points, planes)
     # Phase 2j-4: the final intrinsics estimate rides along (the
     # recovery experiments' readout: initial vs recovered f/k1).
@@ -243,6 +245,11 @@ def main() -> int:
                         help="write this run's metrics into baselines.json")
     parser.add_argument("--no-baseline", action="store_true",
                         help="skip baseline comparison")
+    parser.add_argument("--rotmodel", action="store_true",
+                        help="enable the rotation model on these legs "
+                             "(the production video-path wiring; default "
+                             "off keeps the battery's legacy semantics "
+                             "bit-identical)")
     parser.add_argument("--feature-extractor", default="ORB",
                         help="feature extractor for the legs (phase 24 "
                              "A/B: 'ALIKED' runs the learned stack via "
@@ -265,7 +272,8 @@ def main() -> int:
         print(f"[bench] running '{name}' ...", flush=True)
         t0 = time.perf_counter()
         results[name] = evaluate_sequence(name, args.seed,
-                                          args.feature_extractor)
+                                          args.feature_extractor,
+                                          rotmodel=args.rotmodel)
         print(f"[bench] '{name}' done in {time.perf_counter() - t0:.1f}s", flush=True)
 
     print_table(results)

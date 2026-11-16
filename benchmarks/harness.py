@@ -118,7 +118,8 @@ def run_slam(dataset_dir: Path,
              extractor: str = "ORB",
              multiscale: bool = False,
              enable_ba: bool = True,
-             debug: bool = False) -> RunResult:
+             debug: bool = False,
+             rotmodel: bool = False) -> RunResult:
     """Run the SLAM pipeline over a sequence headlessly and deterministically."""
     slam_logger.DEBUG = debug
 
@@ -140,6 +141,12 @@ def run_slam(dataset_dir: Path,
     world_map.intrinsics = IntrinsicsEstimate.from_K(
         K, k1 + const.CALIB_K1_INIT_OFFSET)
     tracker = Tracker(world_map, extractor, multiscale, enable_ba)
+    # The production wiring (the video path enables the rotation
+    # model through the intake gate; the census mirrors slam.py).
+    # Default False keeps the battery/ladder legacy path
+    # bit-identical by construction; --rotmodel opts a leg into the
+    # production-representative machine.
+    tracker.rotation_model_enabled = bool(rotmodel)
 
     poses: List[np.ndarray] = []
     keyframe_indices: List[int] = []
