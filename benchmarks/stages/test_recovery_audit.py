@@ -27,7 +27,8 @@ from benchmarks.synthetic.generator import ensure_sequence
 from slam.ba.bundle_adjustment_g2o import G2OBundleAdjustment
 from slam.core.frame import Frame
 from slam.core.map import Map
-from slam.core.tracker import Tracker
+from slam.core.point import Point
+from slam.core.tracker import ROTMODEL_BOOTSTRAP_MIN_POINTS, Tracker
 import slam.core.tracker as tracker_mod
 import slam.features.matcher as matcher_mod
 from slam.utils import telemetry
@@ -36,6 +37,9 @@ from slam.utils import telemetry
 def _tracker():
     world = Map()
     frame = set_keypoints(make_frame(), [(30 + i, 30) for i in range(20)])
+    world.add_points([Point(np.array([1.0 + i * 0.01, 2.0, 3.0]), None,
+                            np.zeros(32, dtype=np.uint8))
+                      for i in range(ROTMODEL_BOOTSTRAP_MIN_POINTS)])
     world.add_keyframe(frame)
     tracker = Tracker(world)
     tracker.cur_frame = frame

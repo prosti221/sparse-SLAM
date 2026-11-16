@@ -31,7 +31,8 @@ import slam.core.tracker as tracker_mod
 import slam.features.matcher as matcher_mod
 from benchmarks.stages.helpers import make_frame, project_gt, yaw_pose
 from slam.core.map import Map
-from slam.core.tracker import Tracker
+from slam.core.point import Point
+from slam.core.tracker import (ROTMODEL_BOOTSTRAP_MIN_POINTS, Tracker)
 from slam.features.matcher import rotation_model_pose_between_frames
 from slam.utils import telemetry
 
@@ -132,6 +133,15 @@ def test_helper_kill_switch_is_legacy(monkeypatch):
 
 def _tracker(enabled=True):
     t = Tracker(Map())
+    # The production establishment: the recovery/override machinery
+    # arbitrates only over triangulated geometry (the L4 yield gate);
+    # the fixture's map carries the establishment minimum in real
+    # points so the gate's arbitration path runs.
+    world = np.random.default_rng(5).uniform(-5, 5, size=(
+        ROTMODEL_BOOTSTRAP_MIN_POINTS, 3))
+    pts = [Point(x.copy(), None, np.zeros(32, dtype=np.uint8))
+           for x in world]
+    t.map.add_points(pts)
     t.rotation_model_enabled = enabled
     t.cur_frame = make_frame(np.eye(4), K)
     t.prev_frame = make_frame(yaw_pose(1.0), K)

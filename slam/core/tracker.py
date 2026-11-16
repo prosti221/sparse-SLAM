@@ -32,6 +32,19 @@ import slam.features.matcher as matcher_mod
 # at CALL time so probes can pin it in memory for A/B.
 RESET_GAUGE_CONTINUITY_ENABLED = 1
 
+# The bootstrap-yield duty (L4): an engaged-but-unestablished map
+# has no PnP anchoring, so [R | 0] commits freeze the camera centre
+# and starve the first triangulation - the map can never bootstrap
+# (v1_01's first 87 frames measured frozen: three resets, points
+# 0-3). Every Nth engaged pair YIELDS to the legacy pair pose until
+# the map carries the minimum points, seeding the triangulation
+# that activates PnP anchoring. fr3's control leg: the bootstrap
+# landed at frame 3 and the yield then never fires. INT flag (the
+# --override bool("0") trap); read at call time.
+ROTMODEL_BOOTSTRAP_YIELD_ENABLED = 1
+ROTMODEL_BOOTSTRAP_YIELD_EVERY = 5
+ROTMODEL_BOOTSTRAP_MIN_POINTS = 50
+
 # Per-correction attribution instrumentation: flag 1 records the
 # correction's measured magnitudes (drift, per-stage max pose move,
 # BA outcome, map size) into the telemetry VALUE store — observation
@@ -283,6 +296,26 @@ class Tracker:
 
         if not self._rot_model_engaged or Rt is None:
             return Rt
+
+        # The bootstrap-yield duty: while the map is unestablished the
+        # engaged chain has no PnP anchoring (no map points to anchor
+        # against), so every committed [R | 0] freezes the camera
+        # centre and blocks the first triangulation. YIELD to the
+        # legacy pair pose on a fixed cadence until the map carries
+        # the minimum points - the legacy unit-t pairs seed the
+        # triangulation that activates PnP anchoring, after which the
+        # yields never fire and the L1b behavior holds by
+        # construction.
+        if (ROTMODEL_BOOTSTRAP_YIELD_ENABLED
+                and len(self.map.points) < ROTMODEL_BOOTSTRAP_MIN_POINTS):
+            self._rot_model_bootstrap_count = getattr(
+                self, "_rot_model_bootstrap_count", 0) + 1
+            if (self._rot_model_bootstrap_count
+                    % ROTMODEL_BOOTSTRAP_YIELD_EVERY == 0):
+                telemetry.event("pair_rotation_model_yield")
+                debug_log(LOG_TAG, "Rotation model: bootstrap yield to "
+                          f"legacy (map {len(self.map.points)} pts)")
+                return Rt
 
         Rt_rot = rotation_model_pose_between_frames(
             self.cur_frame, self.prev_frame,
