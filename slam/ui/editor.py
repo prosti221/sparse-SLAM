@@ -433,8 +433,24 @@ class EditorWindow(QMainWindow):
         self._stop_session()
         try:
             session = Session(spec, self._options())
-        except FileNotFoundError as e:
-            self.status_label.setText(f"open failed: {e}")
+        except Exception as e:
+            # The optional extras (the GeoCalib branch needs 'calib';
+            # the learned extractors need 'learned') fail with an
+            # actionable message - surfaced LOUDLY, then the user can
+            # supply intrinsics manually or install the extra.
+            from PySide6.QtWidgets import QMessageBox
+            msg = str(e)
+            hint = ""
+            if "optional 'calib' extra" in msg:
+                hint = ("\n\nFix A: run `uv sync --extra calib` in "
+                        "this checkout.\nFix B: untick 'fx auto' and "
+                        "enter fx/fy/cx/cy/k1 manually, then load "
+                        "again.")
+            elif "No module named" in msg and "lightglue" in msg:
+                hint = ("\n\nFix: run `uv sync --extra learned` in "
+                        "this checkout.")
+            self.status_label.setText(f"load failed: {msg[:140]}")
+            QMessageBox.critical(self, "session load failed", msg + hint)
             return
         self.session = session
         self.viewport.attach()
