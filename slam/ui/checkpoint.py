@@ -22,6 +22,7 @@ The id counters are module-global itertools.count objects — the
 restore continues them past the restored maxima.
 """
 import itertools
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -55,9 +56,26 @@ class Checkpoint:
 
 
 # ---------------------------------------------------------------- map
-def _snapshot_keyframe(f: Frame) -> dict:
+def _snapshot_keyframe(f: Frame, live_pids: set) -> dict:
     kps = [(k.pt[0], k.pt[1], k.size, k.angle, k.response, k.octave,
             k.class_id) for k in (f.keypoints or [])]
+    # The live map is {KeyPoint object: Point} (add_point_observation
+    # keys with the frame's OWN keypoint objects; _filter_duplicate_
+    # keypoints looks them up by identity). The codec stores
+    # {keypoint index: point id}, resolved by object identity, and
+    # the restore rebuilds the object wiring. Stale entries (their
+    # point already pruned while the map entry stayed - the measured
+    # phantom-guard behavior) snapshot their Points separately: the
+    # objects are reachable ONLY through this map.
+    if f.keypoint_to_point_map:
+        id_index = {id(k): i for i, k in enumerate(f.keypoints or [])}
+        kp_to_point = {id_index[id(k)]: p.point_id
+                       for k, p in f.keypoint_to_point_map.items()}
+        stale = {p.point_id: p
+                 for p in f.keypoint_to_point_map.values()
+                 if p.point_id not in live_pids}
+    else:
+        kp_to_point, stale = {}, {}
     return {
         "frame_id": f.frame_id,
         "pose": np.asarray(f.pose, dtype=float),
@@ -68,8 +86,8 @@ def _snapshot_keyframe(f: Frame) -> dict:
                         if f.descriptors is not None else None),
         "observed": {pid: obs.kp_idx
                      for pid, obs in f.observed_points.items()},
-        "kp_to_point": {k: p.point_id
-                        for k, p in f.keypoint_to_point_map.items()},
+        "kp_to_point": kp_to_point,
+        "stale_points": [_snapshot_point(p) for p in stale.values()],
         "tracking_quality": float(f._tracking_quality),
         "image_dropped": True,
     }
@@ -90,9 +108,11 @@ def _snapshot_point(p: Point) -> dict:
 
 
 def _snapshot_map(m: Map) -> dict:
+    live_pids = {p.point_id for p in m.points}
     return {
-        "keyframes": [_snapshot_keyframe(f) for f in m.keyframes],
-        "frames_by_id": [_snapshot_keyframe(f) for f
+        "keyframes": [_snapshot_keyframe(f, live_pids)
+                      for f in m.keyframes],
+        "frames_by_id": [_snapshot_keyframe(f, live_pids) for f
                          in m.frames_by_id.values()],
         "points": [_snapshot_point(p) for p in m.points],
         "quality_history": dict(m.tracking_quality_history),
@@ -111,15 +131,18 @@ def _snapshot_map(m: Map) -> dict:
         "video_fps": m.video_fps,
         "intrinsics_state": dict(m.intrinsics.__dict__),
         "archives": [
-            {"keyframes": [_snapshot_keyframe(f)
+            {"keyframes": [_snapshot_keyframe(f, arch_pids)
                            for f in a.keyframes],
              "points": [_snapshot_point(p) for p in a.points]}
-            for a in (getattr(m, "archives", None) or [])],
+            for a, arch_pids in
+            ((a, {p.point_id for p in a.points})
+             for a in (getattr(m, "archives", None) or []))],
         "g2o_ema": getattr(m.g2o_optimizer, "_pnp_median_ema", None),
     }
 
 
-def _restore_keyframe(state: dict, K, k1) -> Frame:
+def _restore_keyframe(state: dict, K, k1,
+                      pid_to_point: Optional[dict]) -> Frame:
     f = Frame(np.zeros((1, 1, 3), dtype=np.uint8), K, k1)
     f.frame_id = state["frame_id"]
     f.pose = state["pose"]
@@ -129,10 +152,21 @@ def _restore_keyframe(state: dict, K, k1) -> Frame:
                                float(r[3]), float(r[4]),
                                int(r[5]), int(r[6])) for r in arr]
     f.descriptors = state["descriptors"]
+    # The direct keypoint assignment above bypasses set_features, so
+    # the derived caches (kp_pts/kp_pts_norm/kp_unique_mask) must be
+    # rebuilt the same way: triangulation (tracker) and the loop
+    # detector subscript keyframe.kp_pts_norm directly.
+    if f.keypoints:
+        f.set_features(f.keypoints, f.descriptors)
     f._tracking_quality = state["tracking_quality"]
-    f.keypoint_to_point_map = {int(k): pid
-                               for k, pid
-                               in state["kp_to_point"].items()}
+    f.keypoint_to_point_map = {}
+    if pid_to_point is not None:
+        for i, pid in state["kp_to_point"].items():
+            p = pid_to_point.get(int(pid))
+            if p is not None and 0 <= int(i) < len(f.keypoints):
+                # The keys are the frame's OWN keypoint objects (the
+                # live identity contract).
+                f.keypoint_to_point_map[f.keypoints[int(i)]] = p
     return f
 
 
@@ -151,25 +185,36 @@ def _restore_map(m: Map, state: dict) -> None:
     K = m.intrinsics.K
     k1 = m.intrinsics.k1
 
-    # The frames first (the keyframes are a subset by id), then the
+    # The points first: the keyframe maps and the observations wire
+    # against them.
+    points = {}
+    for ps in state["points"]:
+        p = _restore_point(ps)
+        points[p.point_id] = p
+    pid_to_point = dict(points)
+    # The stale map entries' Points (pruned from the live list while
+    # still keyed): rebuilt as bare objects, reachable only through
+    # the keyframe maps — the live phantom-guard state reproduced.
+    for ks in state["frames_by_id"] + state["keyframes"]:
+        for sps in ks.get("stale_points", ()):
+            pid = sps["point_id"]
+            if pid not in pid_to_point:
+                pid_to_point[pid] = _restore_point(sps)
+
+    # The frames next (the keyframes are a subset by id), then the
     # cross-object wiring.
     frames = {}
     keyframes = []
     for ks in state["frames_by_id"]:
-        f = _restore_keyframe(ks, K, k1)
+        f = _restore_keyframe(ks, K, k1, pid_to_point)
         frames[f.frame_id] = f
     for ks in state["keyframes"]:
         if ks["frame_id"] in frames:
             keyframes.append(frames[ks["frame_id"]])
         else:
-            f = _restore_keyframe(ks, K, k1)
+            f = _restore_keyframe(ks, K, k1, pid_to_point)
             frames[f.frame_id] = f
             keyframes.append(f)
-
-    points = {}
-    for ps in state["points"]:
-        p = _restore_point(ps)
-        points[p.point_id] = p
 
     # The observations: the FRAME's observed_points registry is the
     # authoritative side (pid -> kp_idx); the objects wire both ways.
@@ -194,9 +239,11 @@ def _restore_map(m: Map, state: dict) -> None:
     m.tracking_quality_history = dict(state["quality_history"])
     m.consecutive_low_quality_frames = state[
         "consecutive_low_quality_frames"]
-    m.covisibility_graph = {int(k): {int(kk): vv for kk, vv in v.items()}
-                            for k, v in state["covisibility_graph"]
-                            .items()}
+    m.covisibility_graph = defaultdict(lambda: defaultdict(int))
+    for k, v in state["covisibility_graph"].items():
+        inner = m.covisibility_graph[int(k)]
+        for kk, vv in v.items():
+            inner[int(kk)] = vv
     m._covisibility_score_cache = {
         tuple(int(x) for x in k.split("_")) if isinstance(k, str)
         and "_" in k else k: v
@@ -215,23 +262,37 @@ def _restore_map(m: Map, state: dict) -> None:
 
 
 def _restore_archived(am: ArchivedMap, state: dict, K, k1) -> None:
-    """The archives are read-only collections — the same rebuild."""
+    """The archives are read-only collections — the same rebuild.
+    The archived observations wire too: the archive-recovery
+    candidate filter reads point.is_observed_by(frame_id)."""
     frames = {}
     for ks in state["keyframes"]:
-        f = _restore_keyframe(ks, K, k1)
+        f = _restore_keyframe(ks, K, k1, None)
         frames[f.frame_id] = f
     am.keyframes[:] = [frames.get(ks["frame_id"]) or
-                       _restore_keyframe(ks, K, k1)
+                       _restore_keyframe(ks, K, k1, None)
                        for ks in state["keyframes"]]
-    points = []
+    pid_to_point = {}
     for ps in state["points"]:
         p = Point(np.asarray(ps["pt_3d"], dtype=float).copy(),
                   None,
                   (ps["descriptor"].copy()
                    if ps["descriptor"] is not None else None))
+        p.point_id = ps["point_id"]
         p.average_reprojection_error = float(ps["error"])
-        points.append(p)
-    am.points[:] = points
+        pid_to_point[p.point_id] = p
+    am.points[:] = list(pid_to_point.values())
+    for ks in state["keyframes"]:
+        f = frames.get(ks["frame_id"])
+        if f is None:
+            continue
+        for pid, kp_idx in ks["observed"].items():
+            p = pid_to_point.get(pid)
+            if p is None:
+                continue
+            obs = Observation(f, p, int(kp_idx))
+            f.observed_points[int(pid)] = obs
+            p.observations[f.frame_id] = obs
 
 
 # ------------------------------------------------------------ tracker
@@ -294,12 +355,17 @@ def _restore_intake(gate, state: Optional[dict]) -> None:
 # --------------------------------------------------------------- api
 def count_continue_map(m: Map) -> None:
     """Continue the frame/point counters past the restored map's
-    maxima (called post-restore, per map)."""
-    max_f = max((f.frame_id for f in m.frames_by_id.values()),
+    maxima (called post-restore, per map). The archives fold in too:
+    their ids are live references inside the restored session."""
+    arch = getattr(m, "archives", None) or []
+    max_f = max([f.frame_id for f in m.frames_by_id.values()] +
+                [f.frame_id for a in arch for f in a.keyframes],
                 default=0)
     max_kf = max((f.frame_id for f in m.keyframes), default=0)
     frame_mod._next_frame_id = itertools.count(max(max_f, max_kf) + 1)
-    max_p = max((p.point_id for p in m.points_by_id.values()), default=0)
+    max_p = max([p.point_id for p in m.points_by_id.values()] +
+                [p.point_id for a in arch for p in a.points],
+                default=0)
     max_pl = max((p.point_id for p in m.points), default=0)
     point_mod._next_point_id = itertools.count(max(max_p, max_pl) + 1)
 
