@@ -239,7 +239,7 @@ def test_worker_thread_bound_routing(monkeypatch, fixture_video):
             stop = intake_mod.mp.Event()
             t = threading.Thread(
                 target=_extract_process_main,
-                args=(str(fixture_video), name, False, 64, 48,
+                args=(str(fixture_video), name, 0, False, 64, 48,
                       [s.name for s in shms], msgs, tokens, stop, k),
                 daemon=True)
             t.start()

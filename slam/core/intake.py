@@ -259,7 +259,7 @@ def _rows_to_kps(rows: np.ndarray) -> list:
                         class_id=int(r[6])) for r in rows]
 
 
-def _extract_process_main(video_path, extractor_name, enable_multiscale,
+def _extract_process_main(video_path, extractor_name, start_index, enable_multiscale,
                           frame_w, frame_h, shm_names, msg_queue,
                           free_slots, stop_event, worker_threads):
     """The worker PROCESS target (module level: spawn-safe, picklable
@@ -288,6 +288,8 @@ def _extract_process_main(video_path, extractor_name, enable_multiscale,
         if not cap.isOpened():
             raise RuntimeError(
                 f"extract worker cannot open {video_path}")
+        if start_index > 0:
+            cap.set(cv.CAP_PROP_POS_FRAMES, start_index)
         w = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
         if (w, h) != (frame_w, frame_h):
@@ -300,7 +302,7 @@ def _extract_process_main(video_path, extractor_name, enable_multiscale,
         extractor = FeatureExtractor(extractor_name)
         extractor.set_multiscale_enabled(enable_multiscale)
 
-        idx = -1
+        idx = start_index - 1
         slot = 0
         while True:
             ret, img = cap.read()
@@ -344,7 +346,8 @@ class ExtractionProcess:
     worker at most ~2 frames ahead of the consumer."""
 
     def __init__(self, video_path, frame_w, frame_h, extractor_name,
-                 enable_multiscale=False, worker_threads=0):
+                 enable_multiscale=False, worker_threads=0,
+                 start_index=0):
         self._frame_w = int(frame_w)
         self._frame_h = int(frame_h)
         frame_bytes = self._frame_h * self._frame_w * 3
@@ -359,7 +362,8 @@ class ExtractionProcess:
         self._stop = mp.Event()
         self._proc = mp.Process(
             target=_extract_process_main,
-            args=(str(video_path), extractor_name, enable_multiscale,
+            args=(str(video_path), extractor_name, start_index,
+                  enable_multiscale,
                   self._frame_w, self._frame_h,
                   [s.name for s in self._shm], self._msgs,
                   self._free_slots, self._stop, int(worker_threads)),

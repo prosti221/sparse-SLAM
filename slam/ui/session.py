@@ -332,6 +332,39 @@ class Session:
         return branch_required
 
     # ------------------------------------------------------------------
+    # the timeline (M5a): the checkpoint/restore over the live session
+    CHECKPOINT_EVERY = 25
+
+    def capture_checkpoint(self, label="") -> Optional[dict]:
+        """The checkpoint at the current step boundary (the step worker
+        is idle between ticks)."""
+        from slam.ui import checkpoint as cp_mod
+        if self._done:
+            return None
+        cp = cp_mod.capture(self)
+        cp.label = label or f"step {self.step_count}"
+        info_log(cp_mod.LOG_TAG, f"checkpoint @ frame {cp.frame_index}")
+        return cp
+
+    def restore_checkpoint(self, cp) -> None:
+        """The in-place restore + the source reposition (the rewind's
+        engine). File sources re-launch the extraction worker at the
+        offset; sequence/camera captures reposition directly."""
+        from slam.ui import checkpoint as cp_mod
+        self.close_pipeline()
+        cp_mod.restore(self, cp)
+        if self.extract_pipeline is not None and \
+                self.spec.kind == FILE_KIND:
+            self.extract_pipeline = None
+            from slam.core.intake import ExtractionProcess
+            self.extract_pipeline = ExtractionProcess(
+                self.spec.location, self.CAP_W, self.CAP_H,
+                self.options.feature_extractor,
+                self.options.enable_multiscale_features,
+                worker_threads=intake_mod.INTAKE_EXTRACT_WORKER_THREADS,
+                start_index=cp.frame_index + 1)
+
+    # ------------------------------------------------------------------
     # the recording parity
     def start_recording(self, filename=None):
         if filename:
