@@ -386,10 +386,15 @@ class Session:
         """The in-place restore + the source reposition (the rewind's
         engine). File sources re-launch the extraction worker at the
         offset; sequence/camera captures reposition directly. The
-        rewind registers the fork (the branch lineage)."""
+        rewind registers the fork (the branch lineage). The session's
+      counters return to the checkpoint's (the frame_index the
+        timeline maps)."""
         from slam.ui import checkpoint as cp_mod
         self.close_pipeline()
         cp_mod.restore(self, cp)
+        self.frame_index = cp.frame_index
+        self.step_count = cp.step_count
+        self._done = False
         record = self.record_branch(cp)
         if self.extract_pipeline is not None and \
                 self.spec.kind == FILE_KIND:

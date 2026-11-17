@@ -47,24 +47,24 @@ from slam.utils.logger import info_log
 LOG_TAG = "Editor"
 
 DARK_QSS = """
-QMainWindow { background: #1b1e24; }
+QMainWindow { background: #1e1e20; }
 QWidget#CentralHost, QDockWidget, QDockWidget::title {
-    background: #1b1e24; color: #9aa4b2; }
-QTabWidget::pane { border: 1px solid #2a2f3a; background: #232730; }
-QTabBar::tab { background: #1b1e24; color: #9aa4b2; padding: 8px 18px;
-    border: 1px solid #2a2f3a; }
-QTabBar::tab:selected { background: #2a2f3a; color: #e6ebf2; }
-QPushButton { background: #2a2f3a; color: #d5dbe4; border: 1px solid
-    #3a4254; border-radius: 4px; padding: 6px 14px; }
-QPushButton:hover { background: #3a4254; }
-QLabel { color: #c9d1dc; }
-QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { background: #232730;
-    color: #d5dbe4; border: 1px solid #3a4254; padding: 4px; }
-QCheckBox { color: #9aa4b2; }
-QSlider::groove:horizontal { border: 1px solid #2a2f3a; height: 8px;
-    background: #232730; border-radius: 4px; }
-QSlider::handle:horizontal { background: #5b9cf5; width: 14px;
-    margin: -4px 0; border-radius: 7px; }
+    background: #1e1e20; color: #9a9aa2; }
+QTabWidget::pane { border: 1px solid #3a3a3e; background: #262629; }
+QTabBar::tab { background: #1e1e20; color: #9a9aa2; padding: 8px 18px;
+    border: 1px solid #3a3a3e; }
+QTabBar::tab:selected { background: #3a3a3e; color: #e8e8ea; }
+QPushButton { background: #2e2e31; color: #d8d8dc; border: 1px solid
+    #454549; border-radius: 4px; padding: 6px 14px; font-size: 16px; }
+QPushButton:hover { background: #454549; }
+QLabel { color: #ccccce; }
+QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { background: #262629;
+    color: #d8d8dc; border: 1px solid #454549; padding: 4px; }
+QCheckBox { color: #9a9aa2; }
+QSlider::groove:horizontal { border: 1px solid #3a3a3e; height: 10px;
+    background: #262629; border-radius: 5px; }
+QSlider::handle:horizontal { background: #b0b0b4; width: 16px;
+    margin: -4px 0; border-radius: 8px; }
 """
 
 
@@ -91,7 +91,8 @@ class Viewport(QLabel):
         self.mat = o3d.visualization.rendering.MaterialRecord()
         self.mat.shader = "defaultUnlit"
         self.mat.point_size = 2.0
-        self.renderer.scene.set_background([0.04, 0.05, 0.07, 1.0])
+        self.renderer.scene.set_background(
+            [0.121, 0.121, 0.129, 1.0])
 
     def detach(self):
         self.renderer = None
@@ -171,59 +172,72 @@ class Viewport(QLabel):
 
 
 class TimelineStrip(QFrame):
-    """The bottom strip: the transport + the checkpoint timeline.
+    """The timeline: a play/pause toggle + a reset on top, the
+    checkpoint slider below with the rewind next to it. The toggle
+    shows the CURRENT state's symbol; the slider's drag scrubs
+    view-only, the rewind commits the position; the fork markers
+    paint as orange ticks on the groove."""
 
-    While PLAYING the slider tracks the newest checkpoint; while
-    PAUSED selecting a checkpoint SCRUBS (the viewport renders that
-    checkpoint's snapshot geometry, the pipeline untouched) and
-    REWIND restores the pipeline to it (the branch point). The fork
-    markers (a rewind's target) paint as orange ticks on the groove."""
-
-    playRequested = Signal()
-    pauseRequested = Signal()
-    stepRequested = Signal()
+    toggleRequested = Signal()
     resetRequested = Signal()
     rewindRequested = Signal(int)
     scrubRequested = Signal(int)
 
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(64)
-        self.setStyleSheet("background: #15181e;")
+        self.setFixedHeight(84)
+        self.setStyleSheet("background: #1e1e20;")
         self.fork_positions = set()
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
-        self.btn_rewind = QPushButton("rewind")
-        self.btn_play = QPushButton("play")
-        self.btn_pause = QPushButton("pause")
-        self.btn_step = QPushButton("step")
-        self.btn_reset = QPushButton("reset")
-        self.btn_rewind.clicked.connect(self._emit_rewind)
-        self.btn_play.clicked.connect(self.playRequested.emit)
-        self.btn_pause.clicked.connect(self.pauseRequested.emit)
-        self.btn_step.clicked.connect(self.stepRequested.emit)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(10, 8, 10, 0)
+        self.btn_toggle = QPushButton("▶")
+        self.btn_toggle.setToolTip("play / pause")
+        self.btn_toggle.setFixedSize(52, 34)
+        self.btn_reset = QPushButton("⏮")
+        self.btn_reset.setToolTip("reset — a fresh session over the "
+                                  "same source")
+        self.btn_reset.setFixedSize(52, 34)
+        top.addStretch(1)
+        top.addWidget(self.btn_toggle)
+        top.addWidget(self.btn_reset)
+        top.addStretch(1)
+        self.btn_toggle.clicked.connect(self.toggleRequested.emit)
         self.btn_reset.clicked.connect(self.resetRequested.emit)
+
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(10, 2, 10, 8)
+        self.btn_rewind = QPushButton("⇤")
+        self.btn_rewind.setToolTip("rewind the pipeline to the "
+                                   "slider's checkpoint (branch)")
+        self.btn_rewind.setFixedSize(40, 30)
+        self.btn_rewind.clicked.connect(
+            lambda: self.rewindRequested.emit(self.slider.value()))
         self.slider = CheckpointSlider()
         self.slider.setEnabled(False)
-        self.slider.sliderReleased.connect(self._on_scrub)
-        for b in (self.btn_rewind, self.btn_play, self.btn_pause,
-                  self.btn_step, self.btn_reset):
-            lay.addWidget(b)
-        lay.addWidget(self.slider, stretch=1)
+        self.slider.sliderMoved.connect(
+            lambda v: self.scrubRequested.emit(v))
+        self.slider.sliderReleased.connect(
+            lambda: self.scrubRequested.emit(self.slider.value()))
+        bottom.addWidget(self.btn_rewind)
+        bottom.addWidget(self.slider, stretch=1)
         self.frame_label = QLabel("frame —")
-        lay.addWidget(self.frame_label)
+        bottom.addWidget(self.frame_label)
+
+        vlay = QVBoxLayout(self)
+        vlay.setContentsMargins(0, 0, 0, 0)
+        vlay.addLayout(top)
+        vlay.addLayout(bottom)
+
+    def set_state(self, playing: bool):
+        """The toggle's symbol reflects the CURRENT state."""
+        self.btn_toggle.setText("⏸" if playing else "▶")
+        self.status = "playing" if playing else "paused"
 
     def set_forks(self, positions):
         self.fork_positions = set(positions)
         self.slider.fork_positions = self.fork_positions
         self.slider.update()
-
-    def _emit_rewind(self):
-        self.rewindRequested.emit(self.slider.value())
-
-    def _on_scrub(self):
-        if self.slider.isEnabled():
-            self.scrubRequested.emit(self.slider.value())
 
     def sync(self, n_checkpoints, current_index):
         self.slider.setRange(0, max(n_checkpoints - 1, 0))
@@ -238,10 +252,14 @@ class TimelineStrip(QFrame):
 
 
 class CheckpointSlider(QSlider):
-    """The checkpoint slider with the fork markers painted on the
-    groove."""
+    """The checkpoint slider (horizontal) with the fork markers
+    painted on the groove."""
 
     fork_positions = set()
+
+    def __init__(self):
+        super().__init__(Qt.Horizontal)
+        self.setRange(0, 10_000)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -276,9 +294,7 @@ class EditorWindow(QMainWindow):
         self.viewport = Viewport()
         vlay.addWidget(self.viewport, stretch=1)
         self.strip = TimelineStrip()
-        self.strip.playRequested.connect(self._on_play)
-        self.strip.pauseRequested.connect(self._on_pause)
-        self.strip.stepRequested.connect(self._on_step)
+        self.strip.toggleRequested.connect(self._on_toggle)
         self.strip.resetRequested.connect(self._on_reset)
         self.strip.rewindRequested.connect(self._on_rewind)
         self.strip.scrubRequested.connect(self._on_scrub)
@@ -291,13 +307,12 @@ class EditorWindow(QMainWindow):
                           DockWidgetMovable)
         self.addDockWidget(Qt.LeftDockWidgetArea, panel)
 
-        self.capture_label = QLabel()
-        self.capture_label.setStyleSheet("background: #0d0f13;")
-        self.capture_label.setFixedHeight(150)
+        self.capture_label = QLabel(host)
+        self.capture_label.setStyleSheet(
+            "background: #121214; border: 1px solid #454549;")
+        self.capture_label.setFixedSize(300, 169)
         self.capture_label.setAlignment(Qt.AlignCenter)
-
-        self.capture_label.setVisible(True)
-        vlay.addWidget(self.capture_label)
+        self.capture_label.raise_()
 
         self.paint_timer = QTimer()
         self.paint_timer.timeout.connect(self.viewport.paint)
@@ -305,6 +320,14 @@ class EditorWindow(QMainWindow):
         self.step_timer = QTimer()
         self.step_timer.timeout.connect(self._tick)
         self.step_timer.start(1000 // 30)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        c = self.centralWidget()
+        if c is not None and hasattr(self, "capture_label"):
+            w, h = self.capture_label.width(), \
+                self.capture_label.height()
+            self.capture_label.move(c.width() - w - 12, 12)
 
     # ------------------------------------------------------- panel
     def _build_panel(self):
@@ -480,6 +503,13 @@ class EditorWindow(QMainWindow):
             enable_profiling=self.opt_widgets[
                 "enable_profiling"].isChecked())
 
+    def _on_toggle(self):
+        if self.session is None:
+            if self.path_edit.text().strip():
+                self._load_session()
+            return
+        self._on_pause() if self.playing else self._on_play()
+
     def _tick(self) -> None:
         if not self.playing or self.session is None:
             return
@@ -491,10 +521,12 @@ class EditorWindow(QMainWindow):
             return
         self.viewport.unscrub()
         self.playing = True
+        self.strip.set_state(True)
         self.status_label.setText("playing")
 
     def _on_pause(self):
         self.playing = False
+        self.strip.set_state(False)
 
     def _on_step(self):
         if self.session is None:
@@ -626,8 +658,6 @@ class EditorWindow(QMainWindow):
         opts = self._options()
         branch = self.session.apply_live_options(opts)
         self.capture_label.setVisible(opts.display_capture)
-        self.capture_label.setFixedHeight(150 if opts.display_capture
-                                          else 0)
         if branch:
             self.status_label.setText(
                 f"applied live — rebuild required for "
@@ -660,15 +690,34 @@ def run_editor():
 def main():
     # The GUI smoke: load, play to the checkpoint, scrub, rewind,
     # then close — on the REAL platform.
+    out_dir = Path(__file__).resolve().parents[2] / "output" / "ui_spikes"
+    out_dir.mkdir(parents=True, exist_ok=True)
     app = QApplication(sys.argv)
     app.setStyleSheet(DARK_QSS)
     win = EditorWindow()
     win.show()
 
-    seq = Path(os.environ.get(
-        "SMOKE_SEQ",
-        str(Path(__file__).resolve().parents[2] / "output"
-            / "ui_spikes" / "m2_seq2")))
+    import faulthandler
+    faulthandler.enable()
+
+    seq_dir = Path(__file__).resolve().parents[2] / "output" / \
+        "ui_spikes" / "m2_seq3"   # 50 frames: the rewind->EOF trap
+    if not seq_dir.exists():
+        seq_dir.mkdir(parents=True, exist_ok=True)
+        import cv2 as cv
+        rng = np.random.default_rng(11)
+        base = np.full((480, 640, 3), 90, dtype=np.uint8)
+        dots = rng.integers(6, 474, size=(200, 2))
+        for i in range(50):
+            img = base.copy()
+            shift = int(round(-3.0 * i))
+            for (x0, y0) in dots:
+                x = x0 + shift
+                if 2 <= x < 638:
+                    cv.circle(img, (int(x), int(y0)), 2,
+                              (220, 220, 220), -1)
+            cv.imwrite(str(seq_dir / f"{i:06d}.png"), img)
+    seq = seq_dir
     win.kind_combo.setCurrentIndex(1)
     win.path_edit.setText(str(seq))
     win.fx_spin.setValue(500.0)
@@ -724,6 +773,9 @@ def main():
         "the rewind did not register the fork"
     assert len(forks) >= 1, "no forked checkpoint in the registry"
     print("[smoke] PASS", flush=True)
+    if os.environ.get("EDITOR_CAPTURE") == "1":
+        win.grab().save(str(out_dir / "editor_m6.png"))
+        print("[smoke] window capture saved", flush=True)
     win.close()
     spin(200)
     app.processEvents()
