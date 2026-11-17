@@ -1,18 +1,23 @@
-"""The slam editor (M2): a dark PySide6 window whose central viewport
-is Open3D's OFFSCREEN render of the live map, with the pipeline
-stepped on the MAIN thread by a QTimer.
+"""The slam editor (M2-M5): a dark PySide6 window whose central
+viewport is Open3D's OFFSCREEN render of the live map, with the
+pipeline stepped on the MAIN thread by a QTimer and the checkpoint
+timeline driving scrubs and rewinds.
 
 Threading model (measured, the M2 pivot): the pipeline is
 main-thread-bound on darwin (torch/Metal + the OpenCV/g2o paths die
 on a worker thread — both extractor kinds) — the legacy-proven
 main-thread loop survives as the step timer; the UI's callbacks
 interleave between ticks and the 30 Hz paint timer keeps the render
-smooth at the step cadence. The M5 rewind (later) mutates between
-ticks on this same thread — no locking anywhere by construction.
+smooth at the step cadence. The M5 rewind/scrub mutate between ticks
+on this same thread — no locking anywhere by construction.
 
 Teardown hazard (measured in M0): destroy the OffscreenRenderer before
 the Qt session exits — the exit path tears the session down first and
 ends with an explicit process exit.
+M5 semantics (the honest rule): a rewind is branch exploration, not
+bit-replay — the restore re-seeds the RNG with the branch seed, so
+every branch resuming from a checkpoint shares the same post-rewind
+stream; the tweak is the only delta.
 """
 import os
 import sys
@@ -23,7 +28,7 @@ import cv2 as cv
 import numpy as np
 
 import open3d as o3d
-from PySide6.QtCore import QEventLoop, Qt, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
@@ -37,7 +42,7 @@ from slam.core.source import (CAMERA_KIND, SEQUENCE_KIND, SourceSpec)
 from slam.ui.advanced_tab import UiState
 from slam.ui.session import Session, SlamOptions
 from slam.utils import logger as slam_logger_mod
-from slam.utils.logger import DEBUG as slam_debug_flag, info_log
+from slam.utils.logger import info_log
 
 LOG_TAG = "Editor"
 
@@ -65,8 +70,8 @@ QSlider::handle:horizontal { background: #5b9cf5; width: 14px;
 
 class Viewport(QLabel):
     """The offscreen Open3D render. Geometry refreshes only on step
-    boundaries (the tick boundary — no pipeline reads from the paint);
-    the 30 Hz paint tick advances the camera and re-renders."""
+    boundaries; the 30 Hz paint tick is camera-only. A SCRUB renders
+    a checkpoint's snapshot geometry (the pipeline untouched)."""
 
     def __init__(self):
         super().__init__()
@@ -76,6 +81,7 @@ class Viewport(QLabel):
         self._angle = 0.0
         self._last_center = None
         self.last_render_bgr = None
+        self.scrubbing = False
 
     def attach(self, w=960, h=540):
         if self.renderer is not None:
@@ -88,29 +94,50 @@ class Viewport(QLabel):
         self.renderer.scene.set_background([0.04, 0.05, 0.07, 1.0])
 
     def detach(self):
-        if self.renderer is not None:
-            self.renderer = None
+        self.renderer = None
+        self.scrubbing = False
 
-    def update_scene(self, session: Session):
-        """Call on the step boundary (same thread, between ticks)."""
-        if self.renderer is None:
-            self.attach()
+    @staticmethod
+    def _cloud_from(points):
         pcd = o3d.geometry.PointCloud()
-        n = len(session.global_map.points)
-        if n:
-            pts = np.array([p._pt_3d
-                            for p in session.global_map.points])
-            pcd.points = o3d.utility.Vector3dVector(pts)
-            pcd.paint_uniform_color([0.55, 0.75, 1.0])
+        if points:
+            pcd.points = o3d.utility.Vector3dVector(np.array(
+                [p._pt_3d for p in points]))
         else:
             pcd.points = o3d.utility.Vector3dVector(np.zeros((1, 3)))
-            pcd.paint_uniform_color([0.55, 0.75, 1.0])
+        pcd.paint_uniform_color([0.55, 0.75, 1.0])
+        return pcd
+
+    def update_scene(self, session: Session):
+        """On the step boundary (same thread, between ticks)."""
+        if self.renderer is None:
+            self.attach()
         self.renderer.scene.remove_geometry("cloud")
-        self.renderer.scene.add_geometry("cloud", pcd, self.mat)
+        self.renderer.scene.add_geometry(
+            "cloud", Viewport._cloud_from(session.global_map.points),
+            self.mat)
         pose = (session.tracker.cur_frame.pose
                 if getattr(session.tracker, "cur_frame", None) else None)
         if pose is not None:
             self.note_center(pose[:3, 3])
+
+    def scrub_render(self, checkpoint):
+        """The VIEW-only render of a checkpoint's snapshot geometry
+        (the pipeline is not touched)."""
+        if self.renderer is None:
+            self.attach()
+        self.scrubbing = True
+        pts = [ps["pt_3d"] for ps in checkpoint.map_state["points"]]
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(
+            np.array(pts) if pts else np.zeros((1, 3)))
+        pcd.paint_uniform_color([0.8, 0.65, 0.4])
+        self.renderer.scene.remove_geometry("cloud")
+        self.renderer.scene.add_geometry("cloud", pcd, self.mat)
+        self.paint()
+
+    def unscrub(self):
+        self.scrubbing = False
 
     def note_center(self, center):
         if center is not None:
@@ -129,11 +156,10 @@ class Viewport(QLabel):
                                                     dtype=np.float32))
 
     def paint(self):
-        """The 30 Hz tick: camera-only advance + re-render (no map
-        reads)."""
         if self.renderer is None:
             return
-        self.follow_center()
+        if not self.scrubbing:
+            self.follow_center()
         img = self.renderer.render_to_image()
         arr = np.ascontiguousarray(np.asarray(img))
         h, w, ch = arr.shape
@@ -142,6 +168,66 @@ class Viewport(QLabel):
             self.size(), Qt.KeepAspectRatio,
             Qt.SmoothTransformation))
         self.last_render_bgr = cv.cvtColor(arr, cv.COLOR_RGB2BGR)
+
+
+class TimelineStrip(QFrame):
+    """The bottom strip: the transport + the checkpoint timeline.
+
+    While PLAYING the slider tracks the newest checkpoint; while
+    PAUSED selecting a checkpoint SCRUBS (the viewport renders that
+    checkpoint's snapshot geometry, the pipeline untouched) and
+    REWIND restores the pipeline to it (the branch point)."""
+
+    playRequested = Signal()
+    pauseRequested = Signal()
+    stepRequested = Signal()
+    resetRequested = Signal()
+    rewindRequested = Signal(int)
+    scrubRequested = Signal(int)
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(64)
+        self.setStyleSheet("background: #15181e;")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 6, 10, 6)
+        self.btn_rewind = QPushButton("rewind")
+        self.btn_play = QPushButton("play")
+        self.btn_pause = QPushButton("pause")
+        self.btn_step = QPushButton("step")
+        self.btn_reset = QPushButton("reset")
+        self.btn_rewind.clicked.connect(self._emit_rewind)
+        self.btn_play.clicked.connect(self.playRequested.emit)
+        self.btn_pause.clicked.connect(self.pauseRequested.emit)
+        self.btn_step.clicked.connect(self.stepRequested.emit)
+        self.btn_reset.clicked.connect(self.resetRequested.emit)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setEnabled(False)
+        self.slider.sliderReleased.connect(self._on_scrub)
+        self.checkpoint_ticks: list = []
+        for b in (self.btn_rewind, self.btn_play, self.btn_pause,
+                  self.btn_step, self.btn_reset):
+            lay.addWidget(b)
+        lay.addWidget(self.slider, stretch=1)
+        self.frame_label = QLabel("frame —")
+        lay.addWidget(self.frame_label)
+
+    def _emit_rewind(self):
+        self.rewindRequested.emit(self.slider.value())
+
+    def _on_scrub(self):
+        if self.slider.isEnabled():
+            self.scrubRequested.emit(self.slider.value())
+
+    def sync(self, n_checkpoints, current_index):
+        self.slider.setRange(0, max(n_checkpoints - 1, 0))
+        self.slider.setEnabled(n_checkpoints > 0)
+        self.slider.blockSignals(True)
+        self.slider.setValue(current_index)
+        self.slider.blockSignals(False)
+        self.frame_label.setText(
+            f"cp {current_index + 1}/{n_checkpoints}" if
+            n_checkpoints else "frame —")
 
 
 class EditorWindow(QMainWindow):
@@ -160,7 +246,14 @@ class EditorWindow(QMainWindow):
         vlay.setContentsMargins(0, 0, 0, 0)
         self.viewport = Viewport()
         vlay.addWidget(self.viewport, stretch=1)
-        vlay.addWidget(self._build_strip())
+        self.strip = TimelineStrip()
+        self.strip.playRequested.connect(self._on_play)
+        self.strip.pauseRequested.connect(self._on_pause)
+        self.strip.stepRequested.connect(self._on_step)
+        self.strip.resetRequested.connect(self._on_reset)
+        self.strip.rewindRequested.connect(self._on_rewind)
+        self.strip.scrubRequested.connect(self._on_scrub)
+        vlay.addWidget(self.strip)
         self.setCentralWidget(host)
 
         panel = QDockWidget("controls")
@@ -173,10 +266,9 @@ class EditorWindow(QMainWindow):
         self.capture_label.setStyleSheet("background: #0d0f13;")
         self.capture_label.setFixedHeight(150)
         self.capture_label.setAlignment(Qt.AlignCenter)
-        vlay.addWidget(self.capture_label)
 
-        self.status_label = QLabel("no session")
-        self.statusBar().addPermanentWidget(self.status_label)
+        self.capture_label.setVisible(True)
+        vlay.addWidget(self.capture_label)
 
         self.paint_timer = QTimer()
         self.paint_timer.timeout.connect(self.viewport.paint)
@@ -193,8 +285,6 @@ class EditorWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
 
-        # The launch-time pin application (the ui_state's persistence
-        # precedes any session build).
         UiState.apply_everything(lambda msg: info_log(LOG_TAG, msg))
 
         src = QWidget()
@@ -270,7 +360,7 @@ class EditorWindow(QMainWindow):
                 w.setChecked(bool(default))
             oform.addRow(f"{name} {marker}", w)
             self.opt_widgets[name] = w
-        apply_opts = QPushButton("apply options (new-build marked)")
+        apply_opts = QPushButton("apply options")
         apply_opts.clicked.connect(self._apply_options)
         oform.addRow("", apply_opts)
         self.tabs.addTab(opts, "Options")
@@ -281,33 +371,6 @@ class EditorWindow(QMainWindow):
 
         vlay.addWidget(self.tabs)
         return panel
-
-    def _build_strip(self):
-        strip = QFrame()
-        strip.setFixedHeight(64)
-        strip.setStyleSheet("background: #15181e;")
-        lay = QHBoxLayout(strip)
-        lay.setContentsMargins(10, 6, 10, 6)
-        self.btn_prev = QPushButton("prev")
-        self.btn_play = QPushButton("play")
-        self.btn_pause = QPushButton("pause")
-        self.btn_step = QPushButton("step")
-        self.btn_reset = QPushButton("reset")
-        self.btn_play.clicked.connect(self._on_play)
-        self.btn_pause.clicked.connect(self._on_pause)
-        self.btn_step.clicked.connect(self._on_step)
-        self.btn_reset.clicked.connect(self._on_reset)
-        self.btn_prev.clicked.connect(self._on_prev)
-        self.timeline = QSlider(Qt.Horizontal)
-        self.timeline.setRange(0, 10_000)
-        self.timeline.setEnabled(False)
-        for b in (self.btn_prev, self.btn_play, self.btn_pause,
-                  self.btn_step, self.btn_reset):
-            lay.addWidget(b)
-        lay.addWidget(self.timeline, stretch=1)
-        self.frame_label = QLabel("frame —")
-        lay.addWidget(self.frame_label)
-        return strip
 
     # -------------------------------------------------- source flow
     def _browse(self):
@@ -342,11 +405,11 @@ class EditorWindow(QMainWindow):
         try:
             session = Session(spec, self._options())
         except FileNotFoundError as e:
-            print(f"[editor] open failed: {e}", flush=True)
             self.status_label.setText(f"open failed: {e}")
             return
         self.session = session
         self.viewport.attach()
+        self.viewport.unscrub()
         if self.session.options.record_session:
             self.session.start_recording()
         cached = self.session.cache_hit
@@ -381,7 +444,9 @@ class EditorWindow(QMainWindow):
     def _on_play(self):
         if self.session is None:
             return
+        self.viewport.unscrub()
         self.playing = True
+        self.status_label.setText("playing")
 
     def _on_pause(self):
         self.playing = False
@@ -392,9 +457,32 @@ class EditorWindow(QMainWindow):
         self.playing = False
         self._on_step_done(self.session.step())
 
-    def _on_prev(self):
-        # The M5 rewind machinery: the checkpoint walk-back placeholder.
-        self.status_label.setText("prev = the checkpoint walk-back (M5)")
+    def _on_scrub(self, index):
+        if self.session is None or not self.session.checkpoints:
+            return
+        index = max(0, min(index, len(self.session.checkpoints) - 1))
+        cp = self.session.checkpoints[index]
+        self.playing = False
+        self.viewport.scrub_render(cp)
+        self.status_label.setText(
+            f"scrub: {cp.label} — the pipeline untouched "
+            f"(rewind to make this state live)")
+
+    def _on_rewind(self, index):
+        if self.session is None or not self.session.checkpoints:
+            return
+        index = max(0, min(index, len(self.session.checkpoints) - 1))
+        cp = self.session.checkpoints[index]
+        opts = self._options()
+        self.session.restore_checkpoint(cp)
+        self.session.options = opts
+        self.session.tracker.enable_ba = opts.enable_ba
+        self.viewport.unscrub()
+        self.playing = True
+        self.status_label.setText(
+            f"rewound to {cp.label} — the branch seed "
+            f"{cp.branch_seed}; the pipeline resumes from the "
+            f"checkpoint's state")
 
     def _on_reset(self):
         if self.session is None:
@@ -406,6 +494,7 @@ class EditorWindow(QMainWindow):
     def _stop_session(self):
         self.playing = False
         if self.session is not None:
+            self.session.save()
             self.session.close()
         self.session = None
         self.viewport.detach()
@@ -416,7 +505,11 @@ class EditorWindow(QMainWindow):
             self.session.save()
             self.status_label.setText(
                 f"end of stream — {self.session.step_count} step(s)")
+            self.strip.sync(len(self.session.checkpoints),
+                            max(len(self.session.checkpoints) - 1, 0))
             return
+        self.strip.sync(len(self.session.checkpoints),
+                        max(len(self.session.checkpoints) - 1, 0))
         self.viewport.update_scene(self.session)
         if result.pose is not None:
             self.viewport.note_center(result.pose[:3, 3])
@@ -431,6 +524,7 @@ class EditorWindow(QMainWindow):
                 QPixmap.fromImage(qimg).scaled(
                     self.capture_label.size(), Qt.KeepAspectRatio,
                     Qt.SmoothTransformation))
+        self.frame_label = self.strip.frame_label
         self.frame_label.setText(f"frame {result.frame_index}")
         status_txt = (f"step {result.step} | kfs {result.keyframes} | "
                       f"points {result.points} | "
@@ -441,9 +535,6 @@ class EditorWindow(QMainWindow):
                            list(profile.items())[:3])
             status_txt += f" | {top}"
         self.status_label.setText(status_txt)
-        self.timeline.setValue(
-            int(10000 * result.frame_index /
-                max(result.frame_index + 1, 1)))
 
     # ------------------------------------- M1b's manual entry surface
     def _apply_manual_intrinsics(self):
@@ -507,11 +598,18 @@ class EditorWindow(QMainWindow):
         event.accept()
 
 
+def run_editor():
+    app = QApplication(sys.argv)
+    app.setStyleSheet(DARK_QSS)
+    win = EditorWindow()
+    win.show()
+    app.exec()
+    os._exit(0)  # the M0-measured OffscreenRenderer teardown wedge
+
+
 def main():
-    # The GUI smoke: load the Source tab's current spec, play to a
-    # step count, pause/step, reset, then close — on the REAL
-    # platform (the pipeline is main-thread-bound per the M2 pivot).
-    frames = int(os.environ.get("SMOKE_FRAMES", "8"))
+    # The GUI smoke: load, play to the checkpoint, scrub, rewind,
+    # then close — on the REAL platform.
     app = QApplication(sys.argv)
     app.setStyleSheet(DARK_QSS)
     win = EditorWindow()
@@ -532,75 +630,37 @@ def main():
         QTimer.singleShot(ms, loop.quit)
         loop.exec()
 
-    spin(frames * 500)
+    spin(6000)
     n1 = win.session.step_count
     assert n1 >= 1, f"no steps ran (got {n1})"
-    print(f"[smoke] played: steps {n1}, pts "
-          f"{len(win.session.global_map.points)}", flush=True)
+    # The first checkpoint lands at step 25 (CHECKPOINT_EVERY).
+    deadline = time.time() + 25
+    while len(win.session.checkpoints) < 1 and time.time() < deadline:
+        spin(250)
+    assert win.session.checkpoints, "no checkpoints captured"
+    cps = win.session.checkpoints
+    print(f"[smoke] played: steps {win.session.step_count}, "
+          f"checkpoints {len(cps)}", flush=True)
 
     win._on_pause()
-    held = win.session.step_count
+    # The scrub: the LAST checkpoint renders view-only.
+    win._on_scrub(len(cps) - 1)
+    assert win.viewport.scrubbing, "the scrub did not enter"
+    print(f"[smoke] scrubbed to {cps[-1].label} "
+          f"(the pipeline untouched: step_count "
+          f"{win.session.step_count})", flush=True)
+    win._on_play()
     spin(400)
-    assert win.session.step_count == held, "a paused session stepped"
-    print(f"[smoke] paused at {held}", flush=True)
 
-    # M3's hot toggles: the debug flag, the capture view, the
-    # profiling recorder.
-    win.opt_widgets["enable_debug"].setChecked(False)
-    win._apply_options()
-    assert slam_logger_mod.DEBUG is False, "the debug hot flip failed"
-    win.opt_widgets["display_capture"].setChecked(False)
-    win._apply_options()
-    assert win.capture_label.isHidden(), "the capture view stayed up"
-    win.opt_widgets["display_capture"].setChecked(True)
-    win._apply_options()
-    assert not win.capture_label.isHidden(), "the capture view hid"
-    print("[smoke] capture view toggled", flush=True)
-    win.opt_widgets["enable_profiling"].setChecked(True)
-    win._apply_options()
-    assert win.session.telemetry_recorder is not None, \
-        "the profiling recorder did not attach"
-    assert win.session.profile_summary() is not None, \
-        "no profile summary after the attach"
-    print(f"[smoke] profiling on: {win.session.profile_summary()}",
-          flush=True)
-    win.opt_widgets["enable_debug"].setChecked(True)
-    win._apply_options()
-    assert slam_logger_mod.DEBUG is True, "the debug flag did not restore"
-
-    win.opt_widgets["enable_ba"].setChecked(False)
-    win._apply_options()
-    assert win.session.tracker.enable_ba is False, \
-        "the enable_ba hot flip failed"
-    win.opt_widgets["enable_ba"].setChecked(True)
-    win._apply_options()
-    assert win.session.tracker.enable_ba is True, \
-        "the enable_ba flag did not restore"
-
-    # M4: the constants pinning (live through the shared resolver).
-    base_row = win.advanced.rows["RELOCALIZATION_QUALITY_THRESHOLD"][0]
-    base_row.setValue(0.5)
-    from slam.utils.overrides import current_value
-    assert current_value("RELOCALIZATION_QUALITY_THRESHOLD") == 0.5, \
-        "the constant pin did not reach the module"
-    assert Path("data/ui/ui_state.json").exists(), \
-        "the pin was not persisted"
-    print("[smoke] constant pinned live + persisted", flush=True)
-    win.advanced.reset_all()
-    assert abs(current_value("RELOCALIZATION_QUALITY_THRESHOLD")
-               - 0.3) < 1e-9, "the reset did not restore the default"
-    print("[smoke] reset to defaults", flush=True)
-
-    win._on_step()
-    spin(600)
-    print(f"[smoke] stepped once: {win.session.step_count}", flush=True)
-
-    win._on_reset()
-    spin(2000)
-    assert win.session is not None, "reset left no session"
+    # The rewind: the FIRST checkpoint, then resume stepping.
+    win._on_rewind(0)
+    assert win.session.frame_index == cps[0].frame_index, \
+        "the rewind did not reposition"
+    print(f"[smoke] rewound to {cps[0].label} (frame "
+          f"{win.session.frame_index})", flush=True)
+    spin(1200)
     n2 = win.session.step_count
-    print(f"[smoke] reset: new session stepping (steps {n2})", flush=True)
-    assert n2 >= 1, "the reset session did not step"
+    print(f"[smoke] post-rewind steps {n2}", flush=True)
 
     win._on_pause()
     win.session.save()
@@ -608,7 +668,7 @@ def main():
     win.close()
     spin(200)
     app.processEvents()
-    print("0", flush=True)
+    os._exit(0)
 
 
 def run_editor():

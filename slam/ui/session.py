@@ -156,6 +156,7 @@ class Session:
         self.frame_index = -1
         self.step_count = 0
         self._done = False
+        self.checkpoints = []   # the timeline's checkpoint registry
 
         # --- the recording state (the parity block)
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -208,6 +209,11 @@ class Session:
         is_kf = self.tracker.update(frame)
 
         result = self._as_step(keyframe=is_kf, capture=img)
+        if self.step_count % self.CHECKPOINT_EVERY == 0:
+            from slam.ui import checkpoint as cp_mod
+            cpd = cp_mod.capture(self)
+            cpd.label = f"frame {self.frame_index}"
+            self.checkpoints.append(cpd)
         if self.recording:
             self.record_frame(prev_img, img)
         return result
@@ -278,6 +284,7 @@ class Session:
         self.frame_index = -1
         self.step_count = 0
         self._done = False
+        self.checkpoints = []   # a reset starts a fresh timeline
         info_log(LOG_TAG, "Session reset")
 
     # ------------------------------------------------------------------
