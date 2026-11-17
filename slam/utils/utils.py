@@ -11,46 +11,11 @@ LOG_TAG = 'Utils'
 
 
 def load_video(config):
-    video_tag = config.get_global_config_property("load_video")
-    VIDEO_PATH = config.get_video_property(video_tag, 'path')
-
-    cap = cv.VideoCapture(VIDEO_PATH)
-    W = cap.get(cv.CAP_PROP_FRAME_WIDTH)
-    H = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
-    Fx = config.get_video_property(video_tag, 'fx', default=0)
-    Fy = config.get_video_property(video_tag, 'fy', default=Fx)
-    Cx = config.get_video_property(video_tag, 'cx', default=W // 2)
-    Cy = config.get_video_property(video_tag, 'cy', default=H // 2)
-    # The lens's simple-radial k1 in the normalized coordinate.
-    # Absent -> 0.0, the LITERAL identity path everywhere
-    # k1 is read, so existing configs are bit-identical by construction.
-    # The explicit-intrinsics path returns it alongside K (slam.py flows
-    # it through IntrinsicsEstimate.from_K into every Frame, engaging
-    # the undistort-at-normalization + forward-model projection
-    # boundaries). The 'fx: auto' path returns 0.0 and IGNORES any
-    # explicit k1 by design: GeoCalib supplies both the focal and its
-    # own k1 estimate, consumed through the prior.
-    K1 = config.get_video_property(video_tag, 'k1', default=0.0)
-
-    # 'fx: auto' (or an absent/zero fx) switches the video
-    # path to GeoCalib auto-calibration - slam.py buffers the first
-    # ~CALIB_INIT_SECONDS from this capture and estimates shared
-    # intrinsics; the returned K is None until then.
-    if Fx in ("auto", 0, None):
-        info_log(LOG_TAG,
-                 f"Loaded video: {VIDEO_PATH} ({int(W)}x{int(H)}) - "
-                 "fx: auto -> GeoCalib intrinsics estimation")
-        return cap, None, 0.0
-
-    K = construct_K(Fx, Fy, Cx, Cy)
-
-    info_log(LOG_TAG, f"Loaded video: {VIDEO_PATH} with properties:\n"
-             f"  Width: {W}, Height: {H}\n"
-             f"  Focal Lengths: Fx={Fx}, Fy={Fy}\n"
-             f"  Principal Point: Cx={Cx}, Cy={Cy}\n"
-             f"  Radial distortion: k1={K1}")
-
-    return cap, K, float(K1)
+    """The load_video contract, delegated to the source resolver (the
+    editor's generalization over video files / frame sequences /
+    cameras)."""
+    from slam.core.source import load_video as _load_video
+    return _load_video(config)
 
 
 def pt_obj_to_array(pts):
