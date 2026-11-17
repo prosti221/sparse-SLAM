@@ -3,7 +3,7 @@ const_tag: &ALIKED "ALIKED"
 
 # Global config properties
 global:
-  load_video: "kyoto"
+  load_video: "tum_fr2_xyz"
   feature_extractor: *ALIKED
   enable_multiscale_features: false
   enable_ba: true
@@ -67,9 +67,74 @@ videos:
     path: ./videos/road.mp4
   drone:
     path: ./videos/drone.mp4
-  desk:
-    path: ./videos/vid3.mp4
-    fx: 525
-    fy: 525
-    cx: 319.5
-    cy: 239.5
+  tokyo_walk_1:
+    path: ./videos/tokyo_walk_1.mp4
+    fx: 1058.7
+    fy: 1058.7
+    cx: 960.0
+    cy: 540.0
+    k1: -0.00959
+  tokyo_walk_2:
+    path: ./videos/tokyo_walk_2.mp4
+    fx: 1084.3
+    fy: 1084.3
+    cx: 960.0
+    cy: 540.0
+    k1: -0.04620
+
+  tum_xyz:
+    path: ./data/tum/tum_xyz/frames/frame_%06d.png
+    fx: 517.306409
+    fy: 516.469215
+    cx: 318.64304
+    cy: 255.313989
+    k1: 0.0
+  forward_rotation:
+    path: ./data/synthetic/forward_rotation/frames/frame_%06d.png
+    fx: 450.0
+    fy: 450.0
+    cx: 320.0
+    cy: 240.0
+    k1: 0.0
+  orbit:
+    path: ./data/synthetic/orbit/frames/frame_%06d.png
+    fx: 450.0
+    fy: 450.0
+    cx: 320.0
+    cy: 240.0
+    k1: 0.0
+  translation:
+    path: ./data/synthetic/translation/frames/frame_%06d.png
+    fx: 450.0
+    fy: 450.0
+    cx: 320.0
+    cy: 240.0
+    k1: 0.0
+  tum_fr1_desk:
+    path: ./data/tum/tum_fr1_desk/frames/frame_%06d.png
+    fx: 517.306409
+    fy: 516.469215
+    cx: 318.64304
+    cy: 255.313989
+    k1: 0.0
+  tum_fr2_xyz:
+    path: ./data/tum/tum_fr2_xyz/frames/frame_%06d.png
+    fx: 520.90862
+    fy: 521.007327
+    cx: 325.141442
+    cy: 249.701764
+    k1: 0.0
+  tum_fr3_long_office_household:
+    path: ./data/tum/tum_fr3_long_office_household/frames/frame_%06d.png
+    fx: 535.4
+    fy: 539.2
+    cx: 320.1
+    cy: 247.6
+    k1: 0.0
+  euroc_v1_01_easy:
+    path: ./data/euroc/euroc_v1_01_easy/frames/frame_%06d.png
+    fx: 458.654
+    fy: 457.296
+    cx: 367.215
+    cy: 248.375
+    k1: 0.0
