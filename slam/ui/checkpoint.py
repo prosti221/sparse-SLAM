@@ -51,6 +51,7 @@ class Checkpoint:
     intake_state: Optional[dict]
     branch_seed: int = 42
     label: str = ""
+    forked: bool = False
 
 
 # ---------------------------------------------------------------- map

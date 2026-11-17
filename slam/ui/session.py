@@ -157,6 +157,8 @@ class Session:
         self.step_count = 0
         self._done = False
         self.checkpoints = []   # the timeline's checkpoint registry
+        self.branch_log = []    # one record per rewind (the fork)
+        self.current_branch = 1
 
         # --- the recording state (the parity block)
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -341,6 +343,31 @@ class Session:
     # ------------------------------------------------------------------
     # the timeline (M5a): the checkpoint/restore over the live session
     CHECKPOINT_EVERY = 25
+    CHECKPOINT_CAP = 150   # the ring budget (~0.2 MB/cp measured)
+
+    def record_branch(self, cp) -> dict:
+        """The rewind made cp a FORK: register the branch and mark the
+        checkpoints. The fork point keeps its identity under ring
+        eviction (the branch_log preserves the record)."""
+        cp.forked = True
+        record = {"branch": self.current_branch, "forked_to": cp.label,
+                  "forked_frame": cp.frame_index,
+                  "options": {"feature_extractor":
+                              self.options.feature_extractor,
+                              "enable_ba": self.options.enable_ba,
+                              "enable_debug": self.options.enable_debug}}
+        self.current_branch += 1
+        self.branch_log.append(record)
+        return record
+
+    def _append_checkpoint(self, cp) -> None:
+        self.checkpoints.append(cp)
+        if len(self.checkpoints) > self.CHECKPOINT_CAP:
+            # FIFO with the fork anchors preserved wherever they sit.
+            for i, c in enumerate(self.checkpoints):
+                if not c.forked:
+                    del self.checkpoints[i]
+                    break
 
     def capture_checkpoint(self, label="") -> Optional[dict]:
         """The checkpoint at the current step boundary (the step worker
@@ -349,17 +376,21 @@ class Session:
         if self._done:
             return None
         cp = cp_mod.capture(self)
-        cp.label = label or f"step {self.step_count}"
+        cp.label = label or f"frame {self.frame_index}"
+        cp.label += f" (branch {self.current_branch})"
+        self._append_checkpoint(cp)
         info_log(cp_mod.LOG_TAG, f"checkpoint @ frame {cp.frame_index}")
         return cp
 
-    def restore_checkpoint(self, cp) -> None:
+    def restore_checkpoint(self, cp) -> dict:
         """The in-place restore + the source reposition (the rewind's
         engine). File sources re-launch the extraction worker at the
-        offset; sequence/camera captures reposition directly."""
+        offset; sequence/camera captures reposition directly. The
+        rewind registers the fork (the branch lineage)."""
         from slam.ui import checkpoint as cp_mod
         self.close_pipeline()
         cp_mod.restore(self, cp)
+        record = self.record_branch(cp)
         if self.extract_pipeline is not None and \
                 self.spec.kind == FILE_KIND:
             self.extract_pipeline = None
@@ -370,6 +401,7 @@ class Session:
                 self.options.enable_multiscale_features,
                 worker_threads=intake_mod.INTAKE_EXTRACT_WORKER_THREADS,
                 start_index=cp.frame_index + 1)
+        return record
 
     # ------------------------------------------------------------------
     # the recording parity
@@ -444,6 +476,8 @@ class Session:
         self.session_data["camera_params"] = {
             "K": self.K.tolist(), "width": self.CAP_W,
             "height": self.CAP_H}
+        self.session_data["branch_log"] = list(self.branch_log)
+        self.session_data["branch_count"] = self.current_branch
         filename = f"slam_session_{self.timestamp}"
         json_filename = os.path.join(self.output_path,
                                      f"{filename}.json")

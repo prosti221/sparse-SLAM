@@ -176,7 +176,8 @@ class TimelineStrip(QFrame):
     While PLAYING the slider tracks the newest checkpoint; while
     PAUSED selecting a checkpoint SCRUBS (the viewport renders that
     checkpoint's snapshot geometry, the pipeline untouched) and
-    REWIND restores the pipeline to it (the branch point)."""
+    REWIND restores the pipeline to it (the branch point). The fork
+    markers (a rewind's target) paint as orange ticks on the groove."""
 
     playRequested = Signal()
     pauseRequested = Signal()
@@ -189,6 +190,7 @@ class TimelineStrip(QFrame):
         super().__init__()
         self.setFixedHeight(64)
         self.setStyleSheet("background: #15181e;")
+        self.fork_positions = set()
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 6, 10, 6)
         self.btn_rewind = QPushButton("rewind")
@@ -201,16 +203,20 @@ class TimelineStrip(QFrame):
         self.btn_pause.clicked.connect(self.pauseRequested.emit)
         self.btn_step.clicked.connect(self.stepRequested.emit)
         self.btn_reset.clicked.connect(self.resetRequested.emit)
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = CheckpointSlider()
         self.slider.setEnabled(False)
         self.slider.sliderReleased.connect(self._on_scrub)
-        self.checkpoint_ticks: list = []
         for b in (self.btn_rewind, self.btn_play, self.btn_pause,
                   self.btn_step, self.btn_reset):
             lay.addWidget(b)
         lay.addWidget(self.slider, stretch=1)
         self.frame_label = QLabel("frame —")
         lay.addWidget(self.frame_label)
+
+    def set_forks(self, positions):
+        self.fork_positions = set(positions)
+        self.slider.fork_positions = self.fork_positions
+        self.slider.update()
 
     def _emit_rewind(self):
         self.rewindRequested.emit(self.slider.value())
@@ -226,8 +232,31 @@ class TimelineStrip(QFrame):
         self.slider.setValue(current_index)
         self.slider.blockSignals(False)
         self.frame_label.setText(
-            f"cp {current_index + 1}/{n_checkpoints}" if
-            n_checkpoints else "frame —")
+            f"cp {current_index + 1}/{n_checkpoints}"
+            + (f" · {len(self.fork_positions)} fork(s)"
+               if self.fork_positions else ""))
+
+
+class CheckpointSlider(QSlider):
+    """The checkpoint slider with the fork markers painted on the
+    groove."""
+
+    fork_positions = set()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.fork_positions or self.maximum() <= 0:
+            return
+        from PySide6.QtGui import QPainter, QColor
+        painter = QPainter(self)
+        painter.setPen(QColor(255, 160, 60))
+        groove_x, groove_w = 4, self.width() - 8
+        for pos in sorted(self.fork_positions):
+            frac = pos / max(self.maximum(), 1)
+            x = int(groove_x + frac * groove_w)
+            painter.drawLine(x, 4, x, 14)
+        painter.end()
+        del groove_x, groove_w
 
 
 class EditorWindow(QMainWindow):
@@ -464,8 +493,10 @@ class EditorWindow(QMainWindow):
         cp = self.session.checkpoints[index]
         self.playing = False
         self.viewport.scrub_render(cp)
+        fork = (" · forked" if (self.session.checkpoints[index].forked)
+                else "")
         self.status_label.setText(
-            f"scrub: {cp.label} — the pipeline untouched "
+            f"scrub: {cp.label}{fork} — the pipeline untouched "
             f"(rewind to make this state live)")
 
     def _on_rewind(self, index):
@@ -473,16 +504,14 @@ class EditorWindow(QMainWindow):
             return
         index = max(0, min(index, len(self.session.checkpoints) - 1))
         cp = self.session.checkpoints[index]
-        opts = self._options()
-        self.session.restore_checkpoint(cp)
-        self.session.options = opts
-        self.session.tracker.enable_ba = opts.enable_ba
-        self.viewport.unscrub()
-        self.playing = True
+        record = self.session.restore_checkpoint(cp)
+        self._refresh_forks()
         self.status_label.setText(
-            f"rewound to {cp.label} — the branch seed "
-            f"{cp.branch_seed}; the pipeline resumes from the "
-            f"checkpoint's state")
+            f"rewound to {cp.label} — branch B{record['branch']} "
+            f"forked (seed {cp.branch_seed}; "
+            f"{len(self.session.branch_log)} branch(es) this session); "
+            f"the pipeline resumes from the checkpoint's state "
+            f"with the current options/pins")
 
     def _on_reset(self):
         if self.session is None:
@@ -499,6 +528,10 @@ class EditorWindow(QMainWindow):
         self.session = None
         self.viewport.detach()
 
+    def _refresh_forks(self):
+        cps = self.session.checkpoints if self.session else []
+        self.strip.set_forks([i for i, c in enumerate(cps) if c.forked])
+
     def _on_step_done(self, result):
         if result is None:
             self.playing = False
@@ -508,6 +541,7 @@ class EditorWindow(QMainWindow):
             self.strip.sync(len(self.session.checkpoints),
                             max(len(self.session.checkpoints) - 1, 0))
             return
+        self._refresh_forks()
         self.strip.sync(len(self.session.checkpoints),
                         max(len(self.session.checkpoints) - 1, 0))
         self.viewport.update_scene(self.session)
@@ -664,6 +698,15 @@ def main():
 
     win._on_pause()
     win.session.save()
+    forks = [i for i, c in enumerate(win.session.checkpoints)
+             if c.forked]
+    print(f"[smoke] branch(es): {len(win.session.branch_log)}, "
+          f"forked cps: {forks}, "
+          f"current branch: B{win.session.current_branch}",
+          flush=True)
+    assert len(win.session.branch_log) >= 1, \
+        "the rewind did not register the fork"
+    assert len(forks) >= 1, "no forked checkpoint in the registry"
     print("[smoke] PASS", flush=True)
     win.close()
     spin(200)
