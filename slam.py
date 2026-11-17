@@ -1,3 +1,5 @@
+import sys
+
 import cv2 as cv
 import numpy as np
 
@@ -15,8 +17,9 @@ from slam.viz.renderer import Renderer
 
 LOG_TAG = "Slam"
 
-if __name__ == "__main__":
-    config = ConfigParser("slam/config/config.yaml")
+
+def run_legacy(config):
+    """The pre-editor run loop, verbatim (slam.py's former body)."""
     info_log(LOG_TAG, f"Starting SLAM with parameters: {config}")
 
     FEATURE_EXTRACTOR = config.get_global_config_property("feature_extractor")
@@ -232,3 +235,13 @@ if __name__ == "__main__":
         extract_pipeline.close()
     renderer.save_session_data()
     renderer.stop()
+
+
+if __name__ == "__main__":
+    if "--legacy" in sys.argv:
+        from slam.config.config_parser import ConfigParser
+        config = ConfigParser("slam/config/config.yaml")
+        run_legacy(config)
+    else:
+        from slam.ui.editor import run_editor
+        run_editor()
