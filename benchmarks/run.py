@@ -45,7 +45,8 @@ THRESHOLD_RULES = {
 
 def evaluate_sequence(name: str, seed: int,
                       feature_extractor: str = "ORB",
-                      rotmodel: bool = False) -> dict:
+                      rotmodel: bool = False,
+                      frames_cap: int = None) -> dict:
     if name in SEQUENCES:
         seq_dir = generate_sequence(name)
     elif name in TUM_SEQUENCES:
@@ -65,7 +66,9 @@ def evaluate_sequence(name: str, seed: int,
         scene_points, planes = load_scene(seq_dir)
 
     result = run_slam(seq_dir, seed=seed, extractor=feature_extractor,
-                      rotmodel=rotmodel)
+                      rotmodel=rotmodel, frames_cap=frames_cap)
+    if frames_cap is not None:
+        gt_poses = gt_poses[:frames_cap]
     metrics_dict = metrics.evaluate(result, gt_poses, scene_points, planes)
     # Phase 2j-4: the final intrinsics estimate rides along (the
     # recovery experiments' readout: initial vs recovered f/k1).
@@ -260,6 +263,10 @@ def main() -> int:
                         metavar="NAME=VALUE",
                         help="override a slam.utils.constants value for this run "
                              "(repeatable), e.g. --override KEYFRAME_MINIMUM_ROTATION_DEG=1.5")
+    parser.add_argument("--frames", type=int, default=None, metavar="N",
+                        help="screening: run only the first N frames as a "
+                             "prefix leg (capped GT aligned; default runs "
+                             "the sequence unchanged)")
     args = parser.parse_args()
 
     apply_overrides(args.override)
@@ -274,7 +281,8 @@ def main() -> int:
         t0 = time.perf_counter()
         results[name] = evaluate_sequence(name, args.seed,
                                           args.feature_extractor,
-                                          rotmodel=args.rotmodel)
+                                          rotmodel=args.rotmodel,
+                                          frames_cap=args.frames)
         print(f"[bench] '{name}' done in {time.perf_counter() - t0:.1f}s", flush=True)
 
     print_table(results)

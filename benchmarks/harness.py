@@ -119,8 +119,16 @@ def run_slam(dataset_dir: Path,
              multiscale: bool = False,
              enable_ba: bool = True,
              debug: bool = False,
-             rotmodel: bool = False) -> RunResult:
-    """Run the SLAM pipeline over a sequence headlessly and deterministically."""
+             rotmodel: bool = False,
+             frames_cap: int = None) -> RunResult:
+    """Run the SLAM pipeline over a sequence headlessly and deterministically.
+
+    frames_cap: screening-only prefix leg (the first N frames, capped
+    GT aligned by evaluate_sequence). Default None runs the sequence
+    unchanged. The frame loop consumes the identical randomness and
+    map dynamics as the full run, frame for frame, so a prefix run is
+    the full run's prefix.
+    """
     slam_logger.DEBUG = debug
 
     dataset_dir = Path(dataset_dir)
@@ -128,6 +136,8 @@ def run_slam(dataset_dir: Path,
     frame_files = sorted((dataset_dir / "frames").glob("*.png"))
     if not frame_files:
         raise FileNotFoundError(f"No frames found in {dataset_dir / 'frames'}")
+    if frames_cap is not None:
+        frame_files = frame_files[:frames_cap]
 
     # The one real randomness source in the pipeline: OpenCV's RANSAC.
     cv.setRNGSeed(seed)
