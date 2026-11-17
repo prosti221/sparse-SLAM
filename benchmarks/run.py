@@ -197,6 +197,7 @@ def apply_overrides(pairs) -> None:
     """
     import slam.utils.constants as const
     import slam.features.matcher as matcher_mod
+    import slam.features.aliked_backend as aliked_backend
     import slam.core.tracker as tracker_mod
     import slam.core.intake as intake_mod
     import slam.loop_closure as loop_closure_mod
@@ -212,7 +213,7 @@ def apply_overrides(pairs) -> None:
     # defined in it - its star-imported constant copies are stale,
     # but the validator reads constants through the module alias.
     flag_modules = (const, utils_mod, matcher_mod, tracker_mod,
-                    intake_mod, loop_closure_mod, ba_mod)
+                    intake_mod, loop_closure_mod, ba_mod, aliked_backend)
 
     for pair in pairs:
         name, sep, value = pair.partition("=")

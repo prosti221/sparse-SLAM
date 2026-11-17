@@ -35,6 +35,7 @@ the pair is self-consistent even though the descriptors were
 computed on the resized image.
 """
 import os
+import sys
 from typing import List, Optional, Tuple
 
 import cv2 as cv
@@ -44,6 +45,18 @@ from slam.utils import constants as const
 
 _install_hint = ("the learned feature stack is the OPTIONAL 'learned' extra: "
                  "uv sync --extra learned (torch, torchvision, lightglue)")
+
+# The MPS-only compile gate (read at call time; probe-pinnable via
+# benchmarks.run --override). torch.compile's inductor-MPS backend
+# fuses the frontend's elementwise/copy staging soup - measured M5 Pro
+# MPS fp32: dense map 107 -> 18 ms/frame, LightGlue pair 85 -> 57 ms
+# (N=4096). Device-conditional AND flag-gated: inductor's fused
+# arithmetic reassociates floats (~1.5e-6 on the dense features), so
+# CUDA/CPU keep the eager upstream path byte-identical. desc_head
+# stays eager: its fused Metal kernel needs >31 constant buffers (the
+# Metal argument limit) and fails to build.
+ALIKED_MPS_COMPILE_ENABLED = 1
+LIGHTGLUE_MPS_COMPILE_ENABLED = 1
 
 # Models are heavy and singletons per process - the tracker and the
 # intake gate share one extractor instance through this cache (the
@@ -134,6 +147,11 @@ def _get_models():
         width_confidence=const.LIGHTGLUE_WIDTH_CONFIDENCE,
         filter_threshold=const.LIGHTGLUE_FILTER_THRESHOLD,
     ).eval().to(device).requires_grad_(False)
+    # The compiled wrappers close over THESE model instances: a rebuild
+    # invalidates them (and re-arms any compile-failure fallback).
+    for key in ("compiled_dense", "compiled_matcher",
+                "compiled_dense_dead", "compiled_matcher_dead"):
+        _backend_cache.pop(key, None)
     _backend_cache["models"] = (torch, extractor, matcher, device)
     return _backend_cache["models"]
 
@@ -150,6 +168,60 @@ def _to_tensor(img_bgr: np.ndarray):
     return tensor.unsqueeze(0)
 
 
+def _compiled_or_eager(torch, target, cache_key, dynamic, args):
+    """One torch.compile'd call (lazy build, cached per process,
+    invalidated on a model rebuild). A first-call failure marks the
+    target dead and falls back to eager for the rest of the process -
+    a broken compile must never fail extraction or matching."""
+    dead_key = cache_key + "_dead"
+    if not _backend_cache.get(dead_key):
+        try:
+            if cache_key not in _backend_cache:
+                _backend_cache[cache_key] = torch.compile(
+                    target, dynamic=dynamic)
+            return _backend_cache[cache_key](*args)
+        except Exception as e:
+            _backend_cache[dead_key] = True
+            _backend_cache.pop(cache_key, None)
+            print(f"[aliked_backend] torch.compile failed on "
+                  f"{cache_key}; eager fallback for this process: {e}",
+                  file=sys.stderr, flush=True)
+    return target(*args)
+
+
+def _extract_feats(torch, extractor, device, tensor):
+    """One ALIKED forward pass: eager Extractor.extract, or - when the
+    MPS compile gate (ALIKED_MPS_COMPILE_ENABLED) is active - the same
+    computation with extract_dense_map compiled. The assembly
+    replicates Extractor.extract + ALIKED.forward op-for-op (same
+    preprocess_conf, same dkd/desc_head calls, same keypoint and
+    scale_keypoints arithmetic); ONLY the dense-map call is rerouted.
+    desc_head stays eager: its fused Metal kernel needs >31 constant
+    buffers (the Metal argument limit) and cannot build."""
+    if device.type != "mps" or not ALIKED_MPS_COMPILE_ENABLED:
+        return extractor.extract(tensor)
+    from lightglue.utils import ImagePreprocessor
+    img, scales = ImagePreprocessor(**extractor.preprocess_conf)(tensor)
+    feature_map, score_map = _compiled_or_eager(
+        torch, extractor.extract_dense_map, "compiled_dense",
+        dynamic=False, args=(img,))
+    keypoints, kptscores, _ = extractor.dkd(score_map, image_size=None)
+    descriptors, _ = extractor.desc_head(feature_map, keypoints)
+    _, _, h, w = img.shape
+    wh = torch.tensor([w - 1, h - 1], device=img.device)
+    feats = {
+        "keypoints": wh * (torch.stack(keypoints) + 1) / 2.0
+                     + extractor.coords_offset,
+        "descriptors": torch.stack(descriptors),
+        "keypoint_scores": torch.stack(kptscores),
+    }
+    feats["image_size"] = torch.tensor(
+        tensor.shape[-2:][::-1])[None].to(img).float()
+    feats["keypoints"] = extractor.scale_keypoints(
+        feats["keypoints"], scales)
+    return feats
+
+
 def extract_aliked(img_bgr: np.ndarray
                    ) -> Tuple[List[cv.KeyPoint], Optional[np.ndarray]]:
     """ALIKED detection + description on one BGR frame.
@@ -162,7 +234,8 @@ def extract_aliked(img_bgr: np.ndarray
     """
     torch, extractor, _, device = _get_models()
     with torch.inference_mode():
-        feats = extractor.extract(_to_tensor(img_bgr).to(device))
+        feats = _extract_feats(torch, extractor, device,
+                               _to_tensor(img_bgr).to(device))
     kps = feats["keypoints"][0].cpu().numpy()
     desc = feats["descriptors"][0].cpu().numpy()
     scores = feats.get("keypoint_scores")
@@ -172,15 +245,27 @@ def extract_aliked(img_bgr: np.ndarray
         return [], None
 
     h, w = img_bgr.shape[:2]
+    xs = np.clip(kps[:, 0], 0, w - 1)
+    ys = np.clip(kps[:, 1], 0, h - 1)
+    responses = (scores if scores is not None
+                 else np.ones(len(kps), dtype=np.float32))
     keypoints = []
     for i in range(len(kps)):
-        x = float(np.clip(kps[i][0], 0, w - 1))
-        y = float(np.clip(kps[i][1], 0, h - 1))
-        response = float(scores[i]) if scores is not None else 1.0
-        keypoints.append(cv.KeyPoint(x=x, y=y, size=10,
-                                     angle=-1, response=response,
+        keypoints.append(cv.KeyPoint(x=float(xs[i]), y=float(ys[i]),
+                                     size=10, angle=-1,
+                                     response=float(responses[i]),
                                      octave=0, class_id=-1))
     return keypoints, np.asarray(desc, dtype=np.float32)
+
+
+def _run_matcher(torch, matcher, device, inputs):
+    """The matcher call through the MPS compile gate (the extract
+    side's _extract_feats symmetry): eager unless (mps device AND
+    LIGHTGLUE_MPS_COMPILE_ENABLED)."""
+    if device.type != "mps" or not LIGHTGLUE_MPS_COMPILE_ENABLED:
+        return matcher(inputs)
+    return _compiled_or_eager(torch, matcher, "compiled_matcher",
+                              dynamic=None, args=(inputs,))
 
 
 def match_aliked(frame1, frame2) -> List[cv.DMatch]:
@@ -218,7 +303,7 @@ def match_aliked(frame1, frame2) -> List[cv.DMatch]:
     inputs = {"image0": _image_dict(f1_kp, f1_desc, frame1),
               "image1": _image_dict(f2_kp, f2_desc, frame2)}
     with torch.inference_mode():
-        pred = matcher(inputs)
+        pred = _run_matcher(torch, matcher, device, inputs)
     matches = pred["matches"][0].cpu().numpy()
     scores = pred["scores"][0].cpu().numpy()
     # DMatch's constructor is POSITIONAL-ONLY in the OpenCV Python
