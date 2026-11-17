@@ -10,14 +10,6 @@ from slam.utils.logger import *
 LOG_TAG = 'Utils'
 
 
-def load_video(config):
-    """The load_video contract, delegated to the source resolver (the
-    editor's generalization over video files / frame sequences /
-    cameras)."""
-    from slam.core.source import load_video as _load_video
-    return _load_video(config)
-
-
 def pt_obj_to_array(pts):
     if len(pts) == 0:
         return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.float32)

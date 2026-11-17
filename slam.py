@@ -25,10 +25,29 @@ if __name__ == "__main__":
     ENABLE_MULTISCALE = config.get_global_config_property("enable_multiscale_features")
     ENABLE_BA = config.get_global_config_property("enable_ba")
 
-    # load_video also returns the config's k1 (0.0 when
-    # absent - the literal identity path). The auto branch returns 0.0;
-    # the prior carries GeoCalib's own k1 there.
-    cap, K, k1 = load_video(config)
+    # The source resolver returns (cap, K|None, k1): K is None
+    # only on the `fx: auto` sentinel, where the GeoCalib
+    # branch below estimates (and now writes through to the
+    # intrinsics cache); a cache or config hit serves K directly.
+    # The intrinsics provenance flow (M1b): the source opens through
+    # the resolver; a cache hit serves the stored intrinsics (no
+    # re-estimation on restart); the GeoCalib branch writes through on
+    # estimation; a config-intrinsics miss seeds the cache
+    # (provenance=config).
+    from slam.core.source import open_source, spec_from_config
+    from slam.core import intrinsics_cache
+    spec = spec_from_config(config)
+    resolved = open_source(spec)
+    if resolved is None:
+        raise FileNotFoundError(f"Could not open the source: {spec.location}")
+    cap, K, k1, _source_meta = resolved
+    cached = intrinsics_cache.lookup(spec.location)
+    if cached is not None:
+        K = intrinsics_cache.cached_K(cached)
+        k1 = float(cached.get("k1", 0.0))
+        info_log(LOG_TAG,
+                 f"Intrinsics cache hit ({cached.get('provenance')}): "
+                 f"fx={cached.get('fx')} fy={cached.get('fy')}")
     CAP_W, CAP_H = (
         int(cap.get(cv.CAP_PROP_FRAME_WIDTH)),
         int(cap.get(cv.CAP_PROP_FRAME_HEIGHT)),
@@ -45,8 +64,18 @@ if __name__ == "__main__":
         from slam.calibration import estimate_video_intrinsics
         intrinsics_prior, init_frames = estimate_video_intrinsics(cap)
         K = intrinsics_prior.K
+        k1_prior = float(getattr(intrinsics_prior, "k1", 0.0))
         info_log(LOG_TAG,
                  f"Auto-calibrated intrinsics: {intrinsics_prior}")
+        if intrinsics_cache.lookup(spec.location) is None:
+            intrinsics_cache.store(
+                spec.location, "geocalib", fx=float(K[0, 0]),
+                fy=float(K[1, 1]), cx=float(K[0, 2]),
+                cy=float(K[1, 2]), k1=k1_prior)
+        k1 = 0.0
+    elif intrinsics_cache.lookup(spec.location) is None:
+        intrinsics_cache.store(spec.location, "config",
+                               **_source_meta["intrinsics"])
 
     global_map = Map()
     # The live intrinsics estimate. From the GeoCalib
