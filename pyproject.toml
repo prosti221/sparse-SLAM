@@ -47,6 +47,12 @@ learned = [
     "torchvision>=0.29.2",
     "lightglue @ git+https://github.com/cvg/LightGlue@5a650c444718caffc2669dc0094cde908f42dd73",
 ]
+# The editor UI (M0 spike -> M2): PySide6 hosts the editor (the dark
+# docked side panel, the timeline strip); Open3D renders offscreen
+# into the composited viewport.
+ui = [
+    "PySide6>=6.8",
+]
 
 [dependency-groups]
 dev = [
