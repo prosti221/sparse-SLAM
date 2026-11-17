@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from slam.calibration import IntrinsicsEstimate
 from slam.core import intrinsics_cache
 from slam.core.source import (CAMERA_KIND, SEQUENCE_KIND, SourceSpec)
+from slam.ui.advanced_tab import UiState
 from slam.ui.session import Session, SlamOptions
 from slam.utils import logger as slam_logger_mod
 from slam.utils.logger import DEBUG as slam_debug_flag, info_log
@@ -150,6 +151,8 @@ class EditorWindow(QMainWindow):
         self.resize(1560, 900)
         self.session: Session = None
         self.playing = False
+        self.status_label = QLabel("no session")
+        self.statusBar().addPermanentWidget(self.status_label)
 
         host = QWidget()
         host.setObjectName("CentralHost")
@@ -189,6 +192,10 @@ class EditorWindow(QMainWindow):
         vlay.setContentsMargins(6, 6, 6, 6)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
+
+        # The launch-time pin application (the ui_state's persistence
+        # precedes any session build).
+        UiState.apply_everything(lambda msg: info_log(LOG_TAG, msg))
 
         src = QWidget()
         form = QFormLayout(src)
@@ -268,11 +275,9 @@ class EditorWindow(QMainWindow):
         oform.addRow("", apply_opts)
         self.tabs.addTab(opts, "Options")
 
-        adv = QWidget()
-        aform = QFormLayout(adv)
-        aform.addRow(QLabel("the impactful constants, live-pinned "
-                            "via the override resolver — wired in M4"))
-        self.tabs.addTab(adv, "Advanced")
+        from slam.ui.advanced_tab import AdvancedTab
+        self.advanced = AdvancedTab(self.status_label.setText)
+        self.tabs.addTab(self.advanced, "Advanced")
 
         vlay.addWidget(self.tabs)
         return panel
@@ -571,6 +576,20 @@ def main():
     win._apply_options()
     assert win.session.tracker.enable_ba is True, \
         "the enable_ba flag did not restore"
+
+    # M4: the constants pinning (live through the shared resolver).
+    base_row = win.advanced.rows["RELOCALIZATION_QUALITY_THRESHOLD"][0]
+    base_row.setValue(0.5)
+    from slam.utils.overrides import current_value
+    assert current_value("RELOCALIZATION_QUALITY_THRESHOLD") == 0.5, \
+        "the constant pin did not reach the module"
+    assert Path("data/ui/ui_state.json").exists(), \
+        "the pin was not persisted"
+    print("[smoke] constant pinned live + persisted", flush=True)
+    win.advanced.reset_all()
+    assert abs(current_value("RELOCALIZATION_QUALITY_THRESHOLD")
+               - 0.3) < 1e-9, "the reset did not restore the default"
+    print("[smoke] reset to defaults", flush=True)
 
     win._on_step()
     spin(600)
