@@ -147,6 +147,12 @@ class Session:
         # path's measured contract).
         self.tracker.rotation_model_enabled = self.intake_gate is not None
 
+        # The profiling recorder (observer-only by design — it cannot
+        # perturb the pipeline's numerics, the harness precedent).
+        self.telemetry_recorder = None
+        if self.options.enable_profiling:
+            self.enable_profiling()
+
         self.frame_index = -1
         self.step_count = 0
         self._done = False
@@ -273,6 +279,57 @@ class Session:
         self.step_count = 0
         self._done = False
         info_log(LOG_TAG, "Session reset")
+
+    # ------------------------------------------------------------------
+    # the live-option machinery (M3): the hot toggles
+    def enable_profiling(self) -> None:
+        from slam.utils import telemetry
+        self.telemetry_recorder = telemetry.TelemetryRecorder()
+        telemetry.set_recorder(self.telemetry_recorder)
+
+    def disable_profiling(self) -> None:
+        from slam.utils import telemetry
+        telemetry.set_recorder(None)
+
+    def profile_summary(self) -> Optional[dict]:
+        """The per-call ms of the top pipeline stages since the
+        recorder's attachment."""
+        if self.telemetry_recorder is None:
+            return None
+        snap = self.telemetry_recorder.snapshot()
+        sec = snap.get("stage_seconds", {})
+        calls = snap.get("stage_calls", {})
+        rows = {}
+        for name, secs in sec.items():
+            n = max(calls.get(name, 0), 1)
+            rows[name] = round(1000 * secs / n, 2)
+        top = sorted(rows.items(), key=lambda x: -x[1])[:5]
+        return dict(top)
+
+    def apply_live_options(self, opts: SlamOptions) -> dict:
+        """The hot flips; returns the branch-required option names
+        that still need a session rebuild (the constructor-time
+        options)."""
+        old = self.options
+        self.options = opts
+        slam_logger_mod.DEBUG = bool(opts.enable_debug)
+        self.tracker.enable_ba = bool(opts.enable_ba)
+        if opts.enable_profiling and self.telemetry_recorder is None:
+            self.enable_profiling()
+        elif not opts.enable_profiling and \
+                self.telemetry_recorder is not None:
+            self.disable_profiling()
+        if opts.record_session and not self.recording:
+            self.start_recording()
+        elif not opts.record_session and self.recording:
+            self.stop_recording()
+        branch_required = []
+        if opts.feature_extractor != old.feature_extractor:
+            branch_required.append("feature_extractor")
+        if opts.enable_multiscale_features != \
+                old.enable_multiscale_features:
+            branch_required.append("enable_multiscale_features")
+        return branch_required
 
     # ------------------------------------------------------------------
     # the recording parity

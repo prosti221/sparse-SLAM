@@ -36,7 +36,7 @@ from slam.core import intrinsics_cache
 from slam.core.source import (CAMERA_KIND, SEQUENCE_KIND, SourceSpec)
 from slam.ui.session import Session, SlamOptions
 from slam.utils import logger as slam_logger_mod
-from slam.utils.logger import info_log
+from slam.utils.logger import DEBUG as slam_debug_flag, info_log
 
 LOG_TAG = "Editor"
 
@@ -247,20 +247,21 @@ class EditorWindow(QMainWindow):
         opts = QWidget()
         oform = QFormLayout(opts)
         self.opt_widgets = {}
-        for name, default in (("feature_extractor", "ALIKED"),
-                              ("enable_multiscale_features", False),
-                              ("enable_ba", True),
-                              ("record_session", False),
-                              ("display_capture", True),
-                              ("enable_debug", True),
-                              ("enable_profiling", False)):
+        for name, default, marker in (
+                ("feature_extractor", "ALIKED", "(rebuild)"),
+                ("enable_multiscale_features", False, "(rebuild)"),
+                ("enable_ba", True, "(live)"),
+                ("record_session", False, "(live)"),
+                ("display_capture", True, "(live)"),
+                ("enable_debug", True, "(live)"),
+                ("enable_profiling", False, "(live)")):
             if isinstance(default, str):
                 w = QComboBox()
                 w.addItems(["ALIKED", "ORB"])
             else:
                 w = QCheckBox()
                 w.setChecked(bool(default))
-            oform.addRow(name, w)
+            oform.addRow(f"{name} {marker}", w)
             self.opt_widgets[name] = w
         apply_opts = QPushButton("apply options (new-build marked)")
         apply_opts.clicked.connect(self._apply_options)
@@ -426,9 +427,15 @@ class EditorWindow(QMainWindow):
                     self.capture_label.size(), Qt.KeepAspectRatio,
                     Qt.SmoothTransformation))
         self.frame_label.setText(f"frame {result.frame_index}")
-        self.status_label.setText(
-            f"step {result.step} | kfs {result.keyframes} | points "
-            f"{result.points} | q {result.avg_quality:.2f}")
+        status_txt = (f"step {result.step} | kfs {result.keyframes} | "
+                      f"points {result.points} | "
+                      f"q {result.avg_quality:.2f}")
+        profile = self.session.profile_summary() or {}
+        if profile:
+            top = " ".join(f"{k} {v:.1f}ms" for k, v in
+                           list(profile.items())[:3])
+            status_txt += f" | {top}"
+        self.status_label.setText(status_txt)
         self.timeline.setValue(
             int(10000 * result.frame_index /
                 max(result.frame_index + 1, 1)))
@@ -470,15 +477,22 @@ class EditorWindow(QMainWindow):
     def _apply_options(self):
         if self.session is None:
             return
-        self.session.options = self._options()
-        slam_logger_mod.DEBUG = self.session.options.enable_debug
-        if self.session.options.record_session and \
-                not self.session.recording:
-            self.session.start_recording()
-        elif not self.session.options.record_session and \
-                self.session.recording:
-            self.session.stop_recording()
-        self.status_label.setText("options applied")
+        opts = self._options()
+        branch = self.session.apply_live_options(opts)
+        self.capture_label.setVisible(opts.display_capture)
+        self.capture_label.setFixedHeight(150 if opts.display_capture
+                                          else 0)
+        if branch:
+            self.status_label.setText(
+                f"applied live — rebuild required for "
+                f"{', '.join(branch)} (the next reset/rewind applies "
+                f"them)")
+        elif self.session.telemetry_recorder is not None:
+            prof = self.session.profile_summary()
+            self.status_label.setText(
+                f"applied live — profile {prof}")
+        else:
+            self.status_label.setText("applied live")
 
     # ------------------------------------------------------ teardown
     def closeEvent(self, event):
@@ -524,6 +538,39 @@ def main():
     spin(400)
     assert win.session.step_count == held, "a paused session stepped"
     print(f"[smoke] paused at {held}", flush=True)
+
+    # M3's hot toggles: the debug flag, the capture view, the
+    # profiling recorder.
+    win.opt_widgets["enable_debug"].setChecked(False)
+    win._apply_options()
+    assert slam_logger_mod.DEBUG is False, "the debug hot flip failed"
+    win.opt_widgets["display_capture"].setChecked(False)
+    win._apply_options()
+    assert win.capture_label.isHidden(), "the capture view stayed up"
+    win.opt_widgets["display_capture"].setChecked(True)
+    win._apply_options()
+    assert not win.capture_label.isHidden(), "the capture view hid"
+    print("[smoke] capture view toggled", flush=True)
+    win.opt_widgets["enable_profiling"].setChecked(True)
+    win._apply_options()
+    assert win.session.telemetry_recorder is not None, \
+        "the profiling recorder did not attach"
+    assert win.session.profile_summary() is not None, \
+        "no profile summary after the attach"
+    print(f"[smoke] profiling on: {win.session.profile_summary()}",
+          flush=True)
+    win.opt_widgets["enable_debug"].setChecked(True)
+    win._apply_options()
+    assert slam_logger_mod.DEBUG is True, "the debug flag did not restore"
+
+    win.opt_widgets["enable_ba"].setChecked(False)
+    win._apply_options()
+    assert win.session.tracker.enable_ba is False, \
+        "the enable_ba hot flip failed"
+    win.opt_widgets["enable_ba"].setChecked(True)
+    win._apply_options()
+    assert win.session.tracker.enable_ba is True, \
+        "the enable_ba flag did not restore"
 
     win._on_step()
     spin(600)
