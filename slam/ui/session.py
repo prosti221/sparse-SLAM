@@ -598,7 +598,9 @@ class ProcessSession:
                        "step frame_index is_keyframe keyframes points "
                        "avg_quality eos capture pose")
         img = None
-        if slot is not None:
+        if slot is not None and self.options.display_capture:
+            # The 1080p slot copy only when the PiP displays (a 6 MB
+            # memcpy per step otherwise, for nothing).
             from multiprocessing.shared_memory import SharedMemory
             try:
                 shm = SharedMemory(name=slot)

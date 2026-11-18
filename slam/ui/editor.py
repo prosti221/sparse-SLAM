@@ -1166,7 +1166,7 @@ class EditorWindow(QMainWindow):
         self.strip.sync(len(self.session.checkpoints),
                         max(len(self.session.checkpoints) - 1, 0))
         self.viewport.update_scene_snapshot(self.summary)
-        if self.summary.get("display_capture") and \
+        if self.session.options.display_capture and \
                 result.capture is not None:
             arr = np.ascontiguousarray(result.capture)
             h, w, ch = arr.shape
