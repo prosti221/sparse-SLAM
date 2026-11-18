@@ -1,70 +1,113 @@
-## Monocular VSLAM: Feature-Based Monocular Visual SLAM
-### Overview
-This is a monocular visual SLAM system that builds a sparse 3D map of the environment using feature-based techniques. The system tracks camera motion and reconstructs environmental features using only visual input from a single camera.
-### Key Features
-- Camera tracking through feature matching and pose estimation
-- Sparse 3D reconstruction of environmental features
-- Feature extraction via ORB with multiscale pyramid support
-- Optional learned frontend: ALIKED detection + LightGlue matching (`feature_extractor: "ALIKED"` with the `learned` extra; weights download on first use)
-- Bundle adjustment for map and pose optimization (using g2o)
-- Keyframe-based mapping
-- Visualization using Open3D
+# Sparse SLAM
 
-## Setup and run
-This project uses [uv](https://docs.astral.sh/uv/) for dependency management. Install uv, then run:
+A monocular visual SLAM system: a feature-based pipeline that tracks a
+single camera and builds a sparse 3D map online, with a desktop editor
+for inspecting and steering the run.
 
-```bash
-uv run python slam.py
-```
+## Overview
 
-On the first run, uv automatically downloads the pinned Python version (see `.python-version`), creates a virtual environment, and installs all dependencies.
+The pipeline covers the full monocular stack: ORB (multiscale) or the
+optional ALIKED + LightGlue frontend, feature matching and pose
+estimation, keyframe-based sparse mapping, bundle adjustment on a
+bundled C++ (g2o) core exposed as the `slam_native` extension, loop
+closure with drift gating, relocalization, and map culling.
 
-**macOS note:** the Open3D wheel requires `libusb` at runtime. If `import open3d` fails with a dylib error, install it with Homebrew:
+The editor (PySide6 hosting an offscreen Open3D viewport) is the
+application:
+
+- live 3D map, keyframe frustums, and a capture inset
+- a transport pill with play/pause, reset, checkpoint scrubbing, and
+  rewind — a rewind forks a branch, and the SLAM step runs in a spawned
+  worker process, so the UI stays responsive
+- Source / Options / Advanced tabs: source selection, live pipeline
+  options, and live constant pins; per-source intrinsics are cached and
+  can be applied live through a small form
+- session recording (a side-by-side capture + render video and the map
+  point cloud)
+
+Benchmarking accompanies the pipeline: a frozen synthetic + TUM
+battery, a video health census, a ground-truth ladder with
+per-mechanism attribution, and a remote runner for the gate machine.
+
+## Setup
+
+Requires [uv](https://docs.astral.sh/uv/) (Python 3.11 is pinned in
+`.python-version`). On macOS, Open3D needs libusb at runtime:
 
 ```bash
 brew install libusb
 ```
 
-## Custom keybindings for the renderer
-- Press "q" to quit the application and store the session data
-- Press "t" to toggle for automatic camera tracking
-- Press "space" to pause/un-pause the SLAM process
+Install the environment — this also builds the native extension:
 
-## Configuration
-Modify slam/config/config.yaml to customize:
-```yaml
-global:
-  feature_extractor: "ORB"
-  enable_multiscale_features: true
-  record_session: true
-
-videos:
-  tum_xyz:  # Example dataset configuration
-    path: "data/rgbd_dataset_freiburg1_xyz/"
-    fx: 517.3
-    fy: 516.5
-    cx: 318.6
-    cy: 255.3
+```bash
+uv sync --extra ui
 ```
 
-## Example: TUM RGBD Dataset
-1. Download the [TUM RGBD dataset](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download)
-2. Configure the dataset path in ```config.yaml```
-3. Run ```uv run python slam.py```
+Optional extras: `--extra learned` (ALIKED + LightGlue; weights
+download on first use) and `--extra calib` (GeoCalib intrinsics
+priors). The benchmark tiers exercise the optional stacks, so the gate
+machine provisions with `--all-extras`. After changing C++ under
+`native/`, rebuild the extension:
 
-## Dependencies
-- OpenCV
-- Open3D
-- NumPy
-- SciPy
-- g2o (for bundle adjustment)
-- Colorama (for logging)
+```bash
+uv sync --reinstall-package sparse-slam
+```
 
-Optional extras: `calib` (GeoCalib intrinsics priors), `learned` (PyTorch + torchvision + LightGlue — the ALIKED feature frontend; weights download on first use into the torch hub cache).
+## Run the editor
 
-## Future TODOs
-- Improve keyframe selection logic. Its mostly governed by an interval currently since I haven't been able to get the more sophisticated selection process to work robustly.
-- Figure out how to run the renderer in a separate thread. Due to GLFW limitations, the open3d renderer needs to run on the main thread. A way around this could be to run the SLAM pipeline in a separate worker thread instead, and let the renderer use the main thread.
-- Add tooling for profiling
-- Make it run faster...
-- Add tooling for ground truth comparison for benchmarking
+```bash
+uv run --extra ui python slam.py
+```
+
+In the Source tab choose a video file, a frame-sequence directory, or a
+camera, then press **load session**. The transport pill at the bottom
+plays/pauses, resets, scrubs checkpoints view-only, and rewinds. In the
+viewport, W/A/S/D fly with Q/E down/up (Shift boosts, -/= changes
+speed), the wheel dollies, and dragging orbits. The Options tab applies
+live pipeline flips; the Advanced tab pins constants live (persisted in
+`data/ui/ui_state.json`).
+
+## Benchmarks
+
+The frozen battery is the adoption gate (synthetic + `tum_xyz`):
+
+```bash
+uv run python -m benchmarks.run
+```
+
+A ground-truth ladder with per-mechanism attribution (the sequences
+download on demand into `data/`):
+
+```bash
+uv run python -m benchmarks.run --sequences tum_fr2_xyz tum_fr1_desk \
+    tum_fr3_long_office_household euroc_v1_01_easy --no-baseline
+uv run python -m benchmarks.attribution --all
+```
+
+The 14-video health census (`videos/` holds the corpus):
+
+```bash
+uv run python -m benchmarks.video_census
+```
+
+Dataset inspection and preparation:
+
+```bash
+uv run python -m benchmarks.datasets info
+uv run python -m benchmarks.datasets prepare --all
+```
+
+Offload a run to the remote desktop (sync, run, fetch the artifacts):
+
+```bash
+uv run python -m benchmarks.remote sync
+uv run python -m benchmarks.remote run -- python -m benchmarks.run
+uv run python -m benchmarks.remote fetch
+```
+
+Run the test suite:
+
+```bash
+uv run python -m pytest benchmarks -q
+```
