@@ -91,12 +91,12 @@ class AdvancedTab(QWidget):
             vlay.addWidget(header)
             form = QFormLayout()
             form.setContentsMargins(2, 2, 2, 2)
-            form.setSpacing(4)
+            form.setSpacing(2)
             form.setLabelAlignment(Qt.AlignLeft)
             form.setFieldGrowthPolicy(
                 QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy
-                                  .DontWrapRows)
+            # The label above the field: the consistent left edge.
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
             for name, kind in rows:
                 w = self._make_row(name, kind)
                 if w is None:  # unresolvable name: skipped with a note

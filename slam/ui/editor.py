@@ -861,8 +861,9 @@ class EditorWindow(QMainWindow):
         form.setLabelAlignment(Qt.AlignLeft)
         form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy
-                              .DontWrapRows)
+        # The label ABOVE the field: no label-column indent - the
+        # widest label otherwise pads every row's field start.
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         return form
 
     def _build_panel(self):
