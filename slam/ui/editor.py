@@ -136,6 +136,8 @@ class Viewport(QLabel):
         self.last_render_bgr = None
         self.scrubbing = False
         self._cloud = None   # the geometry currently mounted
+        self._frustums = {}  # keyframe id -> (scene name, quality)
+        self._cam_state = None   # (K, W, H) for the frustum math
         self._up = np.array([0.0, 1.0, 0.0])
         self._eye = None
         self._lookat = None
@@ -155,6 +157,12 @@ class Viewport(QLabel):
         self.mat = o3d.visualization.rendering.MaterialRecord()
         self.mat.shader = "defaultUnlit"
         self.mat.point_size = 2.0
+        # The keyframe frustums render as 2px unlit lines, white base
+        # so the per-line quality colors show.
+        self.mat_line = o3d.visualization.rendering.MaterialRecord()
+        self.mat_line.shader = "unlitLine"
+        self.mat_line.line_width = 2.0
+        self.mat_line.base_color = [1.0, 1.0, 1.0, 1.0]
         self.renderer.scene.set_background(
             [0.0, 0.0, 0.0, 1.0])
 
@@ -168,6 +176,7 @@ class Viewport(QLabel):
         self._lookat = None
         self._fly_diag = self.FLY_DEFAULT_SCENE_DIAGONAL
         self._fly_last_tick = None
+        self._frustums = {}
 
     @staticmethod
     def _cloud_from(points):
@@ -189,6 +198,64 @@ class Viewport(QLabel):
         pcd.colors = o3d.utility.Vector3dVector(cols / 255.0)
         return pcd
 
+    @staticmethod
+    def _frustum_lines(K, W, H, pose, quality):
+        """The legacy camera wireframe (viz/renderer.py's
+        _draw_camera_object): a unit-depth pyramid sized by the
+        intrinsics, at the pose, colored by tracking quality
+        (red .. green on the HSV scale)."""
+        fx = max(float(K[0, 0]), 1e-6)
+        w, h = W / fx, H / fx
+        cx, cy = float(K[0, 2]) / fx, float(K[1, 2]) / fx
+        pts = np.array([[0.0, 0.0, 0.0],
+                        [cx - w / 2.0, cy - h / 2.0, 1.0],
+                        [-w / 2.0, -h / 2.0, 1.0],
+                        [w / 2.0, -h / 2.0, 1.0],
+                        [w / 2.0, h / 2.0, 1.0],
+                        [-w / 2.0, h / 2.0, 1.0],
+                        [-w / 2.0, -h / 2.0, 1.0]])
+        lines = np.array([[0, 1], [2, 3], [3, 4], [4, 5], [5, 6],
+                          [0, 2], [0, 3], [0, 4], [0, 5], [2, 4],
+                          [3, 5]], dtype=np.int32)
+        R, tt = pose[:3, :3], pose[:3, 3]
+        pts = (R @ pts.T).T + tt
+        ls = o3d.geometry.LineSet()
+        ls.points = o3d.utility.Vector3dVector(pts)
+        ls.lines = o3d.utility.Vector2iVector(lines)
+        hue = int(60.0 * float(np.clip(quality, 0.0, 1.0)))
+        rgb = cv.cvtColor(
+            np.uint8([[[hue, 230, 230]]]),
+            cv.COLOR_HSV2RGB)[0][0]
+        ls.colors = o3d.utility.Vector3dVector(
+            np.tile(rgb.astype(float) / 255.0, (len(lines), 1)))
+        return ls
+
+    def _mount_frustum(self, frame_id, K, W, H, pose, quality):
+        name = f"kf_{frame_id}"
+        self.renderer.scene.remove_geometry(name)
+        self.renderer.scene.add_geometry(
+            name, Viewport._frustum_lines(K, W, H, pose, quality),
+            self.mat_line)
+        self._frustums[frame_id] = quality
+
+    def update_frustums(self, session):
+        """The keyframe pose wireframes (the legacy update_poses):
+        rebuild on a quality change, drop the culled."""
+        if self.renderer is None or self.mat_line is None:
+            return
+        self._cam_state = (session.K, session.CAP_W, session.CAP_H)
+        seen = set()
+        for kf in session.global_map.keyframes:
+            q = float(kf.tracking_quality)
+            if self._frustums.get(kf.frame_id) != q:
+                self._mount_frustum(kf.frame_id, session.K,
+                                    session.CAP_W, session.CAP_H,
+                                    kf.pose, q)
+            seen.add(kf.frame_id)
+        for fid in [f for f in self._frustums if f not in seen]:
+            self.renderer.scene.remove_geometry(f"kf_{fid}")
+            del self._frustums[fid]
+
     def update_scene(self, session: Session):
         """On the step boundary (same thread, between ticks)."""
         if self.renderer is None:
@@ -208,6 +275,7 @@ class Viewport(QLabel):
                 if getattr(session.tracker, "cur_frame", None) else None)
         if pose is not None:
             self.place_view_from_pose(pose)
+        self.update_frustums(session)
 
     def scrub_render(self, checkpoint):
         """The VIEW-only render of a checkpoint's snapshot geometry
@@ -228,6 +296,17 @@ class Viewport(QLabel):
         self.renderer.scene.remove_geometry("cloud")
         self.renderer.scene.add_geometry("cloud", pcd, self.mat)
         self._cloud = pcd
+        # The scrub's own frustums (the checkpoint's snapshot), until
+        # unscrub returns to the live set.
+        if self._cam_state is not None:
+            K, W, H = self._cam_state
+            for f in list(self._frustums):
+                self.renderer.scene.remove_geometry(f"kf_{f}")
+            self._frustums = {}
+            for ks in checkpoint.map_state["keyframes"]:
+                self._mount_frustum(ks["frame_id"], K, W, H,
+                                    ks["pose"],
+                                    float(ks["tracking_quality"]))
         self.paint()
 
     def unscrub(self):
@@ -1142,6 +1221,12 @@ def main():
         "the manual apply did not write the cache"
     print("[smoke] point radius live (granular field), manual "
           "intrinsics auto-cached", flush=True)
+    # The keyframe frustums (the legacy pose visualization).
+    assert len(win.viewport._frustums) >= 1, \
+        "no keyframe frustums were drawn"
+    print(f"[smoke] frustums: "
+          f"{len(win.viewport._frustums)} keyframe wireframes",
+          flush=True)
     # The sidebar collapse toggle.
     win._toggle_sidebar()
     spin(100)
