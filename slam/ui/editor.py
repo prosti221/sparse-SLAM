@@ -170,13 +170,22 @@ class Viewport(QLabel):
 
     @staticmethod
     def _cloud_from(points):
+        """The legacy pt_obj_to_array contract: each point's color is
+        the RGB sampled from the camera at its keypoint (p.color,
+        uint8), normalized to [0, 1]; colorless points fall back to
+        neutral gray."""
         pcd = o3d.geometry.PointCloud()
+        fallback = np.full(3, 200, dtype=np.uint8)
         if points:
-            pcd.points = o3d.utility.Vector3dVector(np.array(
-                [p._pt_3d for p in points]))
+            pts = np.array([p._pt_3d for p in points], dtype=float)
+            cols = np.array([
+                (p.color if p.color is not None else fallback)
+                for p in points], dtype=float)
         else:
-            pcd.points = o3d.utility.Vector3dVector(np.zeros((1, 3)))
-        pcd.paint_uniform_color([0.55, 0.75, 1.0])
+            pts = np.zeros((1, 3))
+            cols = np.full((1, 3), float(fallback[0]))
+        pcd.points = o3d.utility.Vector3dVector(pts)
+        pcd.colors = o3d.utility.Vector3dVector(cols / 255.0)
         return pcd
 
     def update_scene(self, session: Session):
@@ -200,15 +209,20 @@ class Viewport(QLabel):
 
     def scrub_render(self, checkpoint):
         """The VIEW-only render of a checkpoint's snapshot geometry
-        (the pipeline is not touched)."""
+        (the pipeline is not touched), with the snapshot's colors."""
         if self.renderer is None:
             self.attach()
         self.scrubbing = True
-        pts = [ps["pt_3d"] for ps in checkpoint.map_state["points"]]
+        states = checkpoint.map_state["points"]
+        fallback = np.full(3, 200, dtype=np.uint8)
+        pts = [ps["pt_3d"] for ps in states]
+        cols = [(ps["color"] if ps["color"] is not None else fallback)
+                for ps in states] or [fallback]
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(
-            np.array(pts) if pts else np.zeros((1, 3)))
-        pcd.paint_uniform_color([0.8, 0.65, 0.4])
+            np.array(pts, dtype=float) if pts else np.zeros((1, 3)))
+        pcd.colors = o3d.utility.Vector3dVector(
+            np.array(cols, dtype=float) / 255.0)
         self.renderer.scene.remove_geometry("cloud")
         self.renderer.scene.add_geometry("cloud", pcd, self.mat)
         self.paint()
