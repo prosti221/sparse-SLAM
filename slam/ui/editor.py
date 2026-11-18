@@ -512,7 +512,9 @@ class Viewport(QLabel):
     def orbit(self, dx, dy):
         """Turntable drag: yaw around the world up, pitch around the
         camera's right, the polar angle clamped short of the poles.
-        The scene follows the cursor."""
+        The scene follows the cursor: dragging left/right moves the
+        camera right/left around the lookat (and dragging down moves
+        it up), so the geometry tracks the pointer."""
         if self._eye is None:
             return
         offset = self._eye - self._lookat
@@ -522,9 +524,9 @@ class Viewport(QLabel):
         offset = offset / n
         pol = np.degrees(np.arccos(np.clip(
             float(offset @ self._up), -1.0, 1.0)))
-        target_pol = np.clip(pol + dy * self.ORBIT_SENSITIVITY,
+        target_pol = np.clip(pol - dy * self.ORBIT_SENSITIVITY,
                              6.0, 174.0)
-        yaw = np.radians(dx * self.ORBIT_SENSITIVITY)
+        yaw = np.radians(-dx * self.ORBIT_SENSITIVITY)
         _, right, _ = self._camera_axes()
         offset = self._rotate(offset, self._up, yaw)
         offset = self._rotate(offset, right,
@@ -1356,6 +1358,25 @@ def main():
     spin(6000)
     n1 = win.session.step_count
     assert n1 >= 1, f"no steps ran (got {n1})"
+    # The drag direction: the scene follows the cursor — a leftward
+    # drag moves the camera along +right, a downward one along +up.
+    # Restore the camera afterwards so the capture keeps the pose.
+    vp = win.viewport
+    assert vp._eye is not None, "the camera was never placed"
+    before = vp._eye.copy()
+    _, right, _ = vp._camera_axes()
+    vp.orbit(-20.0, 0.0)
+    assert float((vp._eye - before) @ right) > 0.0, \
+        "the orbit yaw is inverted (the scene moves against the drag)"
+    vp._eye = before.copy()
+    vp._commit_camera()
+    before = vp._eye.copy()
+    vp.orbit(0.0, 20.0)
+    assert float((vp._eye - before) @ vp._up) > 0.0, \
+        "the orbit pitch is inverted (the scene moves against the drag)"
+    vp._eye = before.copy()
+    vp._commit_camera()
+    print("[smoke] orbit follows the drag (yaw + pitch)", flush=True)
     # The first checkpoint lands at step 25 (CHECKPOINT_EVERY).
     deadline = time.time() + 25
     while len(win.session.checkpoints) < 1 and time.time() < deadline:
