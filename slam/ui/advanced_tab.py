@@ -82,6 +82,12 @@ class AdvancedTab(QWidget):
             header = QLabel(group)
             header.setStyleSheet("color: #6fa8dc; font-weight: bold;")
             vlay.addWidget(header)
+            note = QLabel("live on edit; knobs that a constructed "
+                          "pipeline re-reads (the extractor's config) "
+                          "apply at the next reset/rewind")
+            note.setStyleSheet("color: #6e6e74; font-size: 11px;"
+                               "font-weight: normal;")
+            vlay.addWidget(note)
             form = QFormLayout()
             form.setLabelAlignment(Qt.AlignRight)
             for name, kind in rows:

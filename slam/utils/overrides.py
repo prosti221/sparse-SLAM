@@ -15,8 +15,13 @@ copy would never reach the machinery that reads the origin's own
 global. Origins resolve before their star-importers: constants, then
 utils, then matcher, then tracker. utils's OWN flags are defined in
 it - its star-imported constant copies are stale, but the validator
-reads constants through the module alias.
+reads constants through the module alias. The copy-sync covers the
+rest of the call-time readers (the harness's pre-run applies were
+covered by import order: the overrides set the origin before the
+machinery modules were first imported).
 """
+import sys
+
 import slam.utils.constants as const
 import slam.features.matcher as matcher_mod
 import slam.features.aliked_backend as aliked_backend
@@ -42,7 +47,12 @@ def current_value(name):
 
 def apply_override(name, value):
     """setattr on the origin module with the trap-aware type
-    conversion; returns (module, new_value) or None."""
+    conversion, PLUS the import-copy sync: the star-importing
+    machinery modules (tracker/matcher/map/ba/utils hold
+    `from slam.utils.constants import *` copies bound at import
+    time) read their OWN globals at call time - a copy whose current
+    value equals the pre-override one follows the setattr. returns
+    (module, new_value) or None."""
     holder = resolve_module(name)
     if holder is None:
         raise KeyError(
@@ -56,7 +66,27 @@ def apply_override(name, value):
             f"cannot parse {value!r} as {type(current).__name__} "
             f"for {name}")
     setattr(holder, name, parsed)
+    _sync_copy_holders(name, current, parsed, holder)
     return holder, parsed
+
+
+def _sync_copy_holders(name, was, new, origin):
+    """The editor's live-pin contract: every loaded slam module whose
+    global `name` still holds the OLD value gets the new one. Values
+    not equal to `was` are left alone (they are either the origin
+    itself or an unrelated binding)."""
+    for mod_name, mod in list(sys.modules.items()):
+        if not mod_name.startswith("slam") or mod is origin:
+            continue
+        try:
+            cur = getattr(mod, name)
+        except AttributeError:
+            continue
+        if type(cur) is type(was) and cur == was and cur != new:
+            try:
+                setattr(mod, name, new)
+            except (AttributeError, TypeError):
+                continue
 
 
 def apply_overrides(pairs) -> None:
