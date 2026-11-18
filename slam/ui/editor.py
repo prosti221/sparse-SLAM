@@ -29,13 +29,14 @@ import cv2 as cv
 import numpy as np
 
 import open3d as o3d
-from PySide6.QtCore import QEventLoop, Qt, QTimer, Signal
+from PySide6.QtCore import (QEvent, QEventLoop, QObject,
+                             Qt, QTimer, Signal)
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QSlider, QSpinBox, QTabWidget,
-    QVBoxLayout, QWidget)
+    QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QPushButton, QSlider, QSpinBox,
+    QTabWidget, QVBoxLayout, QWidget)
 
 from slam.calibration import IntrinsicsEstimate
 from slam.core import intrinsics_cache
@@ -46,6 +47,39 @@ from slam.utils import logger as slam_logger_mod
 from slam.utils.logger import info_log
 
 LOG_TAG = "Editor"
+
+
+class _FlyKeyFilter(QObject):
+    """The editor's fly/hotkey routing: KeyPress/KeyRelease handled
+    BEFORE the focused widget sees them, so the legacy viewer's keys
+    are global (no click into the scene needed first). Text widgets
+    keep their keys (typing wins); foreign windows (dialogs) and
+    open popups are untouched."""
+
+    TEXT_WIDGETS = (QLineEdit, QDoubleSpinBox, QAbstractSpinBox,
+                    QComboBox)
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def eventFilter(self, obj, ev):
+        kind = ev.type()
+        if kind not in (QEvent.KeyPress, QEvent.KeyRelease):
+            return False
+        if QApplication.activePopupWidget() is not None:
+            return False
+        if obj.window() is not self.editor:
+            return False
+        if isinstance(obj, self.TEXT_WIDGETS):
+            return False
+        pressed = kind == QEvent.KeyPress
+        if pressed and ev.isAutoRepeat():
+            return False
+        return self.editor.fly_route(ev.key(), pressed)
+
+
+
 
 DARK_QSS = """
 QMainWindow { background: #1e1e20; }
@@ -97,6 +131,7 @@ class Viewport(QLabel):
         super().__init__()
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background: #0d0f13;")
+        self.setFocusPolicy(Qt.ClickFocus)
         self.renderer = None
         self.last_render_bgr = None
         self.scrubbing = False
@@ -278,6 +313,7 @@ class Viewport(QLabel):
 
     # ------------------------------------------------------------ mouse
     def mousePressEvent(self, ev):
+        self.setFocus(Qt.MouseFocusReason)
         if ev.button() == Qt.LeftButton:
             self._drag_last = ev.position()
 
@@ -495,6 +531,13 @@ class EditorWindow(QMainWindow):
             lambda msg: self.status_label.setText(f"{msg}"))
         for b in self.findChildren(QPushButton):
             b.setFocusPolicy(Qt.NoFocus)
+        # The fly keys route before the focused widget (an app-level
+        # filter): clicking load leaves focus on the path field, and
+        # a line edit would consume every letter - the filter keeps
+        # the legacy keys global.
+        self._fly_filter = _FlyKeyFilter(self)
+        QApplication.instance().installEventFilter(self._fly_filter)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.step_timer = QTimer()
         self.step_timer.timeout.connect(self._tick)
         self.step_timer.start(1000 // 30)
@@ -693,14 +736,14 @@ class EditorWindow(QMainWindow):
     # the WINDOW level so no click is needed first; text fields
     # consume their own keys before this sees them.
     def keyPressEvent(self, ev):
-        if ev.isAutoRepeat() or not self._fly_key(ev.key(), True):
+        if ev.isAutoRepeat() or not self.fly_route(ev.key(), True):
             super().keyPressEvent(ev)
 
     def keyReleaseEvent(self, ev):
-        if ev.isAutoRepeat() or not self._fly_key(ev.key(), False):
+        if ev.isAutoRepeat() or not self.fly_route(ev.key(), False):
             super().keyReleaseEvent(ev)
 
-    def _fly_key(self, key, pressed):
+    def fly_route(self, key, pressed):
         if key == Qt.Key_Space:
             if pressed:
                 self._on_toggle()
@@ -1032,6 +1075,30 @@ def main():
     key(Qt.Key_Space, True)
     assert not win.playing, "space did not pause"
     print("[smoke] space toggle: pause/resume ok", flush=True)
+
+    # The real-dispatch path: a TEXT field keeps its keys, focus on
+    # the scene routes to the fly (the user-visible contract).
+    win.path_edit.setFocus()
+    wev = QKeyEvent(QEvent.KeyPress, Qt.Key_W,
+                    Qt.KeyboardModifier.NoModifier, "w")
+    QCoreApplication.sendEvent(win.path_edit, wev)
+    assert win.path_edit.text().endswith("w"), "typing lost"
+    assert np.allclose(vp._eye, vp._eye), "typed while the scene flew"
+    moved_before = vp._eye.copy()
+    vp.setFocus()
+    kp = QKeyEvent(QEvent.KeyPress, Qt.Key_W,
+                   Qt.KeyboardModifier.NoModifier)
+    QCoreApplication.sendEvent(vp, kp)
+    spin(300)
+    kr = QKeyEvent(QEvent.KeyRelease, Qt.Key_W,
+                   Qt.KeyboardModifier.NoModifier)
+    QCoreApplication.sendEvent(vp, kr)
+    spin(150)
+    assert not np.allclose(vp._eye, moved_before), \
+        "W did not fly from scene focus"
+    win.path_edit.setText(str(seq))
+    print("[smoke] dispatch: typing keeps its keys, scene focus flies",
+          flush=True)
     spin(200)
     print("[smoke] PASS", flush=True)
     win.close()
