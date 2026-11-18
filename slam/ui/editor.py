@@ -835,17 +835,34 @@ class EditorWindow(QMainWindow):
         QTimer.singleShot(0, self._reposition_overlays)
 
     # ------------------------------------------------------- panel
+    def _narrow_form(self, owner):
+        """A QFormLayout without the macOS form-style's wide field
+        indent: the labels left, the fields span the panel width
+        from the left margin."""
+        from PySide6.QtWidgets import QFormLayout
+        form = (QFormLayout(owner) if owner is not None
+                else QFormLayout())
+        form.setContentsMargins(2, 2, 2, 2)
+        form.setSpacing(4)
+        form.setLabelAlignment(Qt.AlignLeft)
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy
+                              .DontWrapRows)
+        return form
+
     def _build_panel(self):
         panel = QWidget()
         vlay = QVBoxLayout(panel)
-        vlay.setContentsMargins(6, 6, 6, 6)
+        vlay.setContentsMargins(2, 2, 2, 2)
+        vlay.setSpacing(2)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
 
         UiState.apply_everything(lambda msg: info_log(LOG_TAG, msg))
 
         src = QWidget()
-        form = QFormLayout(src)
+        form = self._narrow_form(src)
         self.kind_combo = QComboBox()
         self.kind_combo.addItems(["video file", "frame sequence",
                                   "camera"])
@@ -897,7 +914,7 @@ class EditorWindow(QMainWindow):
         # The main flow button sits right under the source selection,
         # not buried under the intrinsics fields.
         form.insertRow(2, "", load_btn)
-        manual = QFormLayout()
+        manual = self._narrow_form(None)
         apply_btn = QPushButton("apply manually (live + cached)")
         apply_btn.clicked.connect(self._apply_manual_intrinsics)
         forget_btn = QPushButton("forget this source")
@@ -908,7 +925,7 @@ class EditorWindow(QMainWindow):
         self.tabs.addTab(src, "Source")
 
         opts = QWidget()
-        oform = QFormLayout(opts)
+        oform = self._narrow_form(opts)
         self.opt_widgets = {}
         for name, default, marker in (
                 ("feature_extractor", "ALIKED", "(rebuild)"),
