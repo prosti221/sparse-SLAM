@@ -759,6 +759,9 @@ class EditorWindow(QMainWindow):
 
         self.panel = QDockWidget("controls")
         self.panel.setWidget(self._build_panel())
+        # Flex-shrink: the dock sizes to its content's width once the
+        # layout knows the hints (the user can drag it afterwards).
+        QTimer.singleShot(0, self._fit_dock_width)
         self.panel.setFeatures(QDockWidget.DockWidgetFeature.
                                DockWidgetMovable)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.panel)
@@ -826,6 +829,17 @@ class EditorWindow(QMainWindow):
                             c.height() - h - 10)
             self.strip.raise_()
 
+    def _fit_dock_width(self):
+        """The sidebar's width = the widest page's size hint (the
+        flex-shrink contract: as wide as it NEEDS to be)."""
+        w = self.panel.widget()
+        if w is None:
+            return
+        target = max(w.sizeHint().width(), w.minimumSizeHint().width(),
+                     320) + 12
+        self.resizeDocks([self.panel], [max(target, 420)],
+                         Qt.Horizontal)
+
     def _toggle_sidebar(self):
         collapsed = self.panel.isVisible()
         self.panel.setVisible(not collapsed)
@@ -846,7 +860,7 @@ class EditorWindow(QMainWindow):
         form.setSpacing(4)
         form.setLabelAlignment(Qt.AlignLeft)
         form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy
                               .DontWrapRows)
         return form

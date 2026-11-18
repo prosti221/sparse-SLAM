@@ -78,18 +78,25 @@ class AdvancedTab(QWidget):
         inner = QWidget()
         vlay = QVBoxLayout(inner)
         vlay.setContentsMargins(8, 8, 8, 8)
+        vlay.setSpacing(2)
+        note_once = QLabel("live on edit; knobs that a constructed "
+                           "pipeline re-reads (the extractor's config) "
+                           "apply at the next reset/rewind")
+        note_once.setStyleSheet("color: #6e6e74; font-size: 11px;"
+                                "font-weight: normal;")
+        vlay.addWidget(note_once)
         for group, rows in SPECS:
             header = QLabel(group)
             header.setStyleSheet("color: #6fa8dc; font-weight: bold;")
             vlay.addWidget(header)
-            note = QLabel("live on edit; knobs that a constructed "
-                          "pipeline re-reads (the extractor's config) "
-                          "apply at the next reset/rewind")
-            note.setStyleSheet("color: #6e6e74; font-size: 11px;"
-                               "font-weight: normal;")
-            vlay.addWidget(note)
             form = QFormLayout()
-            form.setLabelAlignment(Qt.AlignRight)
+            form.setContentsMargins(2, 2, 2, 2)
+            form.setSpacing(4)
+            form.setLabelAlignment(Qt.AlignLeft)
+            form.setFieldGrowthPolicy(
+                QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy
+                                  .DontWrapRows)
             for name, kind in rows:
                 w = self._make_row(name, kind)
                 if w is None:  # unresolvable name: skipped with a note
