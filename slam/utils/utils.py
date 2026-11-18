@@ -173,21 +173,6 @@ def extractRtFromE(pts1, pts2, E, K, motion_prior=None):
     return ret
 
 
-def load_video(config):
-    """The load_video contract (cap, K|None, k1), delegated to the
-    source resolver — the shared surface the suite's calibration pins
-    exercise (slam.py flows through the same resolver path)."""
-    from slam.core.source import load_video as _load_video
-    return _load_video(config)
-
-
-def construct_K(focal_x, focal_y, c_x, c_y):
-
-    return np.array([[focal_x, 0, c_x],
-                     [0, focal_y, c_y],
-                     [0, 0, 1]])
-
-
 def normalize_vec(v):
     return v / np.linalg.norm(v)
 

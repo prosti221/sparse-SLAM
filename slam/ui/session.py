@@ -1,20 +1,22 @@
-"""The editor's session controller (M2).
+"""The editor's session controller.
 
-A Session owns ONE SLAM run: the resolved source (via the M1a resolver
-+ the M1b intrinsics cache), the pipeline (map, tracker, intake gate,
-the pre-extraction worker on file sources), and the transport state.
-slam.py's loop body lives here as `step()` so the editor's transport
-buttons and the legacy loop share one definition of a frame step.
+A Session owns ONE SLAM run: the resolved source (the resolver + the
+intrinsics cache), the pipeline (map, tracker, intake gate, the
+pre-extraction worker on file sources), and the transport state. The
+SLAM loop body lives here as `step()`: the editor's transport (through
+the step-worker process) and the in-process test path share one
+definition of a frame step.
 
-Threading model: exactly ONE thread (the editor's step worker) touches
-the pipeline; the UI thread reads it BETWEEN steps (on a stepDone
-signal) and mutates only via the controller's methods while the
-worker is idle. The timeline rewind (M5) reuses that rule.
+Threading model: exactly ONE thread owns a pipeline's state. In the
+editor that owner runs inside the spawned step worker process;
+`ProcessSession` routes its summaries, and the UI thread reads them
+between steps (mutating only through the controller while the worker
+is idle). The in-process `Session` is the test path. The timeline
+rewind reuses that rule.
 
-Recording parity: `record_frame` mirrors the legacy renderer's
-capture semantics ([capture | render] side-by-side mp4 at 30 fps in
-output/sessions/<timestamp>/) and `save_session_data` mirrors the
-JSON-metadata + PLY point-cloud save.
+Recording: `record_frame` writes the [capture | render] side-by-side
+mp4 at 30 fps in output/sessions/<timestamp>/; `save_session_data`
+writes the JSON metadata + PLY point cloud.
 """
 import json
 import os
@@ -180,8 +182,8 @@ class Session:
         # in Python, so this is the way a rewind resuming at step N
         # re-enters the same seeded stream the original run used at
         # its step N - the no-change-rewind-reproducibility contract).
-        # The legacy loop and the benchmark harness keep their own
-        # seeding; this is the editor's path only.
+        # The benchmark harness keeps its own seeding; this is the
+        # editor's path only.
         cv.setRNGSeed(0x5EED0000 + int(self.step_count))
         prev_img = getattr(self, "_prev_img", None)
         img = preextracted = None
@@ -444,9 +446,9 @@ class Session:
         self.recorded_frames = 0
 
     def record_frame(self, prev_img, capture_img):
-        """[capture | render] side-by-side, the parity of the legacy
-        capture_frame(): the editor's OFFSCREEN render buffer is the
-        renderer frame; the raw capture is the complement."""
+        """[capture | render] side-by-side: the editor's OFFSCREEN
+        render buffer is the renderer frame; the raw capture is the
+        complement."""
         renderer_frame = self.render_bgr  # set by the editor per tick
         if renderer_frame is None:
             return

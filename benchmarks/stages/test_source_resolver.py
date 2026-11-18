@@ -1,9 +1,8 @@
 """The source-resolver pins: slam/core/source.py's three kinds.
 
 The editor's source tab resolves video files, frame-sequence
-directories, and cameras over load_video's contract (cap, K|None, k1),
-with sequence dirs duck-typing the cv.VideoCapture surface so slam.py's
-loop runs unmodified. The `fx: auto` sentinel semantics are the
+directories, and cameras; sequence dirs duck-type the cv.VideoCapture
+surface the session consumes. The `fx: auto` sentinel semantics are the
 GeoCalib branch's trigger and pinned here.
 """
 from pathlib import Path
@@ -16,7 +15,6 @@ from slam.config.config_parser import ConfigParser
 from slam.core.source import (CAMERA_KIND, FILE_KIND, SEQUENCE_KIND,
                               SequenceCapture, SourceSpec, detect_kind,
                               open_source, resolve_intrinsics)
-from slam.utils.utils import load_video
 
 
 def _sequence_dir(tmp_path: Path, n=12, w=640, h=480):
@@ -61,7 +59,7 @@ def test_detect_classifies_the_three_kinds(tmp_path):
     assert detect_kind("/videos/kyoto_original.mp4") == FILE_KIND
 
 
-def test_resolve_intrinsics_carries_load_video_semantics(tmp_path):
+def test_resolve_intrinsics_semantics(tmp_path):
     d = _sequence_dir(tmp_path)
     # auto sentinel -> (None, 0.0): the GeoCalib branch trigger.
     assert resolve_intrinsics(
@@ -69,7 +67,6 @@ def test_resolve_intrinsics_carries_load_video_semantics(tmp_path):
         == (None, 0.0, {"fx": "auto"})
     # absent fx behaves as auto.
     assert resolve_intrinsics(
-        SourceSpec(SEQUENCE_KIND, str(d))[0] if False else
         SourceSpec(SEQUENCE_KIND, str(d)), 640, 480)[0] is None
     # explicit -> construct K with the cx/cy/k1 defaults (principal
     # point at the frame center).

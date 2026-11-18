@@ -1,7 +1,6 @@
-"""The viewer's point-cloud color contract: the legacy
-pt_obj_to_array behavior (each point's camera-sampled RGB normalized
-to [0, 1], colorless points -> neutral gray) carried over to the
-offscreen cloud builder."""
+"""The viewer's point-cloud color contract: each point's
+camera-sampled RGB normalized to [0, 1], colorless points -> neutral
+gray (the offscreen cloud builder)."""
 import cv2 as cv
 import numpy as np
 

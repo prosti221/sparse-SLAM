@@ -1,23 +1,22 @@
-"""The slam editor (M2-M5): a dark PySide6 window whose central
-viewport is Open3D's OFFSCREEN render of the live map, with the
-pipeline stepped on the MAIN thread by a QTimer and the checkpoint
-timeline driving scrubs and rewinds.
+"""The slam editor: a dark PySide6 window whose central viewport is
+Open3D's OFFSCREEN render of the live map, with the SLAM pipeline
+stepped in a spawned worker process (the UI thread never blocks) and
+the checkpoint timeline driving scrubs and rewinds.
 
-Threading model (measured, the M2 pivot): the pipeline is
-main-thread-bound on darwin (torch/Metal + the OpenCV/g2o paths die
-on a worker thread — both extractor kinds) — the legacy-proven
-main-thread loop survives as the step timer; the UI's callbacks
-interleave between ticks and the 30 Hz paint timer keeps the render
-smooth at the step cadence. The M5 rewind/scrub mutate between ticks
-on this same thread — no locking anywhere by construction.
+Threading: the step worker owns the pipeline; the UI reads its
+per-step summaries between steps and sends commands (step, rewind,
+pins, intrinsics), so no lock is needed. The 30 Hz paint timer keeps
+the render smooth at the step cadence. A scrub renders a checkpoint
+snapshot view-only; a rewind is branch exploration.
 
-Teardown hazard (measured in M0): destroy the OffscreenRenderer before
-the Qt session exits — the exit path tears the session down first and
-ends with an explicit process exit.
-M5 semantics (the honest rule): a rewind is branch exploration, not
-bit-replay — the restore re-seeds the RNG with the branch seed, so
-every branch resuming from a checkpoint shares the same post-rewind
-stream; the tweak is the only delta.
+Rewind semantics (the honest rule): the restore is exact, and every
+step seeds cv's RNG from the step's own ordinal, so a rewind resuming
+with no change re-enters the stream the original run used at that step
+(the BA solve ordering is the documented residual).
+
+Teardown hazard (measured): destroy the OffscreenRenderer before the
+Qt session exits - the exit path tears the session down first and ends
+with an explicit process exit.
 """
 import os
 import gc
@@ -54,10 +53,10 @@ LOG_TAG = "Editor"
 
 class _FlyKeyFilter(QObject):
     """The editor's fly/hotkey routing: KeyPress/KeyRelease handled
-    BEFORE the focused widget sees them, so the legacy viewer's keys
-    are global (no click into the scene needed first). Text widgets
-    keep their keys (typing wins); foreign windows (dialogs) and
-    open popups are untouched."""
+    BEFORE the focused widget sees them, so the keys are global (no
+    click into the scene needed first). Text widgets keep their keys
+    (typing wins); foreign windows (dialogs) and open popups are
+    untouched."""
 
     TEXT_WIDGETS = (QLineEdit, QDoubleSpinBox, QAbstractSpinBox,
                     QComboBox)
@@ -112,16 +111,15 @@ QSlider::handle:horizontal { background: #b0b0b4; width: 16px;
 
 class Viewport(QLabel):
     """The offscreen Open3D render. Geometry refreshes only on step
-    boundaries; the 30 Hz paint tick is camera-only. The camera carries
-    the legacy viewer's fly contract (viz/renderer.py, the same
-    constants): held W/A/S/D move with Q/E down/up (Shift boost,
+    boundaries; the 30 Hz paint tick is camera-only. The camera's fly
+    contract: held W/A/S/D move with Q/E down/up (Shift boost,
     -/= speed) applied per paint tick against a wall-clock dt; the
     mouse drag orbits turntable-style around the lookat; the wheel
     dollies; Space toggles pause (window level). A SCRUB renders a
     checkpoint's snapshot geometry (the pipeline untouched); the
     camera is free in every state."""
 
-    # The legacy fly constants (slam/viz/renderer.py, verbatim).
+    # The fly constants.
     FLY_SPEED_SCENE_FRACTION = 0.3      # scene diagonal per second @1x
     FLY_SPEED_BOOST = 3.0
     FLY_SPEED_MULT_MIN = 1.0 / 32.0
@@ -202,10 +200,9 @@ class Viewport(QLabel):
 
     @staticmethod
     def _cloud_from(points):
-        """The legacy pt_obj_to_array contract: each point's color is
-        the RGB sampled from the camera at its keypoint (p.color,
-        uint8), normalized to [0, 1]; colorless points fall back to
-        neutral gray."""
+        """Each point's color is the RGB sampled from the camera at
+        its keypoint (p.color, uint8), normalized to [0, 1]; colorless
+        points fall back to neutral gray."""
         pcd = o3d.geometry.PointCloud()
         fallback = np.full(3, 200, dtype=np.uint8)
         if points:
@@ -222,10 +219,9 @@ class Viewport(QLabel):
 
     @staticmethod
     def _frustum_lines(K, W, H, pose, quality):
-        """The legacy camera wireframe (viz/renderer.py's
-        _draw_camera_object): a unit-depth pyramid sized by the
-        intrinsics, at the pose, colored by tracking quality
-        (red .. green on the HSV scale)."""
+        """The camera wireframe: a unit-depth pyramid sized by the
+        intrinsics, at the pose, colored by tracking quality (red ..
+        green on the HSV scale)."""
         fx = max(float(K[0, 0]), 1e-6)
         w, h = W / fx, H / fx
         cx, cy = float(K[0, 2]) / fx, float(K[1, 2]) / fx
@@ -261,8 +257,8 @@ class Viewport(QLabel):
         self._frustums[frame_id] = (quality, np.array(pose[:4, :4]))
 
     def update_frustums(self, session):
-        """The keyframe pose wireframes (the legacy update_poses):
-        rebuild on a quality change, drop the culled."""
+        """The keyframe pose wireframes: rebuild on a quality
+        change, drop the culled."""
         if self.renderer is None or self.mat_line is None:
             return
         self._cam_state = (session.K, session.CAP_W, session.CAP_H)
@@ -313,9 +309,9 @@ class Viewport(QLabel):
         self.update_frustums_snapshot(summary)
 
     def update_frustums_snapshot(self, summary):
-        """The keyframe pose wireframes (the legacy update_poses):
-        rebuild on a quality change, drop the culled - fed from the
-        step worker's summary."""
+        """The keyframe pose wireframes: rebuild on a quality
+        change, drop the culled - fed from the step worker's
+        summary."""
         if self.renderer is None or self.mat_line is None:
             return
         kfr_poses = np.asarray(summary.get("frustum_poses"),
@@ -377,11 +373,11 @@ class Viewport(QLabel):
     def unscrub(self):
         self.scrubbing = False
 
-    # ------------------------------------------------ legacy fly input
+    # ------------------------------------------------------ fly input
     def place_view_from_pose(self, pose):
         """One-time placement AT the pipeline's current camera, facing
-        its view direction (the legacy _place_initial_camera: the CV
-        frame X right / Y down / Z forward)."""
+        its view direction (the CV frame: X right, Y down, Z
+        forward)."""
         if self._placed:
             return
         self._placed = True
@@ -436,8 +432,8 @@ class Viewport(QLabel):
 
     def _apply_fly(self):
         """One fly-movement step, run from the 30 Hz paint tick in
-        every state (playing, paused, scrubbing): the legacy contract
-        of process_fly_input. dt is wall-clock based and capped."""
+        every state (playing, paused, scrubbing). dt is wall-clock
+        based and capped."""
         now = time.monotonic()
         dt = 0.0
         if self._fly_last_tick is not None:
@@ -812,7 +808,7 @@ class EditorWindow(QMainWindow):
         # The fly keys route before the focused widget (an app-level
         # filter): clicking load leaves focus on the path field, and
         # a line edit would consume every letter - the filter keeps
-        # the legacy keys global.
+        # the keys global.
         self._fly_filter = _FlyKeyFilter(self)
         QApplication.instance().installEventFilter(self._fly_filter)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -1068,8 +1064,8 @@ class EditorWindow(QMainWindow):
             return
         self._on_pause() if self.playing else self._on_play()
 
-    # The legacy viewer's keys (viz/renderer.py): space pauses, held
-    # W/A/S/D/Q/E fly (shift boost), -/= speed. The routing sits at
+    # The fly/hotkey keys: space pauses, held W/A/S/D/Q/E fly (shift
+    # boost), -/= speed. The routing sits at
     # the WINDOW level so no click is needed first; text fields
     # consume their own keys before this sees them.
     def keyPressEvent(self, ev):
@@ -1439,7 +1435,7 @@ def main():
         "the manual apply did not write the cache"
     print("[smoke] point radius live (granular field), manual "
           "intrinsics auto-cached", flush=True)
-    # The keyframe frustums (the legacy pose visualization).
+    # The keyframe frustums.
     assert len(win.viewport._frustums) >= 1, \
         "no keyframe frustums were drawn"
     print(f"[smoke] frustums: "
@@ -1467,7 +1463,7 @@ def main():
     assert win.panel.isVisible(), "the sidebar did not expand"
     print("[smoke] sidebar toggle: collapse/expand ok", flush=True)
 
-    # The fly camera (the legacy movement contract): real key events
+    # The fly camera: real key events
     # through the window routing + the pointer manipulations.
     from PySide6.QtCore import QCoreApplication, QEvent
     from PySide6.QtGui import QKeyEvent
