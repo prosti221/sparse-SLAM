@@ -130,7 +130,7 @@ class Viewport(QLabel):
     def __init__(self):
         super().__init__()
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("background: #0d0f13;")
+        self.setStyleSheet("background: #000000;")
         self.setFocusPolicy(Qt.ClickFocus)
         self.renderer = None
         self.last_render_bgr = None
@@ -155,7 +155,7 @@ class Viewport(QLabel):
         self.mat.shader = "defaultUnlit"
         self.mat.point_size = 2.0
         self.renderer.scene.set_background(
-            [0.121, 0.121, 0.129, 1.0])
+            [0.0, 0.0, 0.0, 1.0])
 
     def detach(self):
         self.renderer = None
@@ -525,11 +525,25 @@ class EditorWindow(QMainWindow):
         vlay.addWidget(self.strip)
         self.setCentralWidget(host)
 
-        panel = QDockWidget("controls")
-        panel.setWidget(self._build_panel())
-        panel.setFeatures(QDockWidget.DockWidgetFeature.
-                          DockWidgetMovable)
-        self.addDockWidget(Qt.LeftDockWidgetArea, panel)
+        self.panel = QDockWidget("controls")
+        self.panel.setWidget(self._build_panel())
+        self.panel.setFeatures(QDockWidget.DockWidgetFeature.
+                               DockWidgetMovable)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.panel)
+
+        # The sidebar's collapse toggle: pinned at the viewer's
+        # top-left, always reachable while collapsed.
+        self.dock_toggle = QPushButton("<", self.centralWidget())
+        self.dock_toggle.setToolTip("collapse / expand the sidebar")
+        self.dock_toggle.setFixedSize(22, 40)
+        # The global QSS pads buttons 6x14 - at 22 px wide the content
+        # rect goes negative and the glyph clips to nothing; a compact
+        # override keeps the text visible.
+        self.dock_toggle.setStyleSheet(
+            "padding: 0; font-size: 15px;")
+        self.dock_toggle.clicked.connect(self._toggle_sidebar)
+        self.dock_toggle.setFocusPolicy(Qt.NoFocus)
+        self.dock_toggle.raise_()
 
         self.capture_label = QLabel(host)
         self.capture_label.setStyleSheet(
@@ -558,11 +572,28 @@ class EditorWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._reposition_overlays()
+
+    def _reposition_overlays(self):
         c = self.centralWidget()
-        if c is not None and hasattr(self, "capture_label"):
+        if c is None:
+            return
+        if hasattr(self, "capture_label"):
             w, h = self.capture_label.width(), \
                 self.capture_label.height()
             self.capture_label.move(c.width() - w - 12, 12)
+            self.capture_label.raise_()
+        if hasattr(self, "dock_toggle"):
+            self.dock_toggle.move(4, 12)
+            self.dock_toggle.raise_()
+
+    def _toggle_sidebar(self):
+        collapsed = self.panel.isVisible()
+        self.panel.setVisible(not collapsed)
+        self.dock_toggle.setText(">" if collapsed else "<")
+        # The dock swap resolves the central resize asynchronously;
+        # re-place the floating overlays after it lands.
+        QTimer.singleShot(0, self._reposition_overlays)
 
     # ------------------------------------------------------- panel
     def _build_panel(self):
@@ -1039,6 +1070,14 @@ def main():
     if os.environ.get("EDITOR_CAPTURE") == "1":
         win.grab().save(str(out_dir / "editor_m6.png"))
         print("[smoke] window capture saved", flush=True)
+    # The sidebar collapse toggle.
+    win._toggle_sidebar()
+    spin(100)
+    assert not win.panel.isVisible(), "the sidebar did not collapse"
+    win._toggle_sidebar()
+    spin(100)
+    assert win.panel.isVisible(), "the sidebar did not expand"
+    print("[smoke] sidebar toggle: collapse/expand ok", flush=True)
 
     # The fly camera (the legacy movement contract): real key events
     # through the window routing + the pointer manipulations.
