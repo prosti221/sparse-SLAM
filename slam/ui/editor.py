@@ -40,8 +40,10 @@ from PySide6.QtWidgets import (
 
 from slam.calibration import IntrinsicsEstimate
 from slam.core import intrinsics_cache
-from slam.core.source import (CAMERA_KIND, SEQUENCE_KIND, SourceSpec)
+from slam.core.source import (CAMERA_KIND, FILE_KIND, SEQUENCE_KIND,
+                              SourceSpec)
 from slam.ui.advanced_tab import UiState
+from slam.ui.intrinsics_dialog import ask_manual_intrinsics
 from slam.ui.row_layout import tight_row
 from slam.ui.session import Session, SlamOptions
 from slam.utils import logger as slam_logger_mod
@@ -738,6 +740,9 @@ class EditorWindow(QMainWindow):
         self.session = None
         self.summary = None
         self.playing = False
+        # The last manual intrinsics entry (the apply-manually form);
+        # also the pre-load spec's values when set before a load.
+        self._manual_intrinsics = None
         self.status_label = QLabel("no session")
         self.statusBar().addPermanentWidget(self.status_label)
 
@@ -893,20 +898,6 @@ class EditorWindow(QMainWindow):
         self.path_edit = QLineEdit()
         self.camera_row = QSpinBox()
         self.camera_row.setRange(0, 16)
-        self.fx_spin = QDoubleSpinBox()
-        self.fx_spin.setRange(0.0, 100000.0)
-        self.fx_spin.setDecimals(3)
-        self.fy_spin = QDoubleSpinBox()
-        self.fy_spin.setRange(0.0, 100000.0)
-        self.fy_spin.setDecimals(3)
-        self.cx_spin = QDoubleSpinBox()
-        self.cx_spin.setMaximum(100000.0)
-        self.cy_spin = QDoubleSpinBox()
-        self.cy_spin.setMaximum(100000.0)
-        self.k1_spin = QDoubleSpinBox()
-        self.k1_spin.setRange(-1.0, 1.0)
-        self.k1_spin.setDecimals(6)
-        self.fx_auto = QCheckBox()
 
         row("source", self.kind_combo)
         path_row = QHBoxLayout()
@@ -921,12 +912,6 @@ class EditorWindow(QMainWindow):
         load_btn.clicked.connect(self._load_session)
         row(None, load_btn)
         row("camera index", self.camera_row)
-        row("fx", self.fx_spin)
-        row("fy", self.fy_spin)
-        row("cx", self.cx_spin)
-        row("cy", self.cy_spin)
-        row("k1", self.k1_spin)
-        row("fx auto (GeoCalib)", self.fx_auto)
         # The point radius (the cloud's point size, pixels), live
         # and granular (quarter-pixel steps).
         self.point_size_row = QDoubleSpinBox()
@@ -943,7 +928,7 @@ class EditorWindow(QMainWindow):
         manual.setContentsMargins(0, 0, 0, 0)
         manual.setSpacing(4)
         apply_btn = QPushButton("apply manually (live + cached)")
-        apply_btn.clicked.connect(self._apply_manual_intrinsics)
+        apply_btn.clicked.connect(self._open_manual_intrinsics)
         forget_btn = QPushButton("forget this source")
         forget_btn.clicked.connect(self._forget_source)
         manual.addWidget(apply_btn)
@@ -1003,23 +988,19 @@ class EditorWindow(QMainWindow):
             self.path_edit.setText(path)
 
     def _current_spec(self) -> SourceSpec:
-        fx = "auto" if self.fx_auto.isChecked() else (
-            self.fx_spin.value() or "auto")
-        return SourceSpec(
-            ["file", "sequence", "camera"][self.kind_combo.currentIndex()],
-            self.path_edit.text().strip(), fx=fx,
-            fy=(self.fy_spin.value() or None),
-            cx=(self.cx_spin.value() or None),
-            cy=(self.cy_spin.value() or None),
-            k1=self.k1_spin.value())
+        index = self.kind_combo.currentIndex()
+        location = (str(self.camera_row.value()) if index == 2
+                    else self.path_edit.text().strip())
+        kind = [FILE_KIND, SEQUENCE_KIND, CAMERA_KIND][index]
+        if self._manual_intrinsics is None:
+            return SourceSpec(kind, location)
+        fx, fy, cx, cy, k1 = self._manual_intrinsics
+        return SourceSpec(kind, location, fx=fx,
+                          fy=fy or None, cx=cx or None, cy=cy or None,
+                          k1=k1)
 
     def _load_session(self):
-        if self.kind_combo.currentIndex() == 2:
-            spec = SourceSpec(CAMERA_KIND, str(self.camera_row.value()),
-                              fx="auto")
-        else:
-            spec = self._current_spec()
-        self._start_session(spec)
+        self._start_session(self._current_spec())
 
     def _start_session(self, spec: SourceSpec):
         self._stop_session()
@@ -1237,19 +1218,48 @@ class EditorWindow(QMainWindow):
             status_txt += f" | {top}"
         self.status_label.setText(status_txt)
 
-    # ------------------------------------- M1b's manual entry surface
-    def _apply_manual_intrinsics(self):
+    # ------------------------------------- the manual intrinsics JIT
+    def _manual_defaults(self):
+        """The dialog's prefill: the last entry, else the live
+        session's K, else the source's cached row."""
+        if self._manual_intrinsics is not None:
+            return self._manual_intrinsics
+        if self.session is not None and self.session.K is not None:
+            K = self.session.K
+            k1 = float((self.session.cache_hit or {}).get("k1", 0.0))
+            return (float(K[0, 0]), float(K[1, 1]),
+                    float(K[0, 2]), float(K[1, 2]), k1)
+        cached = intrinsics_cache.lookup(self._current_spec().location)
+        if cached:
+            return (float(cached.get("fx") or 0.0),
+                    float(cached.get("fy") or 0.0),
+                    float(cached.get("cx") or 0.0),
+                    float(cached.get("cy") or 0.0),
+                    float(cached.get("k1") or 0.0))
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+
+    def _open_manual_intrinsics(self):
+        values = ask_manual_intrinsics(self, self._manual_defaults())
+        if values is None:
+            return
+        self._manual_intrinsics = values
+        if self.session is None:
+            self.status_label.setText(
+                "manual intrinsics stored; the next load uses them")
+            return
+        self._apply_manual_intrinsics(*values)
+
+    def _apply_manual_intrinsics(self, fx, fy, cx, cy, k1):
+        self._manual_intrinsics = (fx, fy, cx, cy, k1)
         if self.session is None:
             return
-        fx = self.fx_spin.value()
-        fy = self.fy_spin.value() or fx
-        cx = self.cx_spin.value() or self.session.CAP_W // 2
-        cy = self.cy_spin.value() or self.session.CAP_H // 2
+        fy = fy or fx
+        cx = cx or self.session.CAP_W // 2
+        cy = cy or self.session.CAP_H // 2
         # The write-through is automatic: a manual apply PERSISTS (the
         # manual precedence wins on the next load, no button needed) -
         # the pipeline lives in the step worker, so this is a command.
-        fx_applied = self.session.set_intrinsics(
-            fx, fy, cx, cy, self.k1_spin.value())
+        fx_applied = self.session.set_intrinsics(fx, fy, cx, cy, k1)
         self.session.cache_hit = {"provenance": "manual",
                                   "fx": fx_applied}
         self.cache_label.setText(
@@ -1333,8 +1343,9 @@ def main():
     seq = seq_dir
     win.kind_combo.setCurrentIndex(1)
     win.path_edit.setText(str(seq))
-    win.fx_spin.setValue(500.0)
-    win.fy_spin.setValue(500.0)
+    # The pre-load manual values (the source panel carries no
+    # intrinsics fields; the apply-manually form owns them).
+    win._manual_intrinsics = (500.0, 500.0, None, None, 0.0)
     win._load_session()
 
     def spin(ms):
@@ -1393,8 +1404,13 @@ def main():
     assert win.viewport.mat.point_size == 3.5, \
         "the radius field did not drive the material"
     win.point_size_row.setValue(2.0)
-    win.fx_spin.setValue(123.456)
-    win._apply_manual_intrinsics()
+    # The JIT form builds with the live values prefilled (a modal exec
+    # is untestable headless; the prefill + the apply are the wiring).
+    from slam.ui.intrinsics_dialog import ManualIntrinsicsDialog
+    dialog = ManualIntrinsicsDialog(win, win._manual_defaults())
+    assert dialog.fx.value() > 0.0, "the intrinsics form did not prefill"
+    dialog.deleteLater()
+    win._apply_manual_intrinsics(123.456, None, None, None, 0.0)
     assert win.cache_label.text().startswith("hit: manual"), \
         "the manual apply did not write the cache"
     print("[smoke] point radius live (granular field), manual "
