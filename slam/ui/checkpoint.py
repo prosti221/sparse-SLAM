@@ -35,6 +35,7 @@ from slam.core.frame import Frame
 from slam.core.map import ArchivedMap, Map
 from slam.core.observation import Observation
 from slam.core.point import Point
+from slam.loop_closure import KeyframeFeatureDatabase
 from slam.utils.logger import info_log
 
 LOG_TAG = "Checkpoint"
@@ -49,6 +50,7 @@ class Checkpoint:
     step_count: int
     map_state: dict
     tracker_state: dict
+    tracker_frame: Optional[dict]
     intake_state: Optional[dict]
     branch_seed: int = 42
     label: str = ""
@@ -130,6 +132,18 @@ def _snapshot_map(m: Map) -> dict:
         "extractor_name": m.extractor_name,
         "video_fps": m.video_fps,
         "intrinsics_state": dict(m.intrinsics.__dict__),
+        "point_registry": (None if m._point_registry is None or
+                           m._point_registry.size() == 0 else
+                           {"ids": list(m._point_registry.ids()),
+                            "pos": np.array(
+                                m._point_registry.positions_view(),
+                                dtype=np.float64),
+                            "desc": np.array(
+                                m._point_registry.descriptors_view(),
+                                dtype=np.uint8),
+                            "has": [int(m._point_registry.has(pid))
+                                    for pid in
+                                    m._point_registry.ids()]}),
         "archives": [
             {"keyframes": [_snapshot_keyframe(f, arch_pids)
                            for f in a.keyframes],
@@ -325,10 +339,17 @@ def _snapshot_intake(gate) -> Optional[dict]:
         return None
     state = {}
     for name, v in vars(gate).items():
-        if name.startswith("_"):
+        if name == "feature_extractor" or name == "matcher":
+            # The extractor/matcher are stateless holders rebuilt at
+            # construction.
             continue
         if isinstance(v, (int, float, bool, str)):
             state[name] = v
+        elif isinstance(v, np.ndarray):
+            # The underscored displacement reference rides too: the
+            # gate's feed decision compares every decoded frame
+            # against it - a stale reference diverges the intake.
+            state[name] = np.asarray(v).copy()
         elif name == "last_extraction" and v is not None:
             kps, desc = v
             state["last_extraction"] = (
@@ -353,13 +374,14 @@ def _restore_intake(gate, state: Optional[dict]) -> None:
 
 
 # --------------------------------------------------------------- api
-def count_continue_map(m: Map) -> None:
+def count_continue_map(m: Map, extra_frame_ids=()) -> None:
     """Continue the frame/point counters past the restored map's
     maxima (called post-restore, per map). The archives fold in too:
     their ids are live references inside the restored session."""
     arch = getattr(m, "archives", None) or []
     max_f = max([f.frame_id for f in m.frames_by_id.values()] +
-                [f.frame_id for a in arch for f in a.keyframes],
+                [f.frame_id for a in arch for f in a.keyframes] +
+                list(extra_frame_ids),
                 default=0)
     max_kf = max((f.frame_id for f in m.keyframes), default=0)
     frame_mod._next_frame_id = itertools.count(max(max_f, max_kf) + 1)
@@ -374,11 +396,15 @@ def capture(session) -> Checkpoint:
     """The checkpoint at the session's current step boundary."""
     m = session.global_map
     t = session.tracker
+    live_pids = {p.point_id for p in m.points}
+    tracker_frame = (None if getattr(t, "cur_frame", None) is None
+                     else _snapshot_keyframe(t.cur_frame, live_pids))
     return Checkpoint(
         frame_index=session.frame_index,
         step_count=session.step_count,
         map_state=_snapshot_map(m),
         tracker_state=_snapshot_tracker(t),
+        tracker_frame=tracker_frame,
         intake_state=_snapshot_intake(session.intake_gate),
         branch_seed=42,
         label=f"step {session.step_count}",
@@ -387,14 +413,73 @@ def capture(session) -> Checkpoint:
 
 def restore(session, cp: Checkpoint) -> None:
     """In-place restore: the map/tracker/intake return to the
-    checkpoint's state; the source seeks to its frame index; the cv
-    RNG re-seeds with the branch seed (the branching determinism
-    mechanism)."""
-    cv.setRNGSeed(cp.branch_seed)
+    checkpoint's state; the source seeks to its frame index. The cv
+    RNG is NOT re-seeded here: Session.step seeds each step from its
+    own ordinal (the step-deterministic contract), so a resume at
+    step N re-enters exactly the stream the original run used at its
+    step N."""
     _restore_map(session.global_map, cp.map_state)
     _restore_tracker(session.tracker, cp.tracker_state)
     _restore_intake(session.intake_gate, cp.intake_state)
-    count_continue_map(session.global_map)
+    m = session.global_map
+    K = m.intrinsics.K
+    k1 = m.intrinsics.k1
+    # The tracker's LAST PROCESSED frame is the next step's match
+    # reference (_get_next_pose_estimate rides its pose): mount it
+    # back or the first resumed step matches against a stale frame.
+    extra_ids = ()
+    if cp.tracker_frame is not None:
+        pid_to_point = {p.point_id: p for p in m.points}
+        for sps in cp.tracker_frame.get("stale_points", ()):
+            pid = sps["point_id"]
+            if pid not in pid_to_point:
+                pid_to_point[pid] = _restore_point(sps)
+        f = _restore_keyframe(cp.tracker_frame, K, k1, pid_to_point)
+        if f.frame_id not in m.frames_by_id:
+            m.frames_by_id[f.frame_id] = f
+        session.tracker.cur_frame = f
+        session.tracker.prev_frame = None
+        extra_ids = (f.frame_id,)
+    count_continue_map(m, extra_frame_ids=extra_ids)
+    # The g2o persistent graph references pre-restore map data (the
+    # external-write precedent from the archive re-anchor: it resets
+    # before the writes matter).
+    if getattr(m, "g2o_optimizer", None) is not None:
+        m.g2o_optimizer.reset_persistent_graph()
+    # The loop-closure DB at checkpoint time holds exactly the live
+    # keyframes' features (added on insert, purged on cull): rebuild
+    # in temporal order and give the detector a fresh self.
+    m.feature_db = KeyframeFeatureDatabase()
+    for kf in sorted(m.keyframes, key=lambda k: k.frame_id):
+        if kf.descriptors is not None:
+            m.feature_db.add_keyframe_features(
+                kf.frame_id, kf.descriptors)
+    m.loop_detector = type(m.loop_detector)(m, m.feature_db)
+    # The native registries rebuild from the CHECKPOINT's captured
+    # state (the registry is the point geometry's home
+    # (Point.pt_3d reads THROUGH it) - the views must be the
+    # checkpoint's, not whatever the live engine holds at the
+    # restore moment). The obs registry is the fold's row-order
+    # contract - cleared and re-added in the restored frames'
+    # temporal order (the tracker frames too: the fold includes
+    # never-promoted frames' observations).
+    reg_state = cp.map_state.get("point_registry")
+    reg = getattr(m, "_point_registry", None)
+    if reg is not None:
+        reg.clear()
+        if reg_state is not None:
+            reg.register_points(
+                list(reg_state["ids"]), reg_state["pos"],
+                reg_state["desc"],
+                np.array(reg_state["has"], dtype=np.uint8))
+            m._refresh_registry_index()
+    if m._obs_registry is not None:
+        m._obs_registry.clear()
+        for f in sorted(m.frames_by_id.values(),
+                        key=lambda k: k.frame_id):
+            if f.observed_points:
+                m._add_observation_events(
+                    list(f.observed_points.values()))
     # The stream position: the sequence/camera seek (the M0 spike:
     # EXACT at ~1 ms); the extraction worker (file sources) is
     # re-launched at the offset (frame_index + 1: the next read is
@@ -403,4 +488,4 @@ def restore(session, cp: Checkpoint) -> None:
     if seek is not None and cp.frame_index >= 0:
         seek(cp.frame_index + 1)
     info_log(LOG_TAG, f"restored to frame {cp.frame_index} "
-             f"(step {cp.step_count}, branch seed {cp.branch_seed})")
+             f"(step {cp.step_count}, branch {cp.branch_seed})")

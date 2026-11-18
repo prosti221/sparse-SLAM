@@ -259,6 +259,101 @@ def test_archived_observations_round_trip():
         "the point counter reused an archived id"
 
 
+def _state_summary(s):
+    """The trajectory/map fingerprint for the replay contract."""
+    import numpy as np
+    m = s.global_map
+    cur = getattr(s.tracker, "cur_frame", None)
+    poses = [np.asarray(f.pose).ravel() for f in m.keyframes]
+    pts = [np.asarray(p._pt_3d).ravel() for p in m.points]
+    return {
+        "frame": s.frame_index,
+        "step": s.step_count,
+        "kf_ids": [f.frame_id for f in m.keyframes],
+        "n_pts": len(pts),
+        "poses": np.concatenate(poses) if poses else np.zeros(0),
+        "pts": np.concatenate(pts) if pts else np.zeros(0),
+        "cur_pose": (np.asarray(cur.pose).ravel()
+                     if cur is not None else np.zeros(16)),
+        "quality": [float(f.tracking_quality) for f in m.keyframes],
+    }
+
+
+def _summaries_match(a, b):
+    """The first mismatch class, or None."""
+    if (a["frame"], a["step"], a["kf_ids"], a["n_pts"]) != \
+            (b["frame"], b["step"], b["kf_ids"], b["n_pts"]):
+        return (f"structure: frame {a['frame']}/{b['frame']}, "
+                f"step {a['step']}/{b['step']}, "
+                f"kfs {a['kf_ids']}/{b['kf_ids']}, "
+                f"pts {a['n_pts']}/{b['n_pts']}")
+    for key in ("poses", "pts", "cur_pose"):
+        A, B = a[key], b[key]
+        if A.shape != B.shape:
+            return f"{key} shapes {A.shape}/{B.shape}"
+        if A.size and not np.allclose(A, B, rtol=1e-12, atol=1e-12):
+            d = float(np.abs(A - B).max())
+            return f"{key} values (max abs delta {d:.3g})"
+    if a["quality"] != b["quality"]:
+        return f"qualities {a['quality']}/{b['quality']}"
+    return None
+
+
+def test_rewind_replay_is_bit_exact(tmp_path):
+    """The no-change rewind contract (the user's acceptance): rewind
+    to a checkpoint, change NOTHING, resume to the same step - the
+    map and trajectory return to the pre-rewind state exactly. Any
+    state the codec misses lands here as a mismatch."""
+    import numpy as np
+    import cv2 as _cv
+    d = tmp_path / "seq"
+    d.mkdir()
+    for i in range(40):
+        img = np.zeros((480, 640, 3), np.uint8)
+        img[70:400, 40:590] = 75
+        for j in range(34):
+            cv.circle(img, (50 + j * 15, 80 + (j % 2) * 330), 2,
+                      (215, 215, 215), -1)
+        cv.rectangle(img, (min(7 * i, 560), 200),
+                     (min(7 * i, 560) + 24, 250), (0, 225, 0), -1)
+        _cv.imwrite(str(d / f"{i:06d}.png"), img)
+
+    from slam.core.source import SourceSpec
+    from slam.ui.session import Session, SlamOptions
+    spec = SourceSpec(SEQUENCE_DIR, str(d), fx=500.0, fy=500.0,
+                      cx=320.0, cy=240.0, k1=0.0, sequence_fps=30.0)
+    s = Session(spec, SlamOptions(feature_extractor="ORB",
+                                  enable_debug=False))
+    while s.frame_index + 1 < 26:
+        if s.step() is None:
+            break
+    deadline = 10.0
+    cps = []
+    import time as _time
+    t0 = _time.time()
+    while len(s.checkpoints) < 1 and _time.time() - t0 < deadline:
+        if s.step() is None:
+            break
+    cps = s.checkpoints
+    assert cps, "no checkpoint by frame 26"
+
+    # Continue to 31 (the pre-rewind future).
+    while s.step_count < 31:
+        if s.step() is None:
+            break
+    a = _state_summary(s)
+
+    # Rewind to the checkpoint, change nothing, resume to the same
+    # step count, and demand the same reality.
+    s.restore_checkpoint(cps[0])
+    while s.step_count < 31:
+        if s.step() is None:
+            break
+    b = _state_summary(s)
+    miss = _summaries_match(a, b)
+    assert miss is None, f"the replay diverged: {miss}"
+
+
 def test_covisibility_graph_keeps_the_defaultdict_contract():
     """The covisibility wiring indexes covisibility_graph[observer_id]
     unguarded (map._add_keyframe_to_point_covisibility): the live

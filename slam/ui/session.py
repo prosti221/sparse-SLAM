@@ -175,6 +175,14 @@ class Session:
     def step(self) -> Optional[StepResult]:
         if self._done:
             return None
+        # The step-deterministic RNG: each SLAM step's cv draws derive
+        # from the step's own ordinal (the stream state is not exposed
+        # in Python, so this is the way a rewind resuming at step N
+        # re-enters the same seeded stream the original run used at
+        # its step N - the no-change-rewind-reproducibility contract).
+        # The legacy loop and the benchmark harness keep their own
+        # seeding; this is the editor's path only.
+        cv.setRNGSeed(0x5EED0000 + int(self.step_count))
         prev_img = getattr(self, "_prev_img", None)
         img = preextracted = None
         if self.extract_pipeline is not None:
@@ -390,14 +398,18 @@ class Session:
       counters return to the checkpoint's (the frame_index the
         timeline maps)."""
         from slam.ui import checkpoint as cp_mod
+        # Read BEFORE close_pipeline: it nulls the extraction pipeline
+        # (and with it the whole re-launch condition - the rewind used
+        # to fall back to the capture-read path, decoding a different
+        # H264 frame than the worker's seek-exact one).
+        had_pipeline = self.extract_pipeline is not None
         self.close_pipeline()
         cp_mod.restore(self, cp)
         self.frame_index = cp.frame_index
         self.step_count = cp.step_count
         self._done = False
         record = self.record_branch(cp)
-        if self.extract_pipeline is not None and \
-                self.spec.kind == FILE_KIND:
+        if had_pipeline and self.spec.kind == FILE_KIND:
             self.extract_pipeline = None
             from slam.core.intake import ExtractionProcess
             self.extract_pipeline = ExtractionProcess(
