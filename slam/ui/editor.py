@@ -276,26 +276,68 @@ class Viewport(QLabel):
             self.renderer.scene.remove_geometry(f"kf_{fid}")
             del self._frustums[fid]
 
-    def update_scene(self, session: Session):
-        """On the step boundary (same thread, between ticks)."""
+    def update_scene_snapshot(self, summary):
+        """On the step boundary (same thread, between ticks); the
+        geometry rides the step worker's summary."""
         if self.renderer is None:
             self.attach()
-        pts = session.global_map.points
-        pcd = Viewport._cloud_from(pts)
+        pos = np.asarray(summary.get("pos"), dtype=np.float32)
+        cols = np.asarray(summary.get("colors"), dtype=np.uint8)
+        pcd = o3d.geometry.PointCloud()
+        if len(pos):
+            pcd.points = o3d.utility.Vector3dVector(
+                np.asarray(pos, dtype=np.float64))
+            if len(cols) == len(pos):
+                pcd.colors = o3d.utility.Vector3dVector(
+                    cols.astype(np.float64) / 255.0)
+            else:
+                pcd.paint_uniform_color([0.78, 0.78, 0.78])
+        else:
+            pcd.points = o3d.utility.Vector3dVector(np.zeros((1, 3)))
+            pcd.paint_uniform_color([0.78, 0.78, 0.78])
         self.renderer.scene.remove_geometry("cloud")
         self.renderer.scene.add_geometry("cloud", pcd, self.mat)
         self._cloud = pcd
-        if pts:
-            arr = np.array([p._pt_3d for p in pts])
-            extent = arr.max(axis=0) - arr.min(axis=0)
+        if len(pos):
+            extent = pos.astype(np.float64).max(axis=0) - \
+                pos.astype(np.float64).min(axis=0)
             diag = float(np.linalg.norm(extent))
             if diag > 0.0:
                 self._fly_diag = diag
-        pose = (session.tracker.cur_frame.pose
-                if getattr(session.tracker, "cur_frame", None) else None)
+        pose = summary.get("cur_pose")
         if pose is not None:
-            self.place_view_from_pose(pose)
-        self.update_frustums(session)
+            self.place_view_from_pose(np.asarray(pose))
+        self.update_frustums_snapshot(summary)
+
+    def update_frustums_snapshot(self, summary):
+        """The keyframe pose wireframes (the legacy update_poses):
+        rebuild on a quality change, drop the culled - fed from the
+        step worker's summary."""
+        if self.renderer is None or self.mat_line is None:
+            return
+        kfr_poses = np.asarray(summary.get("frustum_poses"),
+                               dtype=np.float64)
+        if kfr_poses.size == 0:
+            return
+        K = np.asarray(summary.get("K"), dtype=np.float64)
+        W = int(summary.get("W", 640))
+        H = int(summary.get("H", 480))
+        self._cam_state = (K, W, H)
+        ids = summary.get("frustum_ids", [])
+        quals = summary.get("frustum_quality", [])
+        seen = set()
+        for i, fid in enumerate(ids):
+            if i >= len(kfr_poses):
+                break
+            q = float(quals[i]) if i < len(quals) else 0.0
+            pose = np.asarray(kfr_poses[i], dtype=np.float64)
+            cur = self._frustums.get(fid)
+            if cur is None or cur[0] != q:
+                self._mount_frustum(fid, K, W, H, pose, q)
+            seen.add(fid)
+        for fid in [f for f in self._frustums if f not in seen]:
+            self.renderer.scene.remove_geometry(f"kf_{fid}")
+            del self._frustums[fid]
 
     def scrub_render(self, checkpoint):
         """The VIEW-only render of a checkpoint's snapshot geometry
@@ -692,7 +734,8 @@ class EditorWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("sparse-slam editor")
         self.resize(1560, 900)
-        self.session: Session = None
+        self.session = None
+        self.summary = None
         self.playing = False
         self.status_label = QLabel("no session")
         self.statusBar().addPermanentWidget(self.status_label)
@@ -890,6 +933,12 @@ class EditorWindow(QMainWindow):
 
         from slam.ui.advanced_tab import AdvancedTab
         self.advanced = AdvancedTab(self.status_label.setText)
+        # The pipeline's constants live in the step worker: a pin
+        # applies UI-side (the tab's own apply_override) AND ships to
+        # the worker's modules.
+        self.advanced.on_pin_applied = (
+            lambda n, v: (self.session.set_pins([(n, v)])
+                          if self.session is not None else None))
         self.tabs.addTab(self.advanced, "Advanced")
 
         vlay.addWidget(self.tabs)
@@ -926,7 +975,8 @@ class EditorWindow(QMainWindow):
     def _start_session(self, spec: SourceSpec):
         self._stop_session()
         try:
-            session = Session(spec, self._options())
+            from slam.ui.session import ProcessSession
+            session = ProcessSession(spec, self._options())
         except Exception as e:
             # The optional extras (the GeoCalib branch needs 'calib';
             # the learned extractors need 'learned') fail with an
@@ -944,7 +994,9 @@ class EditorWindow(QMainWindow):
                 hint = ("\n\nFix: run `uv sync --extra learned` in "
                         "this checkout.")
             self.status_label.setText(f"load failed: {msg[:140]}")
-            QMessageBox.critical(self, "session load failed", msg + hint)
+            if os.environ.get("EDITOR_SMOKE") != "1":
+                QMessageBox.critical(self, "session load failed",
+                                     msg + hint)
             return
         self.session = session
         self.viewport.attach()
@@ -1013,9 +1065,19 @@ class EditorWindow(QMainWindow):
         return False
 
     def _tick(self) -> None:
-        if not self.playing or self.session is None:
+        if self.session is None:
             return
-        self._on_step_done(self.session.step())
+        if self.playing:
+            self.session.request_step()
+        for summary, slot in self.session.drain():
+            if summary is None:
+                self.playing = False
+                self.strip.set_state(False)
+                self._on_step_done(None)
+                break
+            self.summary = summary
+            self._on_step_done(
+                self.session.result_from_summary(summary, slot))
 
     # --------------------------------------------------- transport
     def _on_play(self):
@@ -1034,7 +1096,16 @@ class EditorWindow(QMainWindow):
         if self.session is None:
             return
         self.playing = False
-        self._on_step_done(self.session.step())
+        self.strip.set_state(False)
+        summary, slot = self.session.step()
+        if summary is None:
+            self.playing = False
+            self.strip.set_state(False)
+            self._on_step_done(None)
+            return
+        self.summary = summary
+        self._on_step_done(
+            self.session.result_from_summary(summary, slot))
 
     def _on_scrub(self, index):
         if self.session is None or not self.session.checkpoints:
@@ -1094,9 +1165,8 @@ class EditorWindow(QMainWindow):
         self._refresh_forks()
         self.strip.sync(len(self.session.checkpoints),
                         max(len(self.session.checkpoints) - 1, 0))
-        self.viewport.update_scene(self.session)
-        self.session.render_bgr = self.viewport.last_render_bgr
-        if self.session.options.display_capture and \
+        self.viewport.update_scene_snapshot(self.summary)
+        if self.summary.get("display_capture") and \
                 result.capture is not None:
             arr = np.ascontiguousarray(result.capture)
             h, w, ch = arr.shape
@@ -1111,7 +1181,7 @@ class EditorWindow(QMainWindow):
         status_txt = (f"step {result.step} | kfs {result.keyframes} | "
                       f"points {result.points} | "
                       f"q {result.avg_quality:.2f}")
-        profile = self.session.profile_summary() or {}
+        profile = self.summary.get("profile") or {}
         if profile:
             top = " ".join(f"{k} {v:.1f}ms" for k, v in
                            list(profile.items())[:3])
@@ -1126,24 +1196,18 @@ class EditorWindow(QMainWindow):
         fy = self.fy_spin.value() or fx
         cx = self.cx_spin.value() or self.session.CAP_W // 2
         cy = self.cy_spin.value() or self.session.CAP_H // 2
-        self.session.global_map.intrinsics = IntrinsicsEstimate.from_K(
-            np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]]),
-            k1=self.k1_spin.value(), source="manual")
         # The write-through is automatic: a manual apply PERSISTS (the
-        # manual precedence wins on the next load, no button needed).
-        K = self.session.global_map.intrinsics.K
-        intrinsics_cache.store(
-            self.session.spec.location, "manual",
-            fx=float(K[0, 0]), fy=float(K[1, 1]),
-            cx=float(K[0, 2]), cy=float(K[1, 2]),
-            k1=float(self.k1_spin.value()))
-        self.session.cache_hit = intrinsics_cache.lookup(
-            self.session.spec.location)
+        # manual precedence wins on the next load, no button needed) -
+        # the pipeline lives in the step worker, so this is a command.
+        fx_applied = self.session.set_intrinsics(
+            fx, fy, cx, cy, self.k1_spin.value())
+        self.session.cache_hit = {"provenance": "manual",
+                                  "fx": fx_applied}
         self.cache_label.setText(
-            f"hit: manual — fx {float(K[0, 0]):.1f}")
+            f"hit: manual — fx {float(fx_applied or 0):.1f}")
         self.status_label.setText(
             f"intrinsics applied + cached (manual, fx "
-            f"{float(K[0, 0]):.1f})")
+            f"{float(fx_applied or 0):.1f})")
 
     def _forget_source(self):
         if self.session is None:

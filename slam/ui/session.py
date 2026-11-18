@@ -522,3 +522,179 @@ class Session:
 
     def save(self):
         self.save_session_data()
+
+
+class ProcessSession:
+    """The M7 process-backed session: the pipeline lives in the
+    spawned step worker (slam/ui/step_worker.py); this side keeps the
+    UI bookkeeping (checkpoints, the branch records, the counters)
+    and drains per-step geometry snapshots for the viewer/recording.
+    Non-blocking by construction: request_step() returns immediately,
+    drain() routes the result queue at the editor's cadence."""
+
+    def __init__(self, spec, options, repo_dir=None):
+        from slam.ui.driver import StepProcess
+        self.spec = spec
+        self.options = options
+        self.checkpoints = []
+        self.branch_log = []
+        self.current_branch = 1
+        self.frame_index = -1
+        self.step_count = 0
+        self._done = False
+        self.step_pending = False
+        self.render_bgr = None
+        self.last_slot = None
+        self.driver = StepProcess(spec, options, repo_dir)
+        self.CAP_W = self.driver.camera_meta["w"]
+        self.CAP_H = self.driver.camera_meta["h"]
+        self.K = self.driver.K
+        self.cache_hit = self.driver.cache_hit
+
+    # --------------------------------------------------- the tick
+    def request_step(self):
+        if self._done or self.step_pending:
+            return
+        self.driver.request_step()
+        self.step_pending = True
+
+    def drain(self):
+        """Route the result queue; returns [(summary, slot_name)] for
+        the completed steps ([(None, None)] once on EOS)."""
+        out = []
+        for item in self.driver.drain():
+            op = item[0] if item else None
+            payload = item[1] if len(item) > 1 else None
+            if op == "step":
+                self.step_pending = False
+                summary, slot = payload
+                self.frame_index = summary["frame"]
+                self.step_count = summary["step"]
+                if summary.get("K") is not None:
+                    self.K = np.asarray(summary["K"], dtype=np.float64)
+                if summary["n_kf"] > 0 and summary.get("is_kf") is None:
+                    pass
+                out.append((summary, slot))
+            elif op == "checkpoint":
+                cp = payload
+                if cp is not None:
+                    self.checkpoints.append(cp)
+            elif op == "rewound":
+                record = payload
+                self.current_branch = record["branch"] + 1
+                self.branch_log.append(record)
+                self.step_pending = False
+            elif op == "eos":
+                self._done = True
+                self.step_pending = False
+                out.append((None, None))
+        return out
+
+    def result_from_summary(self, summary, slot):
+        """The StepResult-shaped adapter for the editor's handlers."""
+        self.last_slot = slot
+        from collections import namedtuple
+        R = namedtuple("StepResultShim",
+                       "step frame_index is_keyframe keyframes points "
+                       "avg_quality eos capture pose")
+        img = None
+        if slot is not None:
+            from multiprocessing.shared_memory import SharedMemory
+            try:
+                shm = SharedMemory(name=slot)
+                img = np.ndarray((self.CAP_H, self.CAP_W, 3),
+                                 dtype=np.uint8, buffer=shm.buf).copy()
+                shm.close()
+            except Exception:
+                img = None
+        return R(step=summary["step"],
+                 frame_index=summary["frame"],
+                 is_keyframe=summary["is_kf"],
+                 keyframes=summary["n_kf"],
+                 points=summary["n_pts"],
+                 avg_quality=summary["avg_quality"],
+                 eos=False,
+                 capture=img,
+                 pose=np.asarray(summary["cur_pose"]))
+
+    def step(self, timeout=30.0):
+        """The manual single-step (the blocking route for a discrete
+        button press)."""
+        import time as _t
+        self.request_step()
+        t0 = _t.monotonic()
+        while _t.monotonic() - t0 < timeout and not self._done:
+            got = self.drain()
+            if got:
+                return got[0]
+            _t.sleep(0.01)
+        return (None, None)
+
+    def restore_checkpoint(self, cp):
+        cpd = self.driver.wait_for("rewound", timeout=30) \
+            if False else None
+        self.driver.send.put(("rewind", cp))
+        record = self.driver.wait_for("rewound", timeout=60)
+        if record is None:
+            raise RuntimeError("the rewind never answered")
+        # The counters return to the checkpoint's (the next summary
+        # confirms; the timeline and the smoke read them immediately).
+        self.frame_index = record["forked_frame"]
+        self.step_count = cp.step_count
+        # Fork the checkpoint object UI-side (the flag the timeline
+        # paints).
+        for c in self.checkpoints:
+            if (c.frame_index == record["forked_frame"] and
+                    c.step_count == cp.step_count):
+                c.forked = True
+                break
+        self.current_branch = record["branch"] + 1
+        self.branch_log.append(record)
+        self.step_pending = False
+        return record
+
+    def profile_summary(self):
+        self.driver.send.put(("profile",))
+        resp = self.driver.wait_for("profile", timeout=30)
+        return resp or {}
+
+    def save(self):
+        self.driver.save()
+
+    def apply_live_options(self, opts):
+        self.options = opts
+        self.driver.set_options(dict(opts.__dict__))
+        resp = self.driver.wait_for("options_applied", timeout=30)
+        return (resp or {}) or {}
+
+    def set_pins(self, pairs):
+        self.driver.set_pins(list(pairs))
+
+    def set_intrinsics(self, fx, fy, cx, cy, k1):
+        import time as _t
+        self.driver.send.put(("set_intrinsics",
+                              (float(fx), float(fy),
+                               float(cx), float(cy), float(k1))))
+        t0 = _t.monotonic()
+        while _t.monotonic() - t0 < 30:
+            for item in self.driver.drain(timeout=0.1):
+                op = item[0] if item else None
+                payload = item[1] if len(item) > 1 else None
+                if op == "intrinsics_applied":
+                    return payload
+        return None
+
+    def reset(self):
+        self.driver.send.put(("reset",))
+        import time as _t
+        t0 = _t.monotonic()
+        while _t.monotonic() - t0 < 30:
+            for op, payload in self.driver.drain(timeout=0.1):
+                if op == "reset_done":
+                    self._done = False
+                    self.step_pending = False
+                    return
+        raise RuntimeError("the reset never answered")
+
+    def close(self):
+        self.driver.close()

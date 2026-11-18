@@ -156,6 +156,8 @@ class AdvancedTab(QWidget):
     def _pin_float(self, name, value):
         self._apply(name, repr(float(value)))
 
+    on_pin_applied = None
+
     def _apply(self, name, value):
         try:
             holder, parsed = apply_override(name, value)
@@ -164,6 +166,8 @@ class AdvancedTab(QWidget):
             return
         self.status_cb(f"{name} pinned to {parsed} (live)")
         UiState.save({name: parsed})
+        if self.on_pin_applied is not None:
+            self.on_pin_applied(name, parsed)
 
     # ------------------------------------------------------ refresh
     def refresh_from_modules(self):
