@@ -67,6 +67,10 @@ class _FlyKeyFilter(QObject):
         kind = ev.type()
         if kind not in (QEvent.KeyPress, QEvent.KeyRelease):
             return False
+        if not isinstance(obj, QWidget):
+            # Native-window-level key events (a QWindow has no
+            # .window()); the widget tree delivers the keys we route.
+            return False
         if QApplication.activePopupWidget() is not None:
             return False
         if obj.window() is not self.editor:
