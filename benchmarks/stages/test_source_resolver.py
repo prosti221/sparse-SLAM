@@ -98,24 +98,6 @@ def test_open_source_runs_a_sequence_through_the_harness_loop(tmp_path):
     assert ret and isinstance(img, np.ndarray)
 
 
-def test_load_video_config_contract(tmp_path):
-    d = _sequence_dir(tmp_path)
-    (tmp_path / "config.yaml").write_text(
-        "global:\n"
-        "  load_video: test_vid\n"
-        "  feature_extractor: ORB\n"
-        "videos:\n"
-        f"  test_vid:\n"
-        f"    path: {d}\n"
-        "    fx: 500.0\n"
-        "    fy: 500.0\n"
-        "    k1: 0.0\n")
-    config = ConfigParser(tmp_path / "config.yaml")
-    cap, K, k1 = load_video(config)
-    assert K[0, 0] == 500.0 and k1 == 0.0
-    assert cap.get(cv.CAP_PROP_FRAME_COUNT) == 12
-
-
 def test_camera_kind_detection_and_open_contract():
     assert detect_kind("1") == CAMERA_KIND
     # Opening an actual device is environment-gated; the resolver's

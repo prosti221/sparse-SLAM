@@ -1,6 +1,6 @@
 """The session source resolver: video files, frame sequences, cameras.
 
-Generalizes `load_video`'s contract (`(cap, K|None, k1)`, `fx: auto`
+The generalization of slam.py's original loader (`(cap, K|None, k1)`, `fx: auto`
 yields K=None and triggers the GeoCalib branch in slam.py) over the
 three source kinds the editor supports. Sequence dirs resolve to a
 duck-typed capture (read/get match cv.VideoCapture's surface, so
@@ -114,7 +114,7 @@ def open_capture(spec: SourceSpec):
 
 def resolve_intrinsics(spec: SourceSpec, width: int, height: int
                        ) -> Tuple[Optional[np.ndarray], float, dict]:
-    """load_video's semantics on a spec: `fx: auto` (or absent/zero)
+    """The original loader's semantics on a spec: `fx: auto` (or absent/zero
     -> (None, 0.0), the GeoCalib sentinel; explicit intrinsics ->
     (K, k1). Returns the third element as the resolution's provenance
     dict (the M1b cache writer's seed)."""
@@ -156,7 +156,7 @@ def open_source(spec: SourceSpec):
 
 def spec_from_config(config) -> SourceSpec:
     """The config adapter: the videos-map entry -> a spec (the
-    load_video semantics, verbatim)."""
+    the original loader's semantics, verbatim)."""
     tag = config.get_global_config_property("load_video")
     return SourceSpec(
         FILE_KIND, config.get_video_property(tag, "path"),
@@ -167,10 +167,3 @@ def spec_from_config(config) -> SourceSpec:
         k1=config.get_video_property(tag, "k1", default=0.0))
 
 
-def load_video(config):
-    """The load_video contract (cap, K|None, k1), delegated."""
-    resolved = open_source(spec_from_config(config))
-    if resolved is None:
-        raise FileNotFoundError("source failed to open")
-    cap, K, k1, _meta = resolved
-    return cap, K, k1

@@ -10,20 +10,6 @@ from slam.utils.logger import *
 LOG_TAG = 'Utils'
 
 
-def pt_obj_to_array(pts):
-    if len(pts) == 0:
-        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.float32)
-
-    num_pts = len(pts)
-    points_3d = np.empty((num_pts, 3), dtype=np.float32)
-    color = np.empty((num_pts, 3), dtype=np.float32)
-
-    for i, pt in enumerate(pts):
-        points_3d[i] = pt.pt_3d
-        color[i] = pt.color
-
-    color /= 255.0
-    return points_3d, color
 
 
 def add_ones(x):

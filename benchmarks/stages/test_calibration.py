@@ -176,7 +176,6 @@ from types import SimpleNamespace  # noqa: E402
 
 from slam.calibration import geocalib_init as gi
 from slam.utils import constants as calib_const
-from slam.utils.utils import load_video
 
 
 class _FT:
@@ -349,65 +348,6 @@ class _FakeConfig:
     def get_video_property(self, tag, key, default=None):
         return self.props.get(key, default)
 
-
-def test_load_video_auto_signaling(tmp_path):
-    """'fx: auto' (or an absent fx) signals auto-calibration by
-    returning K=None - slam.py then runs estimate_video_intrinsics.
-    A numeric fx keeps today's behavior exactly. load_video
-    returns a THIRD value, the config's k1 (0.0 when absent); the auto
-    branch returns 0.0 because GeoCalib supplies its own k1 through
-    the prior."""
-    video = _write_tiny_video(tmp_path / "tiny.avi")
-
-    cap, K, k1 = load_video(_FakeConfig(
-        {"load_video": "v", "path": video, "fx": "auto"}))
-    assert K is None
-    assert k1 == 0.0
-    cap.release()
-
-    cap, K, k1 = load_video(_FakeConfig(
-        {"load_video": "v", "path": video}))          # fx absent
-    assert K is None
-    assert k1 == 0.0
-    cap.release()
-
-    cap, K, k1 = load_video(_FakeConfig(
-        {"load_video": "v", "path": video, "fx": 480}))
-    assert K[0, 0] == 480.0          # fy defaults to fx
-    assert K[1, 1] == 480.0
-    assert K[0, 2] == 32.0           # cx defaults to W // 2
-    assert K[1, 2] == 24.0           # cy defaults to H // 2
-    assert k1 == 0.0                  # k1 defaults to the identity path
-    cap.release()
-
-
-def test_load_video_returns_configured_k1(tmp_path):
-    """An explicit k1 flows out of load_video unchanged (the
-    float cast accepts yaml ints/strings); an explicit k1 is IGNORED on
-    the auto branch by design (GeoCalib supplies its own)."""
-    video = _write_tiny_video(tmp_path / "tiny.avi")
-
-    cap, K, k1 = load_video(_FakeConfig(
-        {"load_video": "v", "path": video, "fx": 480, "k1": -0.0608}))
-    assert K is not None
-    assert k1 == -0.0608
-    assert isinstance(k1, float)
-    cap.release()
-
-    # yaml parses -0.0608 as float; a quoted string must also work
-    cap, K, k1 = load_video(_FakeConfig(
-        {"load_video": "v", "path": video, "fx": 480, "k1": "-0.1"}))
-    assert k1 == -0.1
-    cap.release()
-
-    # auto branch: an explicit k1 does NOT override GeoCalib's estimate
-    cap, K, k1 = load_video(_FakeConfig(
-        {"load_video": "v", "path": video, "fx": "auto", "k1": -0.06}))
-    assert K is None and k1 == 0.0
-    cap.release()
-
-
-# --- 2j-3: the distortion boundaries in Frame ---------------------------
 
 import cv2 as cv  # noqa: E402
 
