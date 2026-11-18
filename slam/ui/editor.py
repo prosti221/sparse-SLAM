@@ -22,6 +22,7 @@ stream; the tweak is the only delta.
 import os
 import sys
 import time
+import time
 from pathlib import Path
 
 import cv2 as cv
@@ -70,18 +71,45 @@ QSlider::handle:horizontal { background: #b0b0b4; width: 16px;
 
 class Viewport(QLabel):
     """The offscreen Open3D render. Geometry refreshes only on step
-    boundaries; the 30 Hz paint tick is camera-only. A SCRUB renders
-    a checkpoint's snapshot geometry (the pipeline untouched)."""
+    boundaries; the 30 Hz paint tick is camera-only. The camera carries
+    the legacy viewer's fly contract (viz/renderer.py, the same
+    constants): held W/A/S/D move with Q/E down/up (Shift boost,
+    -/= speed) applied per paint tick against a wall-clock dt; the
+    mouse drag orbits turntable-style around the lookat; the wheel
+    dollies; Space toggles pause (window level). A SCRUB renders a
+    checkpoint's snapshot geometry (the pipeline untouched); the
+    camera is free in every state."""
+
+    # The legacy fly constants (slam/viz/renderer.py, verbatim).
+    FLY_SPEED_SCENE_FRACTION = 0.3      # scene diagonal per second @1x
+    FLY_SPEED_BOOST = 3.0
+    FLY_SPEED_MULT_MIN = 1.0 / 32.0
+    FLY_SPEED_MULT_MAX = 32.0
+    FLY_SPEED_STEP = 2.0
+    FLY_MAX_DT_S = 0.05                 # per-tick dt cap (BA stalls)
+    FLY_DEFAULT_SCENE_DIAGONAL = 100.0  # before the first points
+    ORBIT_SENSITIVITY = 0.4             # degrees per pixel
+    ZOOM_PER_NOTCH = 0.87               # per-notch dolly factor
+
+    flyStatus = Signal(str)
 
     def __init__(self):
         super().__init__()
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background: #0d0f13;")
         self.renderer = None
-        self._angle = 0.0
-        self._last_center = None
         self.last_render_bgr = None
         self.scrubbing = False
+        self._up = np.array([0.0, 1.0, 0.0])
+        self._eye = None
+        self._lookat = None
+        self._placed = False
+        self._fly_keys = set()
+        self._fly_boost = False
+        self._fly_speed_multiplier = 1.0
+        self._fly_diag = self.FLY_DEFAULT_SCENE_DIAGONAL
+        self._fly_last_tick = None
+        self._drag_last = None
 
     def attach(self, w=960, h=540):
         if self.renderer is not None:
@@ -97,6 +125,13 @@ class Viewport(QLabel):
     def detach(self):
         self.renderer = None
         self.scrubbing = False
+        # The camera state resets with the session: the next source
+        # places anew at its own pipeline pose.
+        self._placed = False
+        self._eye = None
+        self._lookat = None
+        self._fly_diag = self.FLY_DEFAULT_SCENE_DIAGONAL
+        self._fly_last_tick = None
 
     @staticmethod
     def _cloud_from(points):
@@ -113,14 +148,20 @@ class Viewport(QLabel):
         """On the step boundary (same thread, between ticks)."""
         if self.renderer is None:
             self.attach()
+        pts = session.global_map.points
         self.renderer.scene.remove_geometry("cloud")
         self.renderer.scene.add_geometry(
-            "cloud", Viewport._cloud_from(session.global_map.points),
-            self.mat)
+            "cloud", Viewport._cloud_from(pts), self.mat)
+        if pts:
+            arr = np.array([p._pt_3d for p in pts])
+            extent = arr.max(axis=0) - arr.min(axis=0)
+            diag = float(np.linalg.norm(extent))
+            if diag > 0.0:
+                self._fly_diag = diag
         pose = (session.tracker.cur_frame.pose
                 if getattr(session.tracker, "cur_frame", None) else None)
         if pose is not None:
-            self.note_center(pose[:3, 3])
+            self.place_view_from_pose(pose)
 
     def scrub_render(self, checkpoint):
         """The VIEW-only render of a checkpoint's snapshot geometry
@@ -140,27 +181,160 @@ class Viewport(QLabel):
     def unscrub(self):
         self.scrubbing = False
 
-    def note_center(self, center):
-        if center is not None:
-            self._last_center = np.asarray(center, dtype=np.float32)
-
-    def follow_center(self):
-        if self._last_center is None:
+    # ------------------------------------------------ legacy fly input
+    def place_view_from_pose(self, pose):
+        """One-time placement AT the pipeline's current camera, facing
+        its view direction (the legacy _place_initial_camera: the CV
+        frame X right / Y down / Z forward)."""
+        if self._placed:
             return
-        c = self._last_center
-        self._angle += np.radians(1.2)
-        eye = c + np.array([2.5 * np.cos(self._angle), 2.0,
-                            2.5 * np.sin(self._angle)],
-                           dtype=np.float32)
-        self.renderer.scene.camera.look_at(c, eye,
-                                           np.array([0, 1, 0],
-                                                    dtype=np.float32))
+        self._placed = True
+        R = np.asarray(pose[:3, :3], dtype=float)
+        self._eye = np.asarray(pose[:3, 3], dtype=float)
+        fwd = R @ np.array([0.0, 0.0, 1.0])
+        up = -(R @ np.array([0.0, 1.0, 0.0]))
+        if not np.isfinite(up).all() or np.linalg.norm(up) < 1e-6:
+            up = np.array([0.0, 1.0, 0.0])
+        self._up = up / np.linalg.norm(up)
+        fwd = fwd / max(np.linalg.norm(fwd), 1e-9)
+        self._lookat = self._eye + fwd * max(
+            1.0, 0.05 * self._fly_diag)
+        self._commit_camera()
+
+    def set_held(self, key, pressed):
+        (self._fly_keys.add if pressed else self._fly_keys.discard)(key)
+
+    def set_boost(self, pressed):
+        self._fly_boost = pressed
+
+    def fly_speed(self, direction):
+        mult = (self._fly_speed_multiplier * self.FLY_SPEED_STEP
+                if direction > 0
+                else self._fly_speed_multiplier / self.FLY_SPEED_STEP)
+        mult = min(self.FLY_SPEED_MULT_MAX,
+                   max(self.FLY_SPEED_MULT_MIN, mult))
+        self._fly_speed_multiplier = mult
+        self.flyStatus.emit(
+            f"fly speed {mult:.2f}x ("
+            f"{self.FLY_SPEED_SCENE_FRACTION * self._fly_diag * mult:.2f}"
+            f" u/s)")
+
+    def _camera_axes(self):
+        """(forward, right, up) of the current camera pose."""
+        fwd = self._lookat - self._eye
+        n = np.linalg.norm(fwd)
+        fwd = (fwd / n if n > 1e-9
+               else np.array([0.0, 0.0, -1.0]))
+        right = np.cross(fwd, self._up)
+        nr = np.linalg.norm(right)
+        right = (right / nr if nr > 1e-9
+                 else np.array([1.0, 0.0, 0.0]))
+        return fwd, right, np.cross(right, fwd)
+
+    @staticmethod
+    def _rotate(v, axis, angle):
+        axis = axis / max(np.linalg.norm(axis), 1e-12)
+        c, s = np.cos(angle), np.sin(angle)
+        return (v * c + np.cross(axis, v) * s +
+                axis * (axis @ v) * (1.0 - c))
+
+    def _apply_fly(self):
+        """One fly-movement step, run from the 30 Hz paint tick in
+        every state (playing, paused, scrubbing): the legacy contract
+        of process_fly_input. dt is wall-clock based and capped."""
+        now = time.monotonic()
+        dt = 0.0
+        if self._fly_last_tick is not None:
+            dt = min(now - self._fly_last_tick, self.FLY_MAX_DT_S)
+        self._fly_last_tick = now
+        if dt <= 0.0 or self._eye is None:
+            return
+        held = self._fly_keys
+        forward = float(Qt.Key_W in held) - float(Qt.Key_S in held)
+        right = float(Qt.Key_D in held) - float(Qt.Key_A in held)
+        up = float(Qt.Key_E in held) - float(Qt.Key_Q in held)
+        norm = np.sqrt(forward ** 2 + right ** 2 + up ** 2)
+        if norm == 0.0:
+            return
+        speed = (self.FLY_SPEED_SCENE_FRACTION * self._fly_diag *
+                 self._fly_speed_multiplier)
+        if self._fly_boost:
+            speed *= self.FLY_SPEED_BOOST
+        step = speed * dt / norm
+        f, r, u = self._camera_axes()
+        move = (f * (forward * step) + r * (right * step) +
+                u * (up * step))
+        self._eye = self._eye + move
+        self._lookat = self._lookat + move
+        self._commit_camera()
+
+    def _commit_camera(self):
+        if self.renderer is None or self._eye is None:
+            return
+        self.renderer.scene.camera.look_at(
+            self._lookat.astype(np.float32),
+            self._eye.astype(np.float32),
+            self._up.astype(np.float32))
+
+    # ------------------------------------------------------------ mouse
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._drag_last = ev.position()
+
+    def mouseMoveEvent(self, ev):
+        if self._drag_last is None or not (ev.buttons() & Qt.LeftButton):
+            return
+        dx = ev.position().x() - self._drag_last.x()
+        dy = ev.position().y() - self._drag_last.y()
+        self._drag_last = ev.position()
+        self.orbit(dx, dy)
+        self.paint()
+
+    def mouseReleaseEvent(self, ev):
+        self._drag_last = None
+
+    def wheelEvent(self, ev):
+        steps = ev.angleDelta().y() / 120.0
+        if steps == 0.0:
+            return
+        self.dolly(steps)
+        self.paint()
+
+    def orbit(self, dx, dy):
+        """Turntable drag: yaw around the world up, pitch around the
+        camera's right, the polar angle clamped short of the poles.
+        The scene follows the cursor."""
+        if self._eye is None:
+            return
+        offset = self._eye - self._lookat
+        n = np.linalg.norm(offset)
+        if n < 1e-9:
+            return
+        offset = offset / n
+        pol = np.degrees(np.arccos(np.clip(
+            float(offset @ self._up), -1.0, 1.0)))
+        target_pol = np.clip(pol + dy * self.ORBIT_SENSITIVITY,
+                             6.0, 174.0)
+        yaw = np.radians(dx * self.ORBIT_SENSITIVITY)
+        _, right, _ = self._camera_axes()
+        offset = self._rotate(offset, self._up, yaw)
+        offset = self._rotate(offset, right,
+                              np.radians(target_pol - pol))
+        self._eye = self._lookat + offset
+        self._commit_camera()
+
+    def dolly(self, steps):
+        if self._eye is None:
+            return
+        offset = (self._eye - self._lookat) * (
+            self.ZOOM_PER_NOTCH ** steps)
+        self._eye = self._lookat + offset
+        self._commit_camera()
 
     def paint(self):
         if self.renderer is None:
             return
-        if not self.scrubbing:
-            self.follow_center()
+        self._apply_fly()
         img = self.renderer.render_to_image()
         arr = np.ascontiguousarray(np.asarray(img))
         h, w, ch = arr.shape
@@ -317,6 +491,10 @@ class EditorWindow(QMainWindow):
         self.paint_timer = QTimer()
         self.paint_timer.timeout.connect(self.viewport.paint)
         self.paint_timer.start(1000 // 30)
+        self.viewport.flyStatus.connect(
+            lambda msg: self.status_label.setText(f"{msg}"))
+        for b in self.findChildren(QPushButton):
+            b.setFocusPolicy(Qt.NoFocus)
         self.step_timer = QTimer()
         self.step_timer.timeout.connect(self._tick)
         self.step_timer.start(1000 // 30)
@@ -510,6 +688,37 @@ class EditorWindow(QMainWindow):
             return
         self._on_pause() if self.playing else self._on_play()
 
+    # The legacy viewer's keys (viz/renderer.py): space pauses, held
+    # W/A/S/D/Q/E fly (shift boost), -/= speed. The routing sits at
+    # the WINDOW level so no click is needed first; text fields
+    # consume their own keys before this sees them.
+    def keyPressEvent(self, ev):
+        if ev.isAutoRepeat() or not self._fly_key(ev.key(), True):
+            super().keyPressEvent(ev)
+
+    def keyReleaseEvent(self, ev):
+        if ev.isAutoRepeat() or not self._fly_key(ev.key(), False):
+            super().keyReleaseEvent(ev)
+
+    def _fly_key(self, key, pressed):
+        if key == Qt.Key_Space:
+            if pressed:
+                self._on_toggle()
+            return True
+        if key in (Qt.Key_Minus, Qt.Key_Equal):
+            if pressed:
+                self.viewport.fly_speed(
+                    1 if key == Qt.Key_Equal else -1)
+            return True
+        if key == Qt.Key_Shift:
+            self.viewport.set_boost(pressed)
+            return True
+        if key in (Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D,
+                   Qt.Key_Q, Qt.Key_E):
+            self.viewport.set_held(key, pressed)
+            return True
+        return False
+
     def _tick(self) -> None:
         if not self.playing or self.session is None:
             return
@@ -593,8 +802,6 @@ class EditorWindow(QMainWindow):
         self.strip.sync(len(self.session.checkpoints),
                         max(len(self.session.checkpoints) - 1, 0))
         self.viewport.update_scene(self.session)
-        if result.pose is not None:
-            self.viewport.note_center(result.pose[:3, 3])
         self.session.render_bgr = self.viewport.last_render_bgr
         if self.session.options.display_capture and \
                 result.capture is not None:
@@ -772,10 +979,61 @@ def main():
     assert len(win.session.branch_log) >= 1, \
         "the rewind did not register the fork"
     assert len(forks) >= 1, "no forked checkpoint in the registry"
-    print("[smoke] PASS", flush=True)
     if os.environ.get("EDITOR_CAPTURE") == "1":
         win.grab().save(str(out_dir / "editor_m6.png"))
         print("[smoke] window capture saved", flush=True)
+
+    # The fly camera (the legacy movement contract): real key events
+    # through the window routing + the pointer manipulations.
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    vp = win.viewport
+
+    def key(key, pressed):
+        kind = QEvent.KeyPress if pressed else QEvent.KeyRelease
+        ev = QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier)
+        QCoreApplication.sendEvent(win, ev)
+
+    win._on_pause()
+    spin(300)
+    eye0 = vp._eye.copy()
+    assert eye0 is not None, "the camera never placed"
+    key(Qt.Key_W, True)
+    spin(700)
+    key(Qt.Key_W, False)
+    spin(100)
+    assert not np.allclose(eye0, vp._eye), "W did not move the camera"
+    print(f"[smoke] fly: the eye moved "
+          f"{np.linalg.norm(vp._eye - eye0):.3f} units on held W",
+          flush=True)
+
+    fwd, _, _ = vp._camera_axes()
+    delta = vp._eye - eye0
+    along = abs(float(delta @ fwd)) / max(np.linalg.norm(delta), 1e-9)
+    assert along > 0.99, \
+        f"the fly move left the view axis (forward share {along:.2f})"
+
+    diag0 = np.linalg.norm(vp._eye - vp._lookat)
+    vp.dolly(2)
+    diag1 = np.linalg.norm(vp._eye - vp._lookat)
+    assert diag1 < diag0 * 0.8, "the wheel dolly did not zoom in"
+    vp.orbit(60, 0)
+    lookat = vp._lookat.copy()
+    assert np.allclose(vp._lookat, lookat), "the orbit moved the lookat"
+    print(f"[smoke] orbit+dolly: the camera distance "
+          f"{diag0:.2f} -> {diag1:.2f}, the lookat pinned",
+          flush=True)
+
+    playing_before = win.playing
+    assert not playing_before, "expected paused for the space toggle"
+    key(Qt.Key_Space, True)
+    assert win.playing, "space did not resume"
+    key(Qt.Key_Space, True)
+    assert not win.playing, "space did not pause"
+    print("[smoke] space toggle: pause/resume ok", flush=True)
+    spin(200)
+    print("[smoke] PASS", flush=True)
     win.close()
     spin(200)
     app.processEvents()
