@@ -90,6 +90,12 @@ def _snapshot_keyframe(f: Frame, live_pids: set) -> dict:
                      for pid, obs in f.observed_points.items()},
         "kp_to_point": kp_to_point,
         "stale_points": [_snapshot_point(p) for p in stale.values()],
+        "kp_unique_mask": (list(f.kp_unique_mask)
+                           if f.kp_unique_mask is not None else None),
+        # The frame's own dimensions (NOT the image content): the
+        # matching seam reads image.shape (LightGlue's per-image
+        # normalization) - a restored 1x1 dummy wrecks the pair pose.
+        "w": int(f.W), "h": int(f.H),
         "tracking_quality": float(f._tracking_quality),
         "image_dropped": True,
     }
@@ -144,6 +150,9 @@ def _snapshot_map(m: Map) -> dict:
                             "has": [int(m._point_registry.has(pid))
                                     for pid in
                                     m._point_registry.ids()]}),
+        "obs_registry": (None if m._obs_registry is None or
+                         m._obs_registry.size() == 0 else
+                         m._obs_registry.serialize()),
         "archives": [
             {"keyframes": [_snapshot_keyframe(f, arch_pids)
                            for f in a.keyframes],
@@ -157,7 +166,12 @@ def _snapshot_map(m: Map) -> dict:
 
 def _restore_keyframe(state: dict, K, k1,
                       pid_to_point: Optional[dict]) -> Frame:
-    f = Frame(np.zeros((1, 1, 3), dtype=np.uint8), K, k1)
+    # The frame's OWN dimensions restored: the matching seam reads
+    # image.shape (LightGlue normalizes per image_size) — a 1x1
+    # dummy wrecks every pair pose the frame participates in.
+    f = Frame(np.zeros((max(int(state.get("h", 1)), 1),
+                        max(int(state.get("w", 1)), 1), 3),
+                       dtype=np.uint8), K, k1)
     f.frame_id = state["frame_id"]
     f.pose = state["pose"]
     f.is_keyframe = state["is_keyframe"]
@@ -172,6 +186,11 @@ def _restore_keyframe(state: dict, K, k1,
     # detector subscript keyframe.kp_pts_norm directly.
     if f.keypoints:
         f.set_features(f.keypoints, f.descriptors)
+    # The kp_unique_mask is PER-FRAME MUTABLE state (every
+    # projection-dedup pass mutates it in place): the set_features
+    # reset above would re-match used keypoints after a rewind.
+    if state.get("kp_unique_mask") is not None:
+        f.kp_unique_mask = list(state["kp_unique_mask"])
     f._tracking_quality = state["tracking_quality"]
     f.keypoint_to_point_map = {}
     if pid_to_point is not None:
@@ -475,11 +494,21 @@ def restore(session, cp: Checkpoint) -> None:
             m._refresh_registry_index()
     if m._obs_registry is not None:
         m._obs_registry.clear()
-        for f in sorted(m.frames_by_id.values(),
-                        key=lambda k: k.frame_id):
-            if f.observed_points:
-                m._add_observation_events(
-                    list(f.observed_points.values()))
+        obs_state = cp.map_state.get("obs_registry")
+        if obs_state is not None:
+            # The checkpoint's EXACT row stream (the positions + the
+            # tombstones): the fold's pass-2 order contract, rows the
+            # add-order simulation cannot reconstruct (the re-observed
+            # pairs sit at their FIRST-add position natively).
+            m._obs_registry.restore(
+                list(obs_state[0]), list(obs_state[1]), obs_state[2],
+                obs_state[3], list(obs_state[4]))
+        else:
+            for f in sorted(m.frames_by_id.values(),
+                            key=lambda k: k.frame_id):
+                if f.observed_points:
+                    m._add_observation_events(
+                        list(f.observed_points.values()))
     # The stream position: the sequence/camera seek (the M0 spike:
     # EXACT at ~1 ms); the extraction worker (file sources) is
     # re-launched at the offset (frame_index + 1: the next read is

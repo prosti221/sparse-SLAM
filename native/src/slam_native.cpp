@@ -181,6 +181,8 @@ PYBIND11_MODULE(slam_native, m) {
       .def("remove_by_frames", &slarnative::ObsRegistry::remove_by_frames,
            py::arg("frame_ids"))
       .def("clear", &slarnative::ObsRegistry::clear)
+      .def("serialize", &slarnative::ObsRegistry::serialize)
+      .def("restore", &slarnative::ObsRegistry::restore)
       .def("size", &slarnative::ObsRegistry::size)
       .def("has_pair", &slarnative::ObsRegistry::has_pair)
       .def("observers_for_points",

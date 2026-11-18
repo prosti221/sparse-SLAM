@@ -46,6 +46,21 @@ class ObsRegistry {
 
   void clear();
 
+  // The checkpoint boundary (M7): the EXACT row stream -
+  // (point_id, frame_id, kp_idx, xn, yn, live) per row IN STORAGE
+  // ORDER (tombstones included: the row positions are the pass-2
+  // contract; the pair map rebuilds). Add-order re-simulation cannot
+  // reconstruct the positions of re-observed pairs (the native keeps
+  // the FIRST-add position; the dicts hold the LAST values).
+  void restore(const std::vector<uint64_t>& point_ids,
+               const std::vector<uint64_t>& frame_ids,
+               py::array_t<int64_t, py::array::c_style | py::array::forcecast>
+                   kp_idx,
+               py::array_t<double, py::array::c_style | py::array::forcecast>
+                   pt2d_norm,
+               const std::vector<uint8_t>& live);
+  py::object serialize();
+
   size_t size() const { return live_; }  // the live rows
   bool has_pair(uint64_t point_id, uint64_t frame_id) const;
 

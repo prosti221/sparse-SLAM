@@ -80,6 +80,64 @@ void ObsRegistry::clear() {
   live_ = 0;
 }
 
+void ObsRegistry::restore(
+    const std::vector<uint64_t>& point_ids,
+    const std::vector<uint64_t>& frame_ids,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> kp_idx,
+    py::array_t<double, py::array::c_style | py::array::forcecast> pt2d_norm,
+    const std::vector<uint8_t>& live) {
+  const long N = static_cast<long>(point_ids.size());
+  if (frame_ids.size() != point_ids.size() || kp_idx.shape(0) != N ||
+      pt2d_norm.shape(0) != N || pt2d_norm.shape(1) != 2 ||
+      live.size() != point_ids.size()) {
+    throw std::invalid_argument(
+        "restore: parallel arrays must be (N,) / (N, 2)");
+  }
+  clear();
+  const auto ki_in = kp_idx.unchecked<1>();
+  const auto un_in = pt2d_norm.unchecked<2>();
+  {
+    py::gil_scoped_release release;
+    rows_.reserve(N);
+    for (long i = 0; i < N; ++i) {
+      const bool is_live = live[i] != 0;
+      rows_.push_back(ObsRow{point_ids[i], frame_ids[i], ki_in(i),
+                             un_in(i, 0), un_in(i, 1), is_live});
+      if (is_live) {
+        pair_row_[point_ids[i]].emplace(frame_ids[i], rows_.size() - 1);
+        ++live_;
+      }
+    }
+  }
+}
+
+py::object ObsRegistry::serialize() {
+  const long NN = static_cast<long>(rows_.size());
+  auto pids = py::array_t<uint64_t>(NN);
+  auto fids = py::array_t<uint64_t>(NN);
+  auto kps = py::array_t<int64_t>(NN);
+  auto norms = py::array_t<double>({NN, 2L});
+  auto lives = py::array_t<uint8_t>(NN);
+  const auto N = NN;
+  {
+    py::gil_scoped_release release;
+    auto pi = pids.mutable_unchecked<1>();
+    auto fi = fids.mutable_unchecked<1>();
+    auto ki = kps.mutable_unchecked<1>();
+    auto ni = norms.mutable_unchecked<2>();
+    auto li = lives.mutable_unchecked<1>();
+    for (size_t i = 0; i < N; ++i) {
+      pi(i) = rows_[i].point_id;
+      fi(i) = rows_[i].frame_id;
+      ki(i) = rows_[i].kp_idx;
+      ni(i, 0) = rows_[i].xn;
+      ni(i, 1) = rows_[i].yn;
+      li(i) = rows_[i].live ? 1 : 0;
+    }
+  }
+  return py::make_tuple(pids, fids, kps, norms, lives);
+}
+
 bool ObsRegistry::has_pair(uint64_t point_id, uint64_t frame_id) const {
   auto it = pair_row_.find(point_id);
   return it != pair_row_.end() && it->second.count(frame_id) != 0;
