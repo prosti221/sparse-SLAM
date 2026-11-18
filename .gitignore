@@ -5,9 +5,11 @@ __pycache__/
 # uv virtual environment
 .venv/
 
-# C++ build artifacts (scikit-build-core in-tree build dir; the
+# C++ build artifacts (scikit-build-core's in-tree build dir; the
 # vendored third_party sources at native/third_party/ ARE committed)
 build/
+*.so
+*.dylib
 
 # The regenerable/license-restricted trees - ANCHORED to the repo root:
 # unanchored patterns exclude same-named directories at ANY depth
@@ -19,7 +21,18 @@ build/
 /weights/
 /slam/depth_estimation/
 /slam/external/
-/debug.txt
+
+# Working documents stay local; only the project README is published.
+*.md
+!README.md
+
+# Probe scripts and local tooling
+ui_spikes/
+
+# Test/tool caches and local debug output
+.pytest_cache/
+.idea/
+debug.txt
 
 # macOS system files
 .DS_Store
@@ -33,6 +46,3 @@ build/
 # Logs and cache
 *.log
 *.cache
-
-# Local debug output (live session log; never part of a commit)
-debug.txt
