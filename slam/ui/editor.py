@@ -90,7 +90,7 @@ class _FlyKeyFilter(QObject):
 
 DARK_QSS = """
 QMainWindow { background: #1e1e20; }
-QWidget#CentralHost, QDockWidget, QDockWidget::title {
+QWidget#CentralHost, QDockWidget {
     background: #1e1e20; color: #9a9aa2; }
 QTabWidget::pane { border: 1px solid #3a3a3e; background: #262629; }
 QTabBar::tab { background: #1e1e20; color: #9a9aa2; padding: 8px 18px;
@@ -767,6 +767,9 @@ class EditorWindow(QMainWindow):
 
         self.panel = QDockWidget("controls")
         self.panel.setWidget(self._build_panel())
+        # No dock title row: an empty title-bar widget collapses it
+        # to zero height (the panel's tabs are the header).
+        self.panel.setTitleBarWidget(QWidget(self.panel))
         # Flex-shrink: the dock sizes to its content's width once the
         # layout knows the hints (the user can drag it afterwards).
         QTimer.singleShot(120, self._fit_dock_width)
