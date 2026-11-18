@@ -34,14 +34,15 @@ from PySide6.QtCore import (QEvent, QEventLoop, QObject,
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QPushButton, QSlider, QSpinBox,
-    QTabWidget, QVBoxLayout, QWidget)
+    QDoubleSpinBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QPushButton, QSlider, QSpinBox, QStyle, QTabWidget,
+    QVBoxLayout, QWidget)
 
 from slam.calibration import IntrinsicsEstimate
 from slam.core import intrinsics_cache
 from slam.core.source import (CAMERA_KIND, SEQUENCE_KIND, SourceSpec)
 from slam.ui.advanced_tab import UiState
+from slam.ui.row_layout import tight_row
 from slam.ui.session import Session, SlamOptions
 from slam.utils import logger as slam_logger_mod
 from slam.utils.logger import info_log
@@ -761,7 +762,11 @@ class EditorWindow(QMainWindow):
         self.panel.setWidget(self._build_panel())
         # Flex-shrink: the dock sizes to its content's width once the
         # layout knows the hints (the user can drag it afterwards).
-        QTimer.singleShot(0, self._fit_dock_width)
+        QTimer.singleShot(120, self._fit_dock_width)
+        # The contract holds across tab switches: each page gets a
+        # sidebar as wide as that page needs.
+        self.tabs.currentChanged.connect(
+            lambda _i: QTimer.singleShot(0, self._fit_dock_width))
         self.panel.setFeatures(QDockWidget.DockWidgetFeature.
                                DockWidgetMovable)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.panel)
@@ -830,15 +835,23 @@ class EditorWindow(QMainWindow):
             self.strip.raise_()
 
     def _fit_dock_width(self):
-        """The sidebar's width = the widest page's size hint (the
-        flex-shrink contract: as wide as it NEEDS to be)."""
-        w = self.panel.widget()
-        if w is None:
+        """The sidebar is as wide as its CURRENT page needs (the
+        flex-shrink contract: no slack; the rows' trailing stretches
+        absorb whatever width the dock keeps)."""
+        if not self.panel.isVisible():
             return
-        target = max(w.sizeHint().width(), w.minimumSizeHint().width(),
-                     320) + 12
-        self.resizeDocks([self.panel], [max(target, 420)],
-                         Qt.Horizontal)
+        page = self.tabs.currentWidget()
+        if page is None:
+            return
+        # The page hint includes its content (the Advanced page's
+        # scroll area reports its inner widget's width, not the
+        # scrollbar that its own height forces).
+        extra = 24  # tab frame + panel margins
+        if page is self.advanced:
+            extra += self.style().pixelMetric(
+                QStyle.PixelMetric.PM_ScrollBarExtent)
+        target = page.sizeHint().width() + extra
+        self.resizeDocks([self.panel], [target], Qt.Horizontal)
 
     def _toggle_sidebar(self):
         collapsed = self.panel.isVisible()
@@ -847,29 +860,21 @@ class EditorWindow(QMainWindow):
         # The dock swap resolves the central resize asynchronously;
         # re-place the floating overlays after it lands.
         QTimer.singleShot(0, self._reposition_overlays)
+        if not collapsed:
+            QTimer.singleShot(0, self._fit_dock_width)
 
     # ------------------------------------------------------- panel
-    def _narrow_form(self, owner):
-        """A QFormLayout without the macOS form-style's wide field
-        indent: the labels left, the fields span the panel width
-        from the left margin."""
-        from PySide6.QtWidgets import QFormLayout
-        form = (QFormLayout(owner) if owner is not None
-                else QFormLayout())
-        form.setContentsMargins(2, 2, 2, 2)
-        form.setSpacing(4)
-        form.setLabelAlignment(Qt.AlignLeft)
-        form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        # The label ABOVE the field: no label-column indent - the
-        # widest label otherwise pads every row's field start.
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-        return form
+    def _row_builder(self, svlay):
+        """The sidebar rows: each label beside its field (the
+        tight_row geometry), appended to the tab's vertical layout."""
+        def add_row(label_text, widget):
+            svlay.addLayout(tight_row(label_text, widget))
+        return add_row
 
     def _build_panel(self):
         panel = QWidget()
         vlay = QVBoxLayout(panel)
-        vlay.setContentsMargins(2, 2, 2, 2)
+        vlay.setContentsMargins(10, 4, 6, 6)
         vlay.setSpacing(2)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -877,16 +882,15 @@ class EditorWindow(QMainWindow):
         UiState.apply_everything(lambda msg: info_log(LOG_TAG, msg))
 
         src = QWidget()
-        form = self._narrow_form(src)
+        svlay = QVBoxLayout(src)
+        svlay.setContentsMargins(10, 8, 8, 8)
+        svlay.setSpacing(6)
+        row = self._row_builder(svlay)
+
         self.kind_combo = QComboBox()
         self.kind_combo.addItems(["video file", "frame sequence",
                                   "camera"])
         self.path_edit = QLineEdit()
-        browse = QPushButton("browse…")
-        browse.clicked.connect(self._browse)
-        path_row = QHBoxLayout()
-        path_row.addWidget(self.path_edit, stretch=1)
-        path_row.addWidget(browse)
         self.camera_row = QSpinBox()
         self.camera_row.setRange(0, 16)
         self.fx_spin = QDoubleSpinBox()
@@ -903,6 +907,26 @@ class EditorWindow(QMainWindow):
         self.k1_spin.setRange(-1.0, 1.0)
         self.k1_spin.setDecimals(6)
         self.fx_auto = QCheckBox()
+
+        row("source", self.kind_combo)
+        path_row = QHBoxLayout()
+        path_row.setContentsMargins(0, 0, 0, 0)
+        path_row.setSpacing(8)
+        path_row.addWidget(self.path_edit, stretch=1)
+        browse = QPushButton("browse…")
+        browse.clicked.connect(self._browse)
+        path_row.addWidget(browse)
+        row(None, path_row)
+        load_btn = QPushButton("load session")
+        load_btn.clicked.connect(self._load_session)
+        row(None, load_btn)
+        row("camera index", self.camera_row)
+        row("fx", self.fx_spin)
+        row("fy", self.fy_spin)
+        row("cx", self.cx_spin)
+        row("cy", self.cy_spin)
+        row("k1", self.k1_spin)
+        row("fx auto (GeoCalib)", self.fx_auto)
         # The point radius (the cloud's point size, pixels), live
         # and granular (quarter-pixel steps).
         self.point_size_row = QDoubleSpinBox()
@@ -912,35 +936,27 @@ class EditorWindow(QMainWindow):
         self.point_size_row.setValue(2.0)
         self.point_size_row.valueChanged.connect(
             self.viewport.set_point_size)
-        form.addRow("source", self.kind_combo)
-        form.addRow("", path_row)
-        form.addRow("camera index", self.camera_row)
-        form.addRow("fx", self.fx_spin)
-        form.addRow("fy", self.fy_spin)
-        form.addRow("cx", self.cx_spin)
-        form.addRow("cy", self.cy_spin)
-        form.addRow("k1", self.k1_spin)
-        form.addRow("fx auto (GeoCalib)", self.fx_auto)
-        form.addRow("point radius", self.point_size_row)
+        row("point radius", self.point_size_row)
         self.cache_label = QLabel("")
-        form.addRow("cache", self.cache_label)
-        load_btn = QPushButton("load session")
-        load_btn.clicked.connect(self._load_session)
-        # The main flow button sits right under the source selection,
-        # not buried under the intrinsics fields.
-        form.insertRow(2, "", load_btn)
-        manual = self._narrow_form(None)
+        row("cache", self.cache_label)
+        manual = QVBoxLayout()
+        manual.setContentsMargins(0, 0, 0, 0)
+        manual.setSpacing(4)
         apply_btn = QPushButton("apply manually (live + cached)")
         apply_btn.clicked.connect(self._apply_manual_intrinsics)
         forget_btn = QPushButton("forget this source")
         forget_btn.clicked.connect(self._forget_source)
-        manual.addRow(apply_btn)
-        manual.addRow(forget_btn)
-        form.addRow("manual intrinsics", manual)
+        manual.addWidget(apply_btn)
+        manual.addWidget(forget_btn)
+        row("manual intrinsics", manual)
+        svlay.addStretch(1)
         self.tabs.addTab(src, "Source")
 
         opts = QWidget()
-        oform = self._narrow_form(opts)
+        ovlay = QVBoxLayout(opts)
+        ovlay.setContentsMargins(10, 8, 8, 8)
+        ovlay.setSpacing(6)
+        orow = self._row_builder(ovlay)
         self.opt_widgets = {}
         for name, default, marker in (
                 ("feature_extractor", "ALIKED", "(rebuild)"),
@@ -956,11 +972,12 @@ class EditorWindow(QMainWindow):
             else:
                 w = QCheckBox()
                 w.setChecked(bool(default))
-            oform.addRow(f"{name} {marker}", w)
+            orow(f"{name} {marker}", w)
             self.opt_widgets[name] = w
         apply_opts = QPushButton("apply options")
         apply_opts.clicked.connect(self._apply_options)
-        oform.addRow("", apply_opts)
+        orow(None, apply_opts)
+        ovlay.addStretch(1)
         self.tabs.addTab(opts, "Options")
 
         from slam.ui.advanced_tab import AdvancedTab

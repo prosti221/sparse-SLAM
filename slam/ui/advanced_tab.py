@@ -13,11 +13,11 @@ use) and persist to ui_state.json so the tuning survives restarts.
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFormLayout, QFrame, QLabel, QPushButton,
+    QCheckBox, QDoubleSpinBox, QFrame, QLabel, QPushButton,
     QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
+from slam.ui.row_layout import tight_row
 from slam.utils.overrides import (apply_override, current_value,
                                   resolve_module)
 
@@ -79,9 +79,8 @@ class AdvancedTab(QWidget):
         vlay = QVBoxLayout(inner)
         vlay.setContentsMargins(8, 8, 8, 8)
         vlay.setSpacing(2)
-        note_once = QLabel("live on edit; knobs that a constructed "
-                           "pipeline re-reads (the extractor's config) "
-                           "apply at the next reset/rewind")
+        note_once = QLabel("edits apply live; extractor knobs at the "
+                           "next reset")
         note_once.setStyleSheet("color: #6e6e74; font-size: 11px;"
                                 "font-weight: normal;")
         vlay.addWidget(note_once)
@@ -89,22 +88,16 @@ class AdvancedTab(QWidget):
             header = QLabel(group)
             header.setStyleSheet("color: #6fa8dc; font-weight: bold;")
             vlay.addWidget(header)
-            form = QFormLayout()
-            form.setContentsMargins(2, 2, 2, 2)
-            form.setSpacing(2)
-            form.setLabelAlignment(Qt.AlignLeft)
-            form.setFieldGrowthPolicy(
-                QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-            # The label above the field: the consistent left edge.
-            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+            group_rows = QVBoxLayout()
+            group_rows.setContentsMargins(2, 2, 2, 2)
+            group_rows.setSpacing(2)
             for name, kind in rows:
                 w = self._make_row(name, kind)
                 if w is None:  # unresolvable name: skipped with a note
-                    form.addRow(f"{name}", QLabel("unresolvable"))
-                    continue
-                form.addRow(name, w)
+                    w = QLabel("unresolvable")
+                group_rows.addLayout(tight_row(name, w))
             holder = QFrame()
-            holder.setLayout(form)
+            holder.setLayout(group_rows)
             holder.setStyleSheet("color: #c9d1dc;")
             vlay.addWidget(holder)
         vlay.addStretch(1)
