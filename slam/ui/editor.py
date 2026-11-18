@@ -135,6 +135,7 @@ class Viewport(QLabel):
         self.renderer = None
         self.last_render_bgr = None
         self.scrubbing = False
+        self._cloud = None   # the geometry currently mounted
         self._up = np.array([0.0, 1.0, 0.0])
         self._eye = None
         self._lookat = None
@@ -193,9 +194,10 @@ class Viewport(QLabel):
         if self.renderer is None:
             self.attach()
         pts = session.global_map.points
+        pcd = Viewport._cloud_from(pts)
         self.renderer.scene.remove_geometry("cloud")
-        self.renderer.scene.add_geometry(
-            "cloud", Viewport._cloud_from(pts), self.mat)
+        self.renderer.scene.add_geometry("cloud", pcd, self.mat)
+        self._cloud = pcd
         if pts:
             arr = np.array([p._pt_3d for p in pts])
             extent = arr.max(axis=0) - arr.min(axis=0)
@@ -225,6 +227,7 @@ class Viewport(QLabel):
             np.array(cols, dtype=float) / 255.0)
         self.renderer.scene.remove_geometry("cloud")
         self.renderer.scene.add_geometry("cloud", pcd, self.mat)
+        self._cloud = pcd
         self.paint()
 
     def unscrub(self):
@@ -324,6 +327,18 @@ class Viewport(QLabel):
             self._lookat.astype(np.float32),
             self._eye.astype(np.float32),
             self._up.astype(np.float32))
+    def set_point_size(self, size: float):
+        """The point radius (pixels). Filament copies the material
+        at geometry-add time: the change only lands after the cloud
+        re-mounts."""
+        if self.mat is None:
+            return
+        self.mat.point_size = float(size)
+        if self.renderer is not None and self._cloud is not None:
+            self.renderer.scene.remove_geometry("cloud")
+            self.renderer.scene.add_geometry(
+                "cloud", self._cloud, self.mat)
+            self.paint()
 
     # ------------------------------------------------------------ mouse
     def mousePressEvent(self, ev):
@@ -396,32 +411,58 @@ class Viewport(QLabel):
 
 
 class TimelineStrip(QFrame):
-    """The timeline: a play/pause toggle + a reset on top, the
-    checkpoint slider below with the rewind next to it. The toggle
-    shows the CURRENT state's symbol; the slider's drag scrubs
-    view-only, the rewind commits the position; the fork markers
-    paint as orange ticks on the groove."""
+    """The floating transport pill: a compact translucent panel
+    OVER the viewer's bottom-center (the resize handler places it).
+    A play/pause toggle + a reset on top, the checkpoint slider
+    below with the rewind next to it. The toggle shows the CURRENT
+    state's symbol; the slider's drag scrubs view-only, the rewind
+    commits the position; the fork markers paint as orange ticks on
+    the groove."""
 
     toggleRequested = Signal()
     resetRequested = Signal()
     rewindRequested = Signal(int)
     scrubRequested = Signal(int)
 
+    PILL_QSS = """
+        QFrame#TimelinePill {
+            background: rgba(26, 26, 28, 186);
+            border: 1px solid rgba(90, 90, 94, 110);
+            border-radius: 12px; }
+        QFrame#TimelinePill QPushButton {
+            background: rgba(62, 62, 66, 150); color: #d0d0d4;
+            border: none; border-radius: 4px; padding: 0;
+            font-size: 14px; }
+        QFrame#TimelinePill QPushButton:hover {
+            background: rgba(96, 96, 100, 170); }
+        QFrame#TimelinePill QLabel { color: #8e8e94; font-size: 11px; }
+        QFrame#TimelinePill QSlider::groove:horizontal {
+            background: rgba(74, 74, 78, 160); height: 6px;
+            border-radius: 3px; border: none; }
+        QFrame#TimelinePill QSlider::handle:horizontal {
+            background: #c2c2c6; width: 13px; height: 13px;
+            margin: -4px 0; border-radius: 6px; }
+    """
+
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(84)
-        self.setStyleSheet("background: #1e1e20;")
+        self.setObjectName("TimelinePill")
+        self.setStyleSheet(self.PILL_QSS)
+        # The two rows plus the bottom padding: 6 + 26 + 3 + 22 + 14
+        # = 71 in a 74px pill (the slider row breathes off the edge).
+        self.setFixedHeight(74)
         self.fork_positions = set()
 
         top = QHBoxLayout()
-        top.setContentsMargins(10, 8, 10, 0)
+        top.setContentsMargins(0, 6, 0, 0)
+        top.setSpacing(8)
         self.btn_toggle = QPushButton("▶")
         self.btn_toggle.setToolTip("play / pause")
-        self.btn_toggle.setFixedSize(52, 34)
+        self.btn_toggle.setFixedSize(40, 26)
         self.btn_reset = QPushButton("⏮")
-        self.btn_reset.setToolTip("reset — a fresh session over the "
+        self.btn_reset.setToolTip("reset - a fresh session over the "
                                   "same source")
-        self.btn_reset.setFixedSize(52, 34)
+        self.btn_reset.setFixedSize(40, 26)
         top.addStretch(1)
         top.addWidget(self.btn_toggle)
         top.addWidget(self.btn_reset)
@@ -430,11 +471,12 @@ class TimelineStrip(QFrame):
         self.btn_reset.clicked.connect(self.resetRequested.emit)
 
         bottom = QHBoxLayout()
-        bottom.setContentsMargins(10, 2, 10, 8)
+        bottom.setContentsMargins(0, 3, 0, 14)
+        bottom.setSpacing(8)
         self.btn_rewind = QPushButton("⇤")
         self.btn_rewind.setToolTip("rewind the pipeline to the "
                                    "slider's checkpoint (branch)")
-        self.btn_rewind.setFixedSize(40, 30)
+        self.btn_rewind.setFixedSize(28, 22)
         self.btn_rewind.clicked.connect(
             lambda: self.rewindRequested.emit(self.slider.value()))
         self.slider = CheckpointSlider()
@@ -445,11 +487,11 @@ class TimelineStrip(QFrame):
             lambda: self.scrubRequested.emit(self.slider.value()))
         bottom.addWidget(self.btn_rewind)
         bottom.addWidget(self.slider, stretch=1)
-        self.frame_label = QLabel("frame —")
+        self.frame_label = QLabel("frame -")
         bottom.addWidget(self.frame_label)
 
         vlay = QVBoxLayout(self)
-        vlay.setContentsMargins(0, 0, 0, 0)
+        vlay.setContentsMargins(10, 0, 10, 0)
         vlay.addLayout(top)
         vlay.addLayout(bottom)
 
@@ -522,8 +564,11 @@ class EditorWindow(QMainWindow):
         self.strip.resetRequested.connect(self._on_reset)
         self.strip.rewindRequested.connect(self._on_rewind)
         self.strip.scrubRequested.connect(self._on_scrub)
-        vlay.addWidget(self.strip)
         self.setCentralWidget(host)
+        # The transport floats OVER the viewer's bottom-center (the
+        # overlay consumes no layout height).
+        self.strip.setParent(self.centralWidget())
+        self.strip.raise_()
 
         self.panel = QDockWidget("controls")
         self.panel.setWidget(self._build_panel())
@@ -586,6 +631,13 @@ class EditorWindow(QMainWindow):
         if hasattr(self, "dock_toggle"):
             self.dock_toggle.move(4, 12)
             self.dock_toggle.raise_()
+        if hasattr(self, "strip"):
+            w = min(480, c.width() - 24)
+            h = self.strip.height()
+            self.strip.setFixedSize(w, self.strip.height())
+            self.strip.move((c.width() - w) // 2,
+                            c.height() - h - 10)
+            self.strip.raise_()
 
     def _toggle_sidebar(self):
         collapsed = self.panel.isVisible()
@@ -632,6 +684,14 @@ class EditorWindow(QMainWindow):
         self.k1_spin.setRange(-1.0, 1.0)
         self.k1_spin.setDecimals(6)
         self.fx_auto = QCheckBox()
+        # The point radius (the cloud's point size, pixels), live.
+        self.point_size_row = QSlider(Qt.Horizontal)
+        self.point_size_row.setRange(1, 12)
+        self.point_size_row.setValue(2)
+        self.point_size_row.setPageStep(1)
+        self.point_size_row.setFixedWidth(140)
+        self.point_size_row.valueChanged.connect(
+            self.viewport.set_point_size)
         form.addRow("source", self.kind_combo)
         form.addRow("", path_row)
         form.addRow("camera index", self.camera_row)
@@ -641,6 +701,7 @@ class EditorWindow(QMainWindow):
         form.addRow("cy", self.cy_spin)
         form.addRow("k1", self.k1_spin)
         form.addRow("fx auto (GeoCalib)", self.fx_auto)
+        form.addRow("point radius", self.point_size_row)
         self.cache_label = QLabel("")
         form.addRow("cache", self.cache_label)
         load_btn = QPushButton("load session")
