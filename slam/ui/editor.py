@@ -20,8 +20,8 @@ every branch resuming from a checkpoint shares the same post-rewind
 stream; the tweak is the only delta.
 """
 import os
+import gc
 import sys
-import time
 import time
 from pathlib import Path
 
@@ -136,8 +136,12 @@ class Viewport(QLabel):
         self.last_render_bgr = None
         self.scrubbing = False
         self._cloud = None   # the geometry currently mounted
-        self._frustums = {}  # keyframe id -> (scene name, quality)
+        self._frustums = {}  # keyframe id -> (quality, pose)
         self._cam_state = None   # (K, W, H) for the frustum math
+        self._render_size = None
+        self._rebuild_timer = QTimer()
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.timeout.connect(self._rebuild_render_target)
         self._up = np.array([0.0, 1.0, 0.0])
         self._eye = None
         self._lookat = None
@@ -149,11 +153,22 @@ class Viewport(QLabel):
         self._fly_last_tick = None
         self._drag_last = None
 
-    def attach(self, w=960, h=540):
+    def _render_target(self):
+        """The widget's size in device pixels - the sharp render
+        (a fixed 960x540 target upscaled ~2x with smoothing is the
+        M2-era blur)."""
+        dpr = max(self.devicePixelRatioF(), 1.0)
+        return (max(int(self.width() * dpr), 64),
+                max(int(self.height() * dpr), 64))
+
+    def attach(self, w=None, h=None):
         if self.renderer is not None:
             return
+        if w is None or h is None:
+            w, h = self._render_target()
+        self._render_size = (int(w), int(h))
         self.renderer = o3d.visualization.rendering.OffscreenRenderer(
-            w, h)
+            self._render_size[0], self._render_size[1])
         self.mat = o3d.visualization.rendering.MaterialRecord()
         self.mat.shader = "defaultUnlit"
         self.mat.point_size = 2.0
@@ -236,7 +251,7 @@ class Viewport(QLabel):
         self.renderer.scene.add_geometry(
             name, Viewport._frustum_lines(K, W, H, pose, quality),
             self.mat_line)
-        self._frustums[frame_id] = quality
+        self._frustums[frame_id] = (quality, np.array(pose[:4, :4]))
 
     def update_frustums(self, session):
         """The keyframe pose wireframes (the legacy update_poses):
@@ -247,7 +262,8 @@ class Viewport(QLabel):
         seen = set()
         for kf in session.global_map.keyframes:
             q = float(kf.tracking_quality)
-            if self._frustums.get(kf.frame_id) != q:
+            cur = self._frustums.get(kf.frame_id)
+            if cur is None or cur[0] != q:
                 self._mount_frustum(kf.frame_id, session.K,
                                     session.CAP_W, session.CAP_H,
                                     kf.pose, q)
@@ -475,6 +491,40 @@ class Viewport(QLabel):
         self._eye = self._lookat + offset
         self._commit_camera()
 
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._rebuild_timer.start(150)
+
+    def _rebuild_render_target(self):
+        """The render engine's target size is fixed at construction
+        (no Filament resize API): the widget outgrowing it is the
+        M2-era blur. The re-create is SEQUENTIAL - the old engine is
+        fully released before the new one is built (two live engines
+        abort at teardown; measured SIGABRT) - and the pipeline state
+        is the viewer's own, so the remount is cheap."""
+        if self.renderer is None:
+            return
+        w, h = self._render_target()
+        if (w, h) == self._render_size:
+            return
+        self.renderer = None
+        gc.collect()
+        self.attach()
+        if self._cloud is not None:
+            self.renderer.scene.add_geometry(
+                "cloud", self._cloud, self.mat)
+        if self._cam_state is not None:
+            K, W, H = self._cam_state
+            for fid, (q, pose) in self._frustums.items():
+                self.renderer.scene.add_geometry(
+                    f"kf_{fid}",
+                    Viewport._frustum_lines(
+                        K, W, H, pose, q),
+                    self.mat_line)
+        if self._eye is not None:
+            self._commit_camera()
+        self.paint()
+
     def paint(self):
         if self.renderer is None:
             return
@@ -483,9 +533,20 @@ class Viewport(QLabel):
         arr = np.ascontiguousarray(np.asarray(img))
         h, w, ch = arr.shape
         qimg = QImage(arr.data, w, h, ch * w, QImage.Format_RGB888)
-        self.setPixmap(QPixmap.fromImage(qimg).scaled(
-            self.size(), Qt.KeepAspectRatio,
-            Qt.SmoothTransformation))
+        pm = QPixmap.fromImage(qimg)
+        dpr = self.devicePixelRatioF()
+        if (abs(w - self.width() * dpr) <= 2 and
+                abs(h - self.height() * dpr) <= 2):
+            # The render matches the widget in device pixels: 1:1, no
+            # resample - the sharp path.
+            pm.setDevicePixelRatio(dpr)
+            self.setPixmap(pm)
+        else:
+            # A drifted size (between a resize and the debounce): the
+            # smooth-fit fallback.
+            self.setPixmap(pm.scaled(
+                self.size(), Qt.KeepAspectRatio,
+                Qt.SmoothTransformation))
         self.last_render_bgr = cv.cvtColor(arr, cv.COLOR_RGB2BGR)
 
 
@@ -1226,6 +1287,19 @@ def main():
         "no keyframe frustums were drawn"
     print(f"[smoke] frustums: "
           f"{len(win.viewport._frustums)} keyframe wireframes",
+          flush=True)
+    # The sharp render: the target matches the widget in device
+    # pixels, and a real resize rebuilds the engine sequentially.
+    vp = win.viewport
+    assert vp._render_size == vp._render_target(), \
+        f"the render is not device-sized ({vp._render_size} vs " \
+        f"{vp._render_target()})"
+    win.resize(1100, 760)
+    spin(450)
+    assert vp._render_size == vp._render_target(), \
+        "the resize did not rebuild the render target"
+    print(f"[smoke] sharp render: {vp._render_size[0]}x"
+          f"{vp._render_size[1]} device px, rebuild-on-resize ok",
           flush=True)
     # The sidebar collapse toggle.
     win._toggle_sidebar()
