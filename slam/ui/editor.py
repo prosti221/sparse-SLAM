@@ -684,12 +684,13 @@ class EditorWindow(QMainWindow):
         self.k1_spin.setRange(-1.0, 1.0)
         self.k1_spin.setDecimals(6)
         self.fx_auto = QCheckBox()
-        # The point radius (the cloud's point size, pixels), live.
-        self.point_size_row = QSlider(Qt.Horizontal)
-        self.point_size_row.setRange(1, 12)
-        self.point_size_row.setValue(2)
-        self.point_size_row.setPageStep(1)
-        self.point_size_row.setFixedWidth(140)
+        # The point radius (the cloud's point size, pixels), live
+        # and granular (quarter-pixel steps).
+        self.point_size_row = QDoubleSpinBox()
+        self.point_size_row.setRange(0.5, 20.0)
+        self.point_size_row.setSingleStep(0.25)
+        self.point_size_row.setDecimals(2)
+        self.point_size_row.setValue(2.0)
         self.point_size_row.valueChanged.connect(
             self.viewport.set_point_size)
         form.addRow("source", self.kind_combo)
@@ -706,16 +707,15 @@ class EditorWindow(QMainWindow):
         form.addRow("cache", self.cache_label)
         load_btn = QPushButton("load session")
         load_btn.clicked.connect(self._load_session)
-        form.addRow("", load_btn)
+        # The main flow button sits right under the source selection,
+        # not buried under the intrinsics fields.
+        form.insertRow(2, "", load_btn)
         manual = QFormLayout()
-        apply_btn = QPushButton("apply manually (live)")
+        apply_btn = QPushButton("apply manually (live + cached)")
         apply_btn.clicked.connect(self._apply_manual_intrinsics)
-        save_btn = QPushButton("save to cache")
-        save_btn.clicked.connect(self._save_intrinsics_to_cache)
         forget_btn = QPushButton("forget this source")
         forget_btn.clicked.connect(self._forget_source)
         manual.addRow(apply_btn)
-        manual.addRow(save_btn)
         manual.addRow(forget_btn)
         form.addRow("manual intrinsics", manual)
         self.tabs.addTab(src, "Source")
@@ -985,11 +985,8 @@ class EditorWindow(QMainWindow):
         self.session.global_map.intrinsics = IntrinsicsEstimate.from_K(
             np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]]),
             k1=self.k1_spin.value(), source="manual")
-        self.status_label.setText("intrinsics applied (manual)")
-
-    def _save_intrinsics_to_cache(self):
-        if self.session is None:
-            return
+        # The write-through is automatic: a manual apply PERSISTS (the
+        # manual precedence wins on the next load, no button needed).
         K = self.session.global_map.intrinsics.K
         intrinsics_cache.store(
             self.session.spec.location, "manual",
@@ -1000,6 +997,9 @@ class EditorWindow(QMainWindow):
             self.session.spec.location)
         self.cache_label.setText(
             f"hit: manual — fx {float(K[0, 0]):.1f}")
+        self.status_label.setText(
+            f"intrinsics applied + cached (manual, fx "
+            f"{float(K[0, 0]):.1f})")
 
     def _forget_source(self):
         if self.session is None:
@@ -1131,6 +1131,17 @@ def main():
     if os.environ.get("EDITOR_CAPTURE") == "1":
         win.grab().save(str(out_dir / "editor_m6.png"))
         print("[smoke] window capture saved", flush=True)
+    # The point radius field + the automatic cache write-through.
+    win.point_size_row.setValue(3.5)
+    assert win.viewport.mat.point_size == 3.5, \
+        "the radius field did not drive the material"
+    win.point_size_row.setValue(2.0)
+    win.fx_spin.setValue(123.456)
+    win._apply_manual_intrinsics()
+    assert win.cache_label.text().startswith("hit: manual"), \
+        "the manual apply did not write the cache"
+    print("[smoke] point radius live (granular field), manual "
+          "intrinsics auto-cached", flush=True)
     # The sidebar collapse toggle.
     win._toggle_sidebar()
     spin(100)
